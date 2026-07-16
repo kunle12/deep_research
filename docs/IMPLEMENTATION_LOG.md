@@ -156,3 +156,138 @@ $ uv run ruff check tests/ deep_research/      # all checks passed
 - [x] Fallback behavior is transparent: caller doesn't need to know whether browser rendered or not
 - [x] HEAD-probe Content-Type detection disambiguates PDF-vs-HTML for non-`.pdf` URLs
 - [x] All fallback paths degrade gracefully (no crashes) when their dependencies are absent
+
+---
+
+## P3 - paths.deep full loop (planner -> researcher -> critic -> writer)
+
+### Done
+
+> NOTE: This phase was implemented in a prior session but not logged here. The work was found during a subsequent code review session; full implementation already present in `paths/deep.py` and the four `nodes/` modules.
+
+- [x] `paths/deep.py` — full iteration loop: plan -> parallel researcher fan-out (asyncio.gather + per-researcher semaphore) -> critic -> gap-append loop -> writer synthesis
+- [x] `nodes/planner.py` — single JSON-mode LLM call -> ResearchPlan, validates `tool_hint` vocabulary client-side, fallback to single sub-question on failure
+- [x] `nodes/researcher.py` — wraps `run_with_tools` from `llm/tool_loop.py`; `_hint_blurb` nudges the LLM toward `arxiv_search`/`reddit`/`browser_navigate` based on the planner's `tool_hint`; final assistant message parsed as `{"answer": "...", "citations": [...]}` JSON
+- [x] `nodes/critic.py` — single JSON-mode LLM call -> Critique(sufficient, gaps[]); `_render_sections_for_prompt` dumps drafts + citations per sub-question; on LLM failure declares sufficient iff any drafts are present (conservative)
+- [x] `nodes/writer.py` — `_render_sections_for_prompt` + `_render_citations_for_prompt` -> single chat-completions call -> Markdown; strips accidental code fences; `_concatenate_drafts` deterministic fallback on LLM failure
+- [x] Citation projection: assembled `state.citations.values()` sorted by `confidence_score` desc into the returned Report
+
+### P3 acceptance criteria status
+
+- [x] Deep path produces multi-section Markdown synthesizing drafts across sub-questions
+- [x] Critic iterates when gaps reported; appends new SubQuestions (dedup by question text)
+- [x] Respects `agent.max_iterations`, `agent.max_subquestions`, `agent.max_concurrent_tools` semaphores
+- [x] Degrades cleanly when LLM raises: planner/critic/writer all fall back to deterministic output; per-researcher failures recorded as `(researcher failed: ...)` draft sections without aborting the gather
+
+> NOTE: dedicated unit tests for each node (mocked AsyncOpenAI + ToolRegistry) are still TODO. The deep path's behavior is currently exercised only indirectly via the existing `tests/test_agent.py` routing tests. P9 (CLI polish) is a good home for closing this coverage gap.
+
+---
+
+## P5 - tools/arxiv full pipeline + wired into deep path
+
+### Done
+
+> NOTE: implemented in a prior session; logged here retroactively. The arxiv wiring is reachable from both the deep path (researcher can request `arxiv_search`/`arxiv_resolve`/`arxiv_download_pdf`) and the academic path (P7 uses it for seeds + per-paper fetch).
+
+- [x] `tools/arxiv.py` real implementations:
+  - `_sync_search` uses the `arxiv` PyPI library; `_sync_resolve` via `arxiv.Search(id_list=...)`; both wrapped with `asyncio.to_thread` + a global `asyncio.Semaphore(concurrency)` + per-Customer `request_delay_s` spacing delay
+  - `_result_to_citation` normalizes to a `Citation` (`source_type="arxiv"`, `discovered_by=ToolName.arxiv`, `confidence_score=0.9`, version-stripped arxiv_id)
+  - `_strip_version` regex strips `v\d+$` so 2401.12345v3 and 2401.12345 share a disk cache slot
+  - `arxiv_download_pdf` downloads via httpx to `cfg.pdf_cache_dir`; content-Type sanity check; cache hit short-circuits the network call
+  - `_safe_download_path` regex-defangs anything outside `[A-Za-z0-9._-]` to prevent cache_dir escape via hostile arxiv ids
+- [x] Wired via `tools/registry.py`: arxiv_search + arxiv_resolve + arxiv_download_pdf registered when `config.arxiv.enabled`
+- [x] Researcher's `_hint_blurb` (in nodes/researcher.py) nudges the LLM toward `arxiv_search` first when the planner's `tool_hint == "arxiv"`
+- [x] `tests/test_tools_arxiv.py` (16 tests): search (returns citations / empty results message / max_results cap), resolve (returns / not-found / empty id error), download (downloads to cache / cache hit w/ version strip / HTTP error / disabled in config / empty id), helpers (`_strip_version`, `_safe_download_path` sanitization incl `../etc/passwd` defense, `_result_to_citation`), and a non-deadlock rate-limit smoke test (5 concurrent searches under concurrency=1)
+
+### Verification
+
+```bash
+$ uv run pytest tests/test_tools_arxiv.py -q     # 16 passed
+$ uv run ruff check tests/test_tools_arxiv.py    # clean
+```
+
+### P5 acceptance criteria status
+
+- [x] arxiv_search / arxiv_resolve / arxiv_download_pdf all real-backed, returning normalized `Citation` objects
+- [x] 3s arxiv rate limit enforced via concurrency sem + per-customer spacing delay
+- [x] PDF downloads cached to `arxiv.pdf_cache_dir` keyed by version-stripped id
+- [x] Cache-filename injection mitigated (hostile ids sanitized)
+- [x] Wired into deep path: researcher can request arxiv tools via the tool-calling loop
+
+---
+
+## P6 - tools/pdf (pypdf + pdfplumber + pdf2image + vision)
+
+### Done
+
+> NOTE: implemented in a prior session; logged here retroactively.
+
+- [x] `tools/pdf.py`:
+  - `pdf_extract_text`: pypdf fast path (>=100 chars threshold) falls back to pdfplumber on sparse text; whichever returns more text wins; never crashes on missing files (returns an `(pdf_extract_text: file not found: ...)` marker surfaced as ToolResult.error)
+  - `pdf_render_pages`: `pdf2image.convert_from_path` (subprocess to poppler `pdftoppm`), then `llm.vision.resize_for_vlm` (PIL downscale to `max_dim` via LANCZOS + JPEG quality 80) → `jpeg_bytes_to_data_url` → JSON payload `{"pages": [data_urls], "count": N}` ready for OpenAI `image_url` content blocks
+  - `_is_poppler_missing` heuristic catches `PDFInfoNotInstalledError` / `PDFPopplerNotInstalledError` and the message-pattern variants ("poppler" + "not installed/not found"); on poppler missing returns a clean install-instructions error pointing to the README (`brew install poppler` / `apt-get install poppler-utils`)
+  - `pdf_render_pages` only registered when `pdf_vision.enabled`
+- [x] `tests/test_tools_pdf.py` (15 tests): real pypdf extraction against a reportlab-generated fixture (skipped if reportlab absent), missing/empty path errors, sparse-PDF -> pdfplumber fallback path, render-disabled (vision.config.enabled=False unregisters pdf_render_pages), poppler-missing -> install-hint message (via monkeypatch), JSON data-URL assembly via stubbed `_sync_render` + real PIL images, empty-pages payload, `_is_poppler_missing` heuristic (5 cases incl. unrelated exceptions), `_sync_extract` missing file message string, `resize_for_vlm` (downscale long side, no upscale), `jpeg_bytes_to_data_url` base64 roundtrip
+
+### Verification
+
+```bash
+$ uv run pytest tests/test_tools_pdf.py -q     # 15 passed (some skip when reportlab absent)
+```
+
+### P6 acceptance criteria status
+
+- [x] PDF text extraction works without poppler (pypdf + pdfplumber are pypi deps)
+- [x] Vision rendering requires poppler; surfaces a clean install-hint error when absent
+- [x] Pages downscaled to `max_dim` JPEG and emitted as base64 data URLs
+- [x] `pdf_render_pages` gated off when `pdf_vision.enabled=False` (so non-VLM installs skip it)
+
+---
+
+## P7 - paths.academic recursive mining + analyze_paper node
+
+### Done
+
+> NOTE: implemented in a prior session; logged here retroactively. Ded-up logic uses version-stripped arxiv_ids.
+
+- [x] `nodes/analyze_paper.py`:
+  - `analyze(arxiv_id, paper_text, query, client, model, page_image_data_urls=None)` — single chat-completions call with optional `image_url` content blocks for VLM figure comprehension
+  - `_build_messages` truncates `paper_text` to 40_000 chars before substitution (context-blowup guard)
+  - `_coerce` filters `key_references` lacking an arxiv_id; extracts arxiv_id from adjacent title text via regex `\b\d{4}\.\d{4,5}(?:v\d+)?\b` (NOTE: doesn't match old-style `cs.LG/0702001` — the regex's alternate was designed for a different `lowercase/UPPER.digits` shape)
+  - Degrades to `[unparseable] {arxiv_id}` on JSON parse failure, `[error] {arxiv_id}` on LLM exception
+  - `extract_key_reference_arxiv_ids(analysis, threshold)` returns the non-empty arxiv_ids from `analysis.key_references` (threshold parameter is currently a no-op for API symmetry, since `is_key_reference` is the binary gate)
+- [x] `paths/academic.py`:
+  - SEED: `_gather_seeds` calls arxiv_search (max_results=seed_count), converts each result to a depth-0 PaperNode; prefers `classified.search_hint` over `original_query` when present; drops search hits lacking an arxiv_id
+  - LOOP: BFS-style queue with batched dispatch (`batch_size = min(concurrency, queue, max_papers-processed)`); per-paper work under `academic.concurrency` semaphore
+  - PER PAPER: download + pdf_extract_text (+ optional pdf_render_pages when pdf_vision.enabled); `_fetch_paper_text` falls back to arxiv_resolve metadata when download fails; `analyze_paper_node` produces a PaperAnalysis; if depth<max_depth, extracts up to `max_key_references_to_recurse` child arxiv_ids, dedup-collapses against processed + already-in-graph
+  - DEDUP: `_strip_version` applied to every queued arxiv_id; `processed: set[str]` of version-stripped ids; `'2401.10v2'` and `'2401.10'` are recognized as the same paper (only one is analyzed)
+  - CAPS: `max_papers` hard-cap on `len(processed)` checked both at enqueue-time and after each gather; `max_depth==0` means no recursion; `max_key_references_to_recurse=5` per paper (default)
+  - SYNTHESIZE: `_synthesize_markdown` builds a digest (title + summary + key_findings + methodology + limitations per paper) and makes a single chat-completions call; `_fallback_synthesis` deterministic concatenation on LLM failure / empty content / unreachable endpoint
+  - GRAPH: `CitationGraph.nodes` keyed by arxiv_id; `CitationGraph.edges` parent_id → [child_id] appended via `add_edge`; both seeds and recursion children appear
+  - CITATIONS: assembled from graph nodes + seed citations, deduped by `url` keeping highest `confidence_score`; sorted by confidence desc
+- [x] `tests/test_nodes_analyze_paper.py` (16 tests): analyze() (valid JSON / invalid JSON / LLM exception / vision blocks attached / no-vision plain string content / paper-text truncation at 40k chars), `_coerce` (drops refs w/o arxiv_id / extracts arxiv_id from title text / authors list coercion / booleans + list-of-str coercion / unknown-title fallback / old-style-slash-id-not-matched documentation test / rationale-id short-circuit documentation test), `extract_key_reference_arxiv_ids` (ordered ids dropping empties / empty list / threshold acceptance)
+- [x] `tests/test_paths_academic.py` (34 tests): `_gather_seeds` (empty hint / hint-preferred / original-query-fallback / no-hint / missing-arxiv_search-tool / arxiv-search-error / drops-non-arxiv citations), `_fetch_paper_text` (download+extract happy path / download-fail -> resolve fallback / download-fail-no-resolve empty / no pdf tools only resolve / no pdf tools no resolve empty / non-path content passthrough), `_render_paper_pages` (missing tools / download error / non-path / render error / non-JSON / pages-list data-urls / filters non-data URLs), `_synthesize_markdown` (empty analyses boilerplate / happy path / LLM failure fallback / empty LLM response -> fallback), `_fallback_synthesis` (per-paper sections rendered), academic_research E2E (no-seeds / flat max_depth=0 / recursion max_depth=1 grandchild NOT analyzed / max_papers hard-cap enforced / pdf_vision.disabled skips render / search_hint-preferred / version-stripped dedup / citations deduped by url)
+- [x] Fixed pre-existing lint debt in `paths/academic.py`: unused `AcademicState` import, import sorting, ambiguous var `l`
+
+### Verification
+
+```bash
+$ uv run pytest tests/test_nodes_analyze_paper.py tests/test_paths_academic.py -q   # 50 passed
+$ uv run pytest tests/ -q                                                          # 196 passed, 2 skipped
+$ uv run ruff check deep_research/ tests/                                          # All checks passed
+$ uv run mypy deep_research/ tests/                                                # Success: no issues in 54 files
+```
+
+### P7 acceptance criteria status
+
+- [x] Recursive citation mining bounded by `max_depth` and `max_papers`
+- [x] Dedup via `arxiv_id` (version-stripped) so cross-versioned refs are not analyzed twice
+- [x] Citation graph populated (nodes + edges) ready for `bibtex` / `json` rendering
+- [x] analyze_paper supports VLM pages via `image_url` content blocks (pdf_render_pages tool provides them when pdf_vision.enabled=True)
+- [x] Synthesis degrades to deterministic concatenation when LLM unreachable
+
+### P7 notes for next session
+
+- E2E live behavior with the real arxiv + real LLM is still uncovered. Acceptance criterion "Academic recursive: capped at `max_papers=3` completes in <5 min when seeded from 1 paper" requires a live run.
+- The `_coerce` regex does NOT match old-style arxiv ids like `cs.LG/0702001` (despite appearances). This is documented in `test_old_style_slash_arxiv_id_not_matched_by_regex`; if any real arxiv paper cites via the old format we'll silently drop that ref. Worth tightening in a polish pass.
+- Deep-path unit tests (`tests/test_paths_deep.py`) and per-node unit tests (`tests/test_nodes_*.py` for planner/researcher/critic/writer) are still TODO; P3 instructions noted this gap can be closed in P9.

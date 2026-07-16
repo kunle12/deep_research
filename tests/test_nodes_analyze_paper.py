@@ -18,14 +18,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from deep_research.nodes import analyze_paper
 from deep_research.nodes.analyze_paper import (
     _coerce,
     analyze,
     extract_key_reference_arxiv_ids,
 )
 from deep_research.state import PaperAnalysis
-
 
 # ---------------------------------------------------------------------------
 # AsyncOpenAI doubles (mirrors test_paths_url_source_analyze.py style)
@@ -255,7 +253,7 @@ class TestCoerce:
         data = {
             "title": "T",
             "summary": "S",
-            "key_findings": "should be coerced to empty-list (not a list)",  # noqa
+            "key_findings": "should be coerced to empty-list (not a list)",
             "limitations": "also not a list",
             "is_key_reference": "true",  # string -> True
             "methodology": None,  # None -> empty string (strict-safe)
