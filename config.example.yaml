@@ -1,0 +1,102 @@
+# Deep Research Agent — Example configuration
+# Copy to config.yaml and edit. All fields are optional; defaults are sensible.
+
+llm:
+  base_url: "http://localhost:8000/v1"   # OpenAI-compatible endpoint
+  api_key: "llama.cpp"                    # placeholder; real key via env if needed
+  text_model: "qwen3.5-122b"              # your Qwen3.5-122B-A10B text/chat alias
+  vision_model: "qwen3.5-122b"            # same model serves vision; route via content blocks
+  max_context_tokens: 131072
+  timeout_s: 240
+
+agent:
+  max_iterations: 3               # critic-loop depth cap
+  max_subquestions: 6            # planner breadth cap
+  max_concurrent_tools: 8        # asyncio.Semaphore bound on parallel tool dispatch
+  classifier:
+    enabled: true
+    force_path: null             # null | "quick" | "deep" | "academic" | "url_source"
+    min_query_length_for_deep: 30
+
+search:
+  primary: "tavily"
+  fallback_chain: ["searxng"]
+  tavily:
+    api_key_env: "TAVILY_API_KEY"
+    search_depth: "basic"        # "basic" = 1 credit; "advanced" = 2 credits
+    max_results: 10
+  searxng:
+    url: "http://localhost:8080/search"
+    fetch_format: "json"
+    max_results: 10
+
+browser:
+  enabled: true
+  mcp_command: "npx"
+  mcp_args: ["-y", "@playwright/mcp@latest"]
+  transport: "stdio"
+  mcp_url: null                   # only when transport == "http"
+
+arxiv:
+  enabled: true
+  max_results_per_query: 15
+  download_pdfs: true
+  pdf_cache_dir: "./.cache/arxiv_pdfs"
+  concurrency: 2                  # global semaphore around arxiv (3s rate limit)
+  request_delay_s: 3.0
+
+reddit:
+  enabled: false                  # STUB — flip when asyncpraw + creds ready
+  client_id_env: "REDDIT_CLIENT_ID"
+  client_secret_env: "REDDIT_CLIENT_SECRET"
+  user_agent: "deep_research_bot/0.1"
+  max_results_per_query: 25
+
+pdf_vision:
+  enabled: true
+  renderer: "pdf2image"
+  poppler_path: null              # null = system PATH
+  render_dpi: 150
+  max_dim: 1024                   # longest side in px after downscale
+  jpeg_quality: 80
+  batch_size: 4                   # pages per VLM call
+  text_extract_first: true        # also extract text alongside vision
+
+fetch_page:
+  enabled: true
+  cache_dir: "./.cache/pages"
+  cache_ttl_hours: 168
+  user_agent: "DeepResearchBot/0.1 (+https://example.com)"
+  request_timeout_s: 30
+  min_content_chars_for_browser_fallback: 500
+
+cache:
+  diskcache_dir: "./.cache/misc"
+
+output:
+  format: "markdown"
+  include_citations_bibliography: true
+  citation_style: "inline_bare_url"   # also: "footnote"
+
+academic:
+  enabled: true
+  mode: "recursive"               # "flat" (no recursion) | "recursive"
+  max_depth: 2
+  max_papers: 15
+  concurrency: 3                  # parallel paper processing
+  key_reference_threshold: 0.7
+  always_extract_text: true
+  seed_count: 5
+  output_citation_graph: true
+  citation_graph_formats: ["bibtex", "json"]
+  max_key_references_to_recurse: 5  # per-paper cap
+
+url_source:
+  enabled: true
+  allowed_url_types: ["arxiv", "pdf", "html"]
+  fetch_pdf_size_limit_mb: 50
+  fetch_html_size_limit_mb: 10
+  head_probe_timeout_s: 8
+  follow_up_trigger_phrases: []   # extend built-in heuristic
+  auto_follow_up: false          # recommended: only on explicit request
+  min_content_chars_for_browser_fallback: 500

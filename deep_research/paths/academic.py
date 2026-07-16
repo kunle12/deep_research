@@ -1,0 +1,412 @@
+"""academic path - bounded recursive citation graph traversal.
+
+P7: implemented. The recursive-mining loop:
+
+  1. SEED: `arxiv_search(query)` returns top-K candidate papers.
+     Each becomes a depth-0 `PaperNode` and is enqueued.
+  2. LOOP while queue and len(processed) < max_papers:
+       - Pick a node (BFS or FIFO order), dedup via arxiv_id.
+       - resolve + download_pdf + extract text (+ optionally render pages
+         for VLM analysis).
+       - `analyze_paper` LLM call → `PaperAnalysis`.
+       - Add to `CitationGraph`; record analysis keyed by arxiv_id.
+       - If `len(processed) < max_depth`: walk key_references, cap to
+         `max_key_references_to_recurse` per paper, enqueue children at
+         depth+1 with parent_arxiv_id pointing at us.
+  3. SYNTHESIZE: writer-style LLM call over all analyses produces the
+     final markdown report body. The bibliography + citation-graph
+     sections are appended by the report renderer (markdown.py).
+
+The crawler obeys:
+  - `arxiv.concurrency` semaphore around arxiv_search/resolve (3s rate limit)
+  - `academic.concurrency` semaphore around per-paper analysis work
+  - `academic.max_papers` hard cap on total papers processed
+  - `academic.max_depth` hard cap on recursion depth (depth-0 = seed, depth-1
+    = direct references, depth-2 = references of references)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+from openai import AsyncOpenAI
+
+from deep_research.config import AgentTopConfig
+from deep_research.llm.tool_loop import ToolRegistry
+from deep_research.nodes.analyze_paper import (
+    analyze as analyze_paper_node,
+)
+from deep_research.nodes.analyze_paper import (
+    extract_key_reference_arxiv_ids,
+)
+from deep_research.state import (
+    Citation,
+    CitationGraph,
+    ClassifiedQuery,
+    PaperNode,
+    Report,
+)
+from deep_research.tools.arxiv import _strip_version
+
+logger = logging.getLogger(__name__)
+
+
+async def academic_research(
+    classified: ClassifiedQuery,
+    original_query: str,
+    client: AsyncOpenAI,
+    tools: ToolRegistry,
+    config: AgentTopConfig,
+) -> Report:
+    """Execute the academic recursive-mining path.
+
+    Returns a Report populated with:
+      - markdown body: synthesis over all analyses (LLM-written)
+      - citation_graph: nodes + edges built during recursion
+      - citations: deduped Citation objects corresponding to graph nodes,
+        sorted by descending confidence. The report renderer will append
+        both the markdown bibliography AND the citation-graph structure.
+    """
+    cfg = config.academic
+    graph = CitationGraph()
+    analyses: dict[str, Any] = {}  # arxiv_id -> PaperAnalysis
+    processed: set[str] = set()  # version-stripped ids we've already analyzed
+    seeds_citations: list[Citation] = []
+
+    # ---- SEED: arxiv_search ------------------------------------------------
+    seeds = await _gather_seeds(classified, original_query, tools, config, seeds_citations)
+
+    # Enqueue seed nodes at depth 0 (parent_arxiv_id=None, rationale="")
+    queue_white: list[tuple[PaperNode, int, str | None]] = [
+        (node, 0, None) for node in seeds
+    ]
+    # Use a deque via list for FIFO; pop(0) is O(n) but n<=15 so fine.
+
+    # ---- per-paper concurrency ---------------------------------------------
+    sem = asyncio.Semaphore(cfg.concurrency)
+
+    async def _analyze_and_recurse(node: PaperNode, depth: int, parent: str | None) -> None:
+        async with sem:
+            nonlocal queue_white, processed
+            base = _strip_version(node.arxiv_id)
+            if base in processed:
+                logger.debug("arxiv_id %s already processed; skipping", base)
+                return
+            if len(processed) >= cfg.max_papers:
+                logger.info("max_papers=%d reached; skipping enqueued %s", cfg.max_papers, base)
+                return
+
+            # node already added to graph by _gather_seeds OR by the enqueuer
+            # (so children edges can be recorded even if we later skip analysis)
+            graph.add_node(node)
+
+            # fetch + analyze
+            paper_text = await _fetch_paper_text(node.arxiv_id, tools)
+            page_urls: list[str] = []
+            if config.pdf_vision.enabled and "pdf_render_pages" in tools.names():
+                page_urls = await _render_paper_pages(node.arxiv_id, tools, max_pages=10)
+
+            analysis = await analyze_paper_node(
+                arxiv_id=node.arxiv_id,
+                paper_text=paper_text,
+                query=original_query,
+                client=client,
+                model=config.llm.text_model,
+                page_image_data_urls=page_urls or None,
+            )
+            processed.add(base)
+            graph.analyses[base] = analysis
+            analyses[base] = analysis
+            logger.info(
+                "analyzed arxiv=%s depth=%d title=%r refs=%d",
+                base, depth, (analysis.title or "")[:60], len(analysis.key_references),
+            )
+
+            # Optionally enqueue children
+            if depth < cfg.max_depth and len(processed) < cfg.max_papers:
+                child_ids = extract_key_reference_arxiv_ids(
+                    analysis, threshold=cfg.key_reference_threshold
+                )[: cfg.max_key_references_to_recurse]
+                for child_id in child_ids:
+                    child_base = _strip_version(child_id)
+                    if child_base in processed or child_base in {n.arxiv_id for n in graph.nodes.values()}:
+                        continue
+                    child_node = PaperNode(
+                        arxiv_id=child_id,
+                        title="",  # unknown until resolved — analyze_paper will populate
+                        depth=depth + 1,
+                        parent_arxiv_id=base,
+                        rationale=f"referenced by {base}",
+                    )
+                    graph.add_node(child_node)
+                    graph.add_edge(base, child_id)
+                    queue_white.append((child_node, depth + 1, base))
+
+    # ---- LOOP --------------------------------------------------------------
+    iterations = 0
+    while queue_white and len(processed) < cfg.max_papers:
+        batch_size = min(cfg.concurrency, len(queue_white), cfg.max_papers - len(processed))
+        batch: list[tuple[PaperNode, int, str | None]] = []
+        for _ in range(batch_size):
+            if queue_white:
+                batch.append(queue_white.pop(0))
+        if not batch:
+            break
+        await asyncio.gather(
+            *[_analyze_and_recurse(node, depth, parent) for (node, depth, parent) in batch],
+            return_exceptions=True,
+        )
+        iterations += 1
+        # Don't grow past max_papers even if children were enqueued during the batch
+        if len(processed) >= cfg.max_papers:
+            logger.info("max_papers cap reached after iteration %d", iterations)
+            break
+
+    # ---- SYNTHESIZE --------------------------------------------------------
+    final_md = await _synthesize_markdown(
+        original_query, analyses, client, config.llm.text_model
+    )
+
+    # Collect citations from PaperNodes (use what we resolved; metadata is
+    # sparse for un-resolved child refs but the URL is still valid).
+    citations: list[Citation] = []
+    for aid, node in graph.nodes.items():
+        if aid in analyses:
+            a = analyses[aid]
+            citations.append(
+                Citation(
+                    url=f"https://arxiv.org/abs/{aid}",
+                    title=a.title or node.title,
+                    snippet=(a.summary or "")[:300],
+                    source_type="arxiv",
+                    arxiv_id=aid,
+                    authors=node.authors,
+                    confidence_score=0.8,
+                    discovered_by=None,  # populated as None for graph-sourced
+                )
+            )
+        else:
+            citations.append(
+                Citation(
+                    url=f"https://arxiv.org/abs/{aid}",
+                    title=node.title,
+                    snippet=node.rationale,
+                    source_type="arxiv",
+                    arxiv_id=aid,
+                    authors=node.authors,
+                    confidence_score=0.5,
+                )
+            )
+    # Dedup by url + keep highest confidence (avoid double seeds)
+    seen: dict[str, Citation] = {}
+    for c in citations + seeds_citations:
+        existing = seen.get(c.url)
+        if existing is None or existing.confidence_score < c.confidence_score:
+            seen[c.url] = c
+    citations = sorted(seen.values(), key=lambda c: c.confidence_score, reverse=True)
+
+    return Report(
+        markdown=final_md,
+        citations=citations,
+        path="academic",
+        citation_graph=graph,
+        classifier_rationale=classified.rationale,
+        iterations=len(processed),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Seed gathering: pull top-N arxiv results as initial nodes
+# ---------------------------------------------------------------------------
+
+
+async def _gather_seeds(
+    classified: ClassifiedQuery,
+    original_query: str,
+    tools: ToolRegistry,
+    config: AgentTopConfig,
+    seeds_citations: list[Citation],  # mutated, fills bibliography-style citations
+) -> list[PaperNode]:
+    """Run an arxiv_search and convert the top results into `PaperNode`s."""
+    cfg = config.academic
+    seed_count = cfg.seed_count
+    # Prefer classifier-supplied search_hint; fall back to original_query
+    search_query = classified.search_hint or original_query
+    if not search_query.strip():
+        return []
+
+    nodes: list[PaperNode] = []
+    if "arxiv_search" not in tools.names():
+        logger.warning("arxiv_search tool not registered; no academic seeds")
+        return nodes
+
+    results = await tools.call(
+        "arxiv_search", {"query": search_query, "max_results": seed_count}
+    )
+    if results.error is not None:
+        logger.warning("arxiv_search failed: %s", results.error)
+        return nodes
+
+    for c in results.citations:
+        if not c.arxiv_id:
+            continue
+        node = PaperNode(
+            arxiv_id=c.arxiv_id,
+            title=c.title or c.arxiv_id,
+            authors=list(c.authors),
+            abstract=c.snippet or "",
+            depth=0,
+            rationale="arxiv search hit",
+        )
+        nodes.append(node)
+        seeds_citations.append(c)
+    return nodes
+
+
+# ---------------------------------------------------------------------------
+# Per-paper fetch: resolve metadata + download + extract text
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> str:
+    """Download + extract text. Returns metadata-content string on failure."""
+    if "arxiv_download_pdf" not in tools.names() or "pdf_extract_text" not in tools.names():
+        # Fall back to arxiv_resolve metadata if that's all we have
+        if "arxiv_resolve" in tools.names():
+            resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
+            return resolved.content or ""
+        return ""
+    dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
+    if dl.error is not None:
+        logger.info("arxiv_download_pdf failed for %s: %s; trying metadata", arxiv_id, dl.error)
+        if "arxiv_resolve" in tools.names():
+            resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
+            return resolved.content or ""
+        return ""
+    # Parse dl.content first line as an absolute path
+    content = (dl.content or "").strip()
+    first_line = content.splitlines()[0].strip() if content else ""
+    if not first_line.startswith("/"):
+        logger.warning("arxiv_download_pdf returned unexpected content for %s: %r", arxiv_id, content[:100])
+        return content
+    extracted = await tools.call("pdf_extract_text", {"file_path": first_line})
+    return extracted.content or ""
+
+
+async def _render_paper_pages(arxiv_id: str, tools: ToolRegistry, max_pages: int = 10) -> list[str]:
+    """Download + render. Returns [] on any failure (the analysis falls back
+    to text-only mode)."""
+    if "arxiv_download_pdf" not in tools.names() or "pdf_render_pages" not in tools.names():
+        return []
+    dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
+    if dl.error is not None:
+        return []
+    content = (dl.content or "").strip()
+    first_line = content.splitlines()[0].strip() if content else ""
+    if not first_line.startswith("/"):
+        return []
+    render = await tools.call(
+        "pdf_render_pages", {"file_path": first_line, "max_pages": max_pages}
+    )
+    if render.error is not None or not render.content:
+        return []
+    try:
+        import json
+
+        data = json.loads(render.content)
+        pages = data.get("pages") if isinstance(data, dict) else None
+        if not isinstance(pages, list):
+            return []
+        return [p for p in pages if isinstance(p, str) and p.startswith("data:")]
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Writer-style synthesis across all analyses
+# ---------------------------------------------------------------------------
+
+
+async def _synthesize_markdown(
+    original_query: str,
+    analyses: dict[str, Any],
+    client: AsyncOpenAI,
+    model: str,
+) -> str:
+    """Run a single LLM synthesis call over all paper analyses.
+
+    Falls back to a deterministic markdown rendering when the LLM is unreachable.
+    """
+    if not analyses:
+        return (
+            "# Academic Research Report\n\n"
+            "No arxiv papers were successfully analyzed. Re-check the arxiv tool "
+            "registration and your network/POPPLER setup.\n"
+        )
+
+    # Build a condensed digest of each analysis for the prompt.
+    digest_lines: list[str] = []
+    for i, (aid, a) in enumerate(analyses.items(), start=1):
+        digest_lines.append(
+            f"### Paper {i}: arxiv:{aid} — {a.title}\n"
+            f"Summary: {a.summary}\n"
+            f"Key findings: {'; '.join(a.key_findings) if a.key_findings else 'N/A'}\n"
+            f"Methodology: {a.methodology or 'N/A'}\n"
+            f"Limitations: {'; '.join(a.limitations) if a.limitations else 'N/A'}\n"
+        )
+    digest = "\n\n".join(digest_lines)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an academic synthesis writer. Given a set of analyses of "
+                "discovered academic papers (with recursively-mined citations), write "
+                "a 2-4 section markdown report answering the user's research query. "
+                "Cite each paper inline using the bare-URL form "
+                "([arxiv:ID](https://arxiv.org/abs/ID))."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"# Research query\n{original_query}\n\n# Paper analyses digest\n{digest}",
+        },
+    ]
+    try:
+        resp = await client.chat.completions.create(
+            model=model, messages=messages, temperature=0.0
+        )
+        return (resp.choices[0].message.content or "").strip() or _fallback_synthesis(original_query, analyses)
+    except Exception as e:
+        logger.warning("academic synthesis LLM call failed: %s: %s; using fallback", type(e).__name__, e)
+        return _fallback_synthesis(original_query, analyses)
+
+
+def _fallback_synthesis(original_query: str, analyses: dict[str, Any]) -> str:
+    """Deterministic markdown synthesis when the LLM call is unavailable."""
+    lines: list[str] = [
+        "# Academic Research Report\n",
+        f"**Query:** {original_query}\n",
+        f"**Papers analyzed:** {len(analyses)}\n",
+    ]
+    for aid, a in analyses.items():
+        lines.append(f"\n## {a.title or aid}\n")
+        lines.append(f"_(arxiv:[{aid}](https://arxiv.org/abs/{aid}))_\n")
+        if a.summary:
+            lines.append(a.summary + "\n")
+        if a.key_findings:
+            lines.append("\n**Key findings:**\n")
+            for f in a.key_findings:
+                lines.append(f"- {f}")
+        if a.methodology:
+            lines.append(f"\n**Methodology:** {a.methodology}\n")
+        if a.limitations:
+            lines.append("**Limitations:**\n")
+            for lim in a.limitations:
+                lines.append(f"- {lim}")
+    return "\n".join(lines)
+
+
+__all__ = ["academic_research"]

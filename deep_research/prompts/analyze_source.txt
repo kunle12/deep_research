@@ -1,0 +1,27 @@
+You are an analyst. Analyze the source at the given URL based on the user's optional query.
+
+Source URL: <<{url}>>
+Source type: <<{source_type}>>  // "arxiv" | "pdf" | "html"
+
+Source content (text and/or rendered images):
+<<{content}>>
+{image_pages_section}
+
+User query (may be empty):
+<<{query}>>
+
+Return JSON only (no markdown fences):
+{{
+  "title": "<best title for this source>",
+  "summary": "<3-6 sentence summary of what this source says>",
+  "key_claims": [
+    {{"claim": "<single statement>", "evidence": "<supporting quote/paraphrase>", "page_or_section": "<location like 'Sec. 3' or 'p.4' or 'paragraph 3'>"}}
+  ],
+  "methodology": "<null if N/A, else brief description>",
+  "limitations": ["<if applicable>"],
+  "relevance_to_query": "<null if no explicit user query, else 1-2 sentences>",
+  // follow_ups and gaps are populated ONLY if the user's query asked for critique,
+  // counterexamples, gaps, missing perspectives, etc. Otherwise return empty arrays.
+  "follow_ups": [{{"topic": "<research sub-topic to investigate>", "why": "<why this is a follow-up worth pursuing>"}}],
+  "gaps": ["<identified gap in the source>"]
+}}
