@@ -17,6 +17,7 @@ A standalone, async-first Python agent that performs **web / deep / academic / s
 - [Use](#use)
   - [CLI](#cli-recommended)
   - [As a library](#as-a-library-microservice-ready)
+- [Personal Digital Library (planned, P10.5)](#personal-digital-library-planned-p10-5)
 - [Architecture](#architecture)
 - [Follow-up trigger phrases](#follow-up-trigger-phrases)
 - [Troubleshooting](#troubleshooting)
@@ -175,6 +176,28 @@ asyncio.run(main())
 ```
 
 `run_research()` accepts an optional `path_override` (`"quick"` / `"deep"` / `"academic"` / `"url_source"`) — exactly matching the `--quick` / `--deep` / `--academic` / `--url-source` CLI flags — and an optional `progress: ProgressReporter | None` for streaming status updates. Pass `None` (or `NullReporter()`) for silent runs; pass your own implementation of `ProgressReporter` to integrate progress into a UI or log pipeline.
+
+---
+
+## Personal Digital Library (planned, P10.5)
+
+Phase 10 (currently specced in [`docs/PLAN.md`](docs/PLAN.md), **not yet implemented**) adds three things that accumulate across runs into a personally-owned knowledge base:
+
+- **P10.0 — `blog_search` tool**: Tavily `site:` queries over a curated list of technical-blog domains (OpenAI, Anthropic, DeepMind, Distill, etc.) with a direct-domain HTTP fetch fallback when Tavily is unconfigured.
+- **P10.5 — Personal Digital Library v1**: every arxiv PDF + every blog post + every report produced by `run_research()` is archived to `.deep_research_library/` (path configurable via `pdl.root_dir`), with SQLite metadata DB (`artifacts`, `reports`, `analyses`, `citation_edges`, `tags`), FTS5 full-text search over extracted text + summaries, and content-addressable dedup so identical PDFs fetched via different routes are stored once. `pdl.enabled: true` by default; opt-out via yaml. Markdown reports are archived as PDFs via `weasyprint`.
+- **P10.6 — Glossary generation**: every synthesizing LLM call asks the model to optionally emit a `glossary` array (no extra LLM call). Cross-run rule-based dedup produces a single `.deep_research_library/glossary.md` regenerated atomically each run, organized by domain tag.
+
+### Prerequisites for P10.5 (will land with implementation)
+
+| OS | Command | What |
+|---|---|---|
+| macOS (Homebrew) | `brew install pango cairo` | weasyprint native deps |
+| Debian / Ubuntu | `sudo apt-get install libpango-1.0-0 libpangoft2-1.0-0 libcairo2` | weasyprint native deps |
+| Fedora | `sudo dnf install pango cairo` | weasyprint native deps |
+
+When `pango` / `cairo` are absent at runtime, the library auto-falls back to `xhtml2pdf` (lower visual quality, pure Python) — logged as a `WARNING` on first use. Either PDF-generation path produces a valid report-PDF archived in the library.
+
+See the [full spec in `docs/PLAN.md`](docs/PLAN.md#p10-0--blog-search-tool-tavily-primary--direct-domain-fallback).
 
 ---
 
