@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.traceback import Traceback as RichTraceback
 
 from deep_research.agent import run_research
+from deep_research.cli.progress import RichProgressReporter
 from deep_research.config import AgentTopConfig
 from deep_research.report import (
     render_report_bibtex,
@@ -145,6 +146,12 @@ def main(
         help="Academic mode: cap total papers analyzed (overrides academic.max_papers)",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress the live progress panel (useful for piping output to a file)",
+    ),
 ) -> None:
     """Run a deep research query and print/write the report."""
     _setup_logging(verbose)
@@ -165,19 +172,43 @@ def main(
 
     import asyncio
 
+    rich_reporter = RichProgressReporter(
+        # `enabled=None` lets the reporter auto-disable when stdout is not a
+        # TTY (piped to a file, captured by another process, run under a
+        # test runner, etc.). `--quiet` ALWAYS disables the live panel
+        # regardless of whether stdout is a TTY — so cron / CI users get a
+        # pure log line instead of a flickering panel.
+        enabled=False if quiet else None,
+    )
     try:
+        rich_reporter.start()
         report = asyncio.run(
-            run_research(query, config, path_override=path_override)
+            run_research(
+                query,
+                config,
+                path_override=path_override,
+                progress=rich_reporter,
+            )
         )
+        # Mark the live panel done (green styling, "— done" title) before
+        # we tear down. The agent itself has already sent a final `.phase()`
+        # call so the last row will be the path's own "done" message.
+        rich_reporter.complete()
     except KeyboardInterrupt:
+        rich_reporter.complete()
         err_console.print("[yellow]Interrupted.[/yellow]")
         raise typer.Exit(code=130)
     except Exception as e:
+        rich_reporter.complete()
         if verbose:
             err_console.print(RichTraceback())
         else:
             err_console.print(f"[red]Error:[/red] {type(e).__name__}: {e}")
         raise typer.Exit(code=1)
+    finally:
+        # Belt-and-braces: ensure the Live panel is stopped even on the
+        # happy path (complete() is a no-op if already stopped).
+        rich_reporter.stop()
 
     # Render final output
     if fmt == "markdown":

@@ -41,6 +41,7 @@ from deep_research.nodes.analyze_paper import (
 from deep_research.nodes.analyze_paper import (
     extract_key_reference_arxiv_ids,
 )
+from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import (
     Citation,
     CitationGraph,
@@ -59,6 +60,7 @@ async def academic_research(
     client: AsyncOpenAI,
     tools: ToolRegistry,
     config: AgentTopConfig,
+    progress: ProgressReporter | None = None,
 ) -> Report:
     """Execute the academic recursive-mining path.
 
@@ -70,13 +72,16 @@ async def academic_research(
         both the markdown bibliography AND the citation-graph structure.
     """
     cfg = config.academic
+    reporter: ProgressReporter = progress if progress is not None else NullReporter()
     graph = CitationGraph()
     analyses: dict[str, Any] = {}  # arxiv_id -> PaperAnalysis
     processed: set[str] = set()  # version-stripped ids we've already analyzed
     seeds_citations: list[Citation] = []
 
     # ---- SEED: arxiv_search ------------------------------------------------
+    reporter.phase("academic.seed", f"gathering seeds (n ≤ {cfg.seed_count})")
     seeds = await _gather_seeds(classified, original_query, tools, config, seeds_citations)
+    reporter.step("academic.seed", f"{len(seeds)} seed papers")
 
     # Enqueue seed nodes at depth 0 (parent_arxiv_id=None, rationale="")
     queue_white: list[tuple[PaperNode, int, str | None]] = [
@@ -102,6 +107,9 @@ async def academic_research(
             # (so children edges can be recorded even if we later skip analysis)
             graph.add_node(node)
 
+            reporter.step(
+                "academic.analyze", f"depth={depth} arxiv={base} parent={parent or '-'}"
+            )
             # fetch + analyze
             paper_text = await _fetch_paper_text(node.arxiv_id, tools)
             page_urls: list[str] = []
@@ -123,12 +131,18 @@ async def academic_research(
                 "analyzed arxiv=%s depth=%d title=%r refs=%d",
                 base, depth, (analysis.title or "")[:60], len(analysis.key_references),
             )
+            reporter.step(
+                "academic.analyzed",
+                f"{base} refs={len(analysis.key_references)} depth={depth}",
+            )
 
             # Optionally enqueue children
             if depth < cfg.max_depth and len(processed) < cfg.max_papers:
                 child_ids = extract_key_reference_arxiv_ids(
                     analysis, threshold=cfg.key_reference_threshold
                 )[: cfg.max_key_references_to_recurse]
+                # Enqueue newly-discovered child arxiv_ids (visible in next batch)
+                new_kids: list[str] = []
                 for child_id in child_ids:
                     child_base = _strip_version(child_id)
                     if child_base in processed or child_base in {n.arxiv_id for n in graph.nodes.values()}:
@@ -143,6 +157,9 @@ async def academic_research(
                     graph.add_node(child_node)
                     graph.add_edge(base, child_id)
                     queue_white.append((child_node, depth + 1, base))
+                    new_kids.append(child_base)
+                if new_kids:
+                    reporter.step("academic.enqueue", f"+{len(new_kids)} kids (depth {depth + 1})")
 
     # ---- LOOP --------------------------------------------------------------
     iterations = 0
@@ -154,6 +171,11 @@ async def academic_research(
                 batch.append(queue_white.pop(0))
         if not batch:
             break
+        reporter.phase(
+            "academic.batch",
+            f"batch {iterations + 1}: {len(batch)} paper(s); "
+            f"processed={len(processed)}/{cfg.max_papers}",
+        )
         await asyncio.gather(
             *[_analyze_and_recurse(node, depth, parent) for (node, depth, parent) in batch],
             return_exceptions=True,
@@ -165,8 +187,57 @@ async def academic_research(
             break
 
     # ---- SYNTHESIZE --------------------------------------------------------
+    reporter.phase("academic.synthesize", f"{len(analyses)} analyses")
     final_md = await _synthesize_markdown(
         original_query, analyses, client, config.llm.text_model
+    )
+
+    # Collect citations from PaperNodes (use what we resolved; metadata is
+    # sparse for un-resolved child refs but the URL is still valid).
+    citations: list[Citation] = []
+    for aid, node in graph.nodes.items():
+        if aid in analyses:
+            a = analyses[aid]
+            citations.append(
+                Citation(
+                    url=f"https://arxiv.org/abs/{aid}",
+                    title=a.title or node.title,
+                    snippet=(a.summary or "")[:300],
+                    source_type="arxiv",
+                    arxiv_id=aid,
+                    authors=node.authors,
+                    confidence_score=0.8,
+                    discovered_by=None,  # populated as None for graph-sourced
+                )
+            )
+        else:
+            citations.append(
+                Citation(
+                    url=f"https://arxiv.org/abs/{aid}",
+                    title=node.title,
+                    snippet=node.rationale,
+                    source_type="arxiv",
+                    arxiv_id=aid,
+                    authors=node.authors,
+                    confidence_score=0.5,
+                )
+            )
+    # Dedup by url + keep highest confidence (avoid double seeds)
+    seen: dict[str, Citation] = {}
+    for c in citations + seeds_citations:
+        existing = seen.get(c.url)
+        if existing is None or existing.confidence_score < c.confidence_score:
+            seen[c.url] = c
+    citations = sorted(seen.values(), key=lambda c: c.confidence_score, reverse=True)
+
+    reporter.phase("academic.done", f"{len(analyses)} papers; {len(citations)} citations")
+    return Report(
+        markdown=final_md,
+        citations=citations,
+        path="academic",
+        citation_graph=graph,
+        classifier_rationale=classified.rationale,
+        iterations=len(processed),
     )
 
     # Collect citations from PaperNodes (use what we resolved; metadata is

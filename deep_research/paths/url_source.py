@@ -25,6 +25,7 @@ from openai import AsyncOpenAI
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
+from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import Citation, Report
 from deep_research.tools.url_classifier import (
     UrlType,
@@ -300,13 +301,19 @@ async def url_source(
     client: AsyncOpenAI,
     tools: ToolRegistry,
     config: AgentTopConfig,
+    progress: ProgressReporter | None = None,
 ) -> Report:
     """Execute the url_source path."""
+    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter.phase("url.classify", url[:80])
     url_type = await classify_url(
         url, head_probe_timeout_s=config.url_source.head_probe_timeout_s
     )
     arxiv_id = extract_arxiv_id(url) if url_type == UrlType.arxiv else None
     wants_follow_up = query_asks_for_follow_up(query, config.url_source.follow_up_trigger_phrases)
+    reporter.step(
+        "url.classify", f"type={url_type.value} arxiv_id={arxiv_id or '-'} followup={wants_follow_up}"
+    )
 
     # Fetch content + initial citation(s)
     citations: list[Citation] = []
@@ -316,14 +323,17 @@ async def url_source(
     max_pdf_pages = 25
 
     if url_type == UrlType.arxiv and arxiv_id:
+        reporter.phase("url.fetch", f"arxiv:{arxiv_id}")
         content_text, _title, citations, page_image_data_urls = await _fetch_arxiv_source(
             arxiv_id, tools, render_pages=render_pdf, max_pages=max_pdf_pages
         )
     elif url_type == UrlType.pdf:
+        reporter.phase("url.fetch", f"pdf download: {url[:80]}")
         content_text, citations, page_image_data_urls = await _fetch_pdf_source(
             url, tools, render_pages=render_pdf, max_pages=max_pdf_pages
         )
     elif url_type == UrlType.html:
+        reporter.phase("url.fetch", f"html: {url[:80]}")
         content_text, citations = await _fetch_html_source(url, tools, config)
     else:
         return Report(
@@ -331,9 +341,11 @@ async def url_source(
             path="unclear",
             classifier_rationale=f"URL unclassifiable: {url_type.value}",
         )
+    reporter.step("url.fetch", f"{len(content_text)} chars; {len(page_image_data_urls)} vision pages")
 
     if not content_text or content_text.startswith("HTTP"):
         # If fetch failed, report it but don't try to analyze
+        reporter.phase("url.fetch.failed", content_text[:80])
         md = (
             f"# Source Fetch Failed\n\n"
             f"**URL:** {url}\n\n"
@@ -349,6 +361,7 @@ async def url_source(
 
     # LLM analysis call. If pdf_vision rendered pages, we attach them as
     # image_url content blocks so the VLM can read figures + tables.
+    reporter.phase("url.analyze", f"{url_type.value}; vision_pages={len(page_image_data_urls)}")
     analysis = await analyze_source_node(
         url=url,
         source_type=url_type.value,
@@ -364,6 +377,7 @@ async def url_source(
     # Optional follow-up: spawn deep path with the analysis gaps as planner seeds
     followup_md = ""
     if wants_follow_up and (analysis.gaps or analysis.follow_ups):
+        reporter.phase("url.followup", f"gaps={len(analysis.gaps)}; follow_ups={len(analysis.follow_ups)}")
         followup_md = await _maybe_run_follow_up(
             analysis=analysis,
             original_url=url,
@@ -371,7 +385,10 @@ async def url_source(
             client=client,
             tools=tools,
             config=config,
+            progress=reporter,
         )
+    else:
+        reporter.phase("url.done", "no follow-up")
 
     if followup_md:
         md = md + "\n\n" + followup_md
@@ -391,10 +408,12 @@ async def _maybe_run_follow_up(
     client: AsyncOpenAI,
     tools: ToolRegistry,
     config: AgentTopConfig,
+    progress: ProgressReporter | None = None,
 ) -> str:
     """Run deep-path follow-up research seeded from the analysis's gaps/follow_ups."""
     from deep_research.state import ClassifiedQuery, QueryPlan
 
+    reporter: ProgressReporter = progress if progress is not None else NullReporter()
     sub_qs: list[dict] = []
     # Prefer `gaps`; fall back to follow_ups topics.
     for g in analysis.gaps:
@@ -423,11 +442,14 @@ async def _maybe_run_follow_up(
         rationale=f"Follow-up research spawned by url_source analysis of {original_url}",
         search_hint=user_query or synthetic_query,
     )
-    followup_report = await deep_path(classified, synthetic_query, client, tools, config)
+    followup_report = await deep_path(
+        classified, synthetic_query, client, tools, config, progress=progress
+    )
 
     if not followup_report.markdown:
         return ""
 
+    reporter.phase("url.followup.done", "follow-up research complete")
     return "## Follow-up Research\n\n" + followup_report.markdown
 
 

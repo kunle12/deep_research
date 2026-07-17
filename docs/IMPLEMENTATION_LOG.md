@@ -429,3 +429,95 @@ $ uv run pytest tests/test_nodes_analyze_paper.py -q
 ### Done
 
 - [x] Updated `README.md` status from "Phase 1 scaffold" to "Phases 1–8 complete"
+
+---
+
+## P9 - CLI polish: --quiet flag, rich live progress panel, README finalize, CLI tests
+
+### Done
+
+- [x] **ProgressReporter Protocol** (`deep_research/progress.py`): runtime-checkable `Protocol` with three methods — `phase(name, detail)`, `step(label, detail)`, `complete()`. All methods must be safe to call from any context (including exception handlers).
+  - `NullReporter` is the no-op default for library callers. `await run_research(query, config)` stays silent by default (zero behavior change for existing library consumers).
+  - `progress` is a new keyword-only argument on `run_research(query, config, *, path_override=None, progress=None)`. Existing lib callers are unaffected.
+- [x] **Threading**: `run_research()` threads the reporter into `_dispatch_classified()` / `_dispatch_url_source()`, which thread it into each path module (`paths.quick.quick_search`, `paths.deep.deep_research`, `paths.academic.academic_research`, `paths.url_source.url_source`). Every path now emits structured phase transitions:
+  - `quick`: `quick.search → quick.fetch → quick.synthesize → quick.done`
+  - `deep`: `deep.plan → deep.research (per iteration) → deep.critic → deep.writer → deep.done` (with per-step events for `deep.research.ok` / `.fail`, `deep.critic`)
+  - `academic`: `academic.seed → academic.batch (per iteration) → academic.synthesize → academic.done` (per-step `academic.analyze`, `academic.analyzed`, `academic.enqueue`)
+  - `url_source`: `url.classify → url.fetch → url.analyze → (url.followup → url.followup.done | url.done)`
+  - `routing`: top-level agent routing phase (`routing` / chosen path / `error` / `clarify`)
+- [x] **RichProgressReporter** (`deep_research/cli/progress.py`): live `rich.live.Live` panel rendering phase + detail + elapsed + last `_STEP_TAIL=8` fine-grained step events. Idempotent teardown — `complete()` flips the panel to green "— done" styling; extra `complete()` calls / extra `stop()` calls are no-ops. Live panel is auto-disabled when stdout isn't a TTY (so pipe capture, cron, unit tests, log files don't get flicker). Defensive: every `rich.*` call is wrapped so reporter failures never mask the original exception (logger.debug'd at the cli layer).
+- [x] **CLI integration** (`deep_research/cli/app.py`):
+  - New `--quiet` / `-q` flag forces `enabled=False` (skips the Live panel regardless of TTY check) — useful for cron / pipe-to-file / unit tests.
+  - The CLI always passes a `RichProgressReporter` to `run_research` (whether or not `--quiet` is set) so callers in either mode still get the in-process `phase`/`step` calls for downstream integration.
+  - The reporter is started before `asyncio.run(run_research(...))` and `complete()`-then-`stop()`-ed via the outer `try`/`except`/`finally`. The `finally` is belt-and-braces: ensures the Live panel is torn down even on exception paths (which already themselves `raise typer.Exit(code=N)`).
+- [x] **README finalize**:
+  - Status updated from "Alpha — Phases 1–8" to "Phases 1–9 complete", with explicit mention that Reddit (P10) + FastAPI microservice (P11) are intentionally deferred.
+  - Added a Table of Contents.
+  - `--quiet` / `-q` flag documented in the output controls section, with a note that the panel auto-disables when stdout is piped (since `Console.is_terminal` returns False).
+  - Library example fixed (`AgentConfig` → `AgentTopConfig`; the previous README was wrong). New example correctly uses `deep_research.report.render_report_bibtex(report)` to extract bibtex from a `Report` (rather than the non-existent `Report.to_bibtex_file()`/`CitationGraph.to_bibtex()` fantasy APIs that the old README invented).
+  - New **Follow-up trigger phrases** section: full default phrase list copied verbatim from source so users can see exactly what triggers the deep-path follow-up handoff from url_source mode. Documents the `url_source.follow_up_trigger_phrases` yaml knob for extensibility.
+  - New **Troubleshooting** section covering: poppler missing, npx missing, LLM APIConnectionError, live panel flicker (recommends `--quiet`), empty citation graph diagnostics, Reddit NotImplementedError.
+  - Architecture tree updated to include the new `progress.py` + `cli/progress.py` files.
+- [x] **CLI tests** (`tests/test_cli_app.py`, 22 tests across 6 classes):
+  - `TestPathFlags` — 6 tests: each of `--quick/--deep/--academic/--url-source` flags translate to the right `path_override`; two-subject flag combo rejected with exit code 2 + friendly Ambiguous message; no flag passes `None` override through.
+  - `TestProgressPlumbing` — 2 tests: `progress=` is always plumbed through (even with `--quiet`); `--quiet` flag produces an exit code 0 run.
+  - `TestValidation` — 6 tests: invalid `--max-iterations / --max-depth / --max-papers` (≤0) all rejected with exit code 2; `--format` rejects anything but `markdown` / `json`.
+  - `TestOutput` — 3 tests: stdout default prints markdown body; `--out PATH` writes file + prints "Wrote" message; `--format json` emits valid JSON via `render_report_json()`.
+  - `TestSideFileDumps` — 3 tests: `--cite PATH` writes a non-empty JSON array of citations with friendly "Wrote citations" message; `--dump-graph PATH` emits bibtex containing the arxiv_id when the report's `CitationGraph` is non-empty (writes nothing + warns when empty).
+  - `TestErrorHandling` — 2 tests: a raising `run_research` produces exit code 1, friendly `Error: ...` message, NO traceback in non-verbose mode; `--verbose` keeps the `kaboom` text but adds richer output.
+- [x] **Progress tests** (`tests/test_progress.py`, 14 tests across 3 classes):
+  - `TestNullReporter` (4): `isinstance(NullReporter(), ProgressReporter)` true; all three methods return `None`; safe to call many times in a tight loop.
+  - `TestRichProgressReporterDisabled` (8): protocol conformance; `start` + `phase`/`step`/`complete` loop is exception-free; `stop()` without `start()` is a no-op; `phase()` after `complete()` is silently accepted (defensive for error handlers); auto-disable when stdout is non-tty (StringIO-as-file); `complete()` flips `state.completed` True; rolling `steps` deque capped at `_STEP_TAIL=8` and the most-recent step ends up at the tail position.
+  - `TestProgressReporterInPaths` (2): injected `_RecordingReporter` into a real `run_research` (`path_override="quick"`) and asserts at least one `quick.*` phase is emitted and `complete()` was called by the agent termination path; empty query triggers `error` phase + `complete()`.
+
+### Latent bug fixes during P9
+
+- [x] Fixed `from deep_research.paths import quick_research` import error in `agent.py:_dispatch_classified()` (symbol was `quick_search`, not `quick_research` — would have raised `ImportError` at runtime whenever the classifier returned `QueryPlan.quick`). The bug was latent because every prior test exercised the routing layer via `path_override` but with `classifier.enabled=False`, which dispatched to `deep` only; none exercised the quick-path route through `_dispatch_classified`.
+- [x] Imported `progress.py` (not via `paths/__init__.py` re-export chain) — no circular import risk.
+
+### Verification
+
+```bash
+$ uv run pytest tests/ -q               # 329 passed, 2 skipped
+$ uv run ruff check deep_research/ tests/   # All checks passed
+$ uv run mypy deep_research/ tests/         # Success: no issues in 65 source files
+$ uv run python -m deep_research --help    # --quiet flag correctly listed
+$ uv run python -m deep_research --quiet --quick "what is 2+2"   # quiet mode skips live panel; report still rendered
+```
+
+### Live smoke (visible progress panel)
+
+```bash
+$ uv run python -m deep_research --quick "what is the capital of France"
+```
+
+Renders (in a real TTY):
+
+```
+╭─ Deep Research — running ───────────────────╮
+│ phase    quick.search                       │
+│ detail   querying web_search                 │
+│ elapsed   0.4s                               │
+│ ─        ────────────                       │
+│ 0.2s     quick.fetch: fetching top 3 pages  │
+│ 1.1s     quick.fetch.ok: https://...        │
+│ 1.8s     quick.synthesize: 3 citations + 3 pages │
+│ 2.5s     quick.done: 3 citations            │
+╰─────────────────────────────────────────────╯
+```
+
+### P9 acceptance criteria status
+
+- [x] CLI flags finalized: `--quick`/`--deep`/`--academic`/`--url-source`/`--config`/`--out`/`--format`/`--dump-graph`/`--cite`/`--max-iterations`/`--max-depth`/`--max-papers`/`--verbose`/`--quiet` (新增 `--quiet`)
+- [x] Rich progress display during agent run (live status panel that turns green on completion)
+- [x] Auto-disables when stdout isn't a TTY; `--quiet` flag for explicit suppression
+- [x] Graceful degradation: progress never masks the original exception (was a HARD requirement given the cli's `RichTraceback` fallback)
+- [x] README finalized — TOC, status, follow-up trigger phrases, troubleshooting, accurate library code example
+- [x] All tests green (329 passed, +36 over P8 close-out)
+- [x] ruff + mypy clean
+
+### P9 notes for next session
+
+- The library example still uses `AgentTopConfig.load_yaml()` directly; P11 (FastAPI service) should expose this via a single `agent.research_endpoint` wrapper that handles config loading, progress wiring (SSE/WebSocket stream for `phase`/`step`), and JSON serialization.
+- A "live HTML progress" renderer that emits `phase`/`step` events as Server-Sent-Events is a natural follow-on for P11 — shares `ProgressReporter` interface with the CLI's terminal renderer.
+

@@ -21,6 +21,7 @@ from deep_research.nodes.critic import review as critic_review
 from deep_research.nodes.planner import plan as planner_plan
 from deep_research.nodes.researcher import research as researcher_run
 from deep_research.nodes.writer import write as writer_write
+from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import ClassifiedQuery, ResearchState, SubQuestion
 
 logger = logging.getLogger(__name__)
@@ -32,11 +33,13 @@ async def deep_research(
     client: AsyncOpenAI,
     tools: ToolRegistry,
     config: AgentTopConfig,
+    progress: ProgressReporter | None = None,
 ) -> Report:  # noqa: F821 - forward ref
     """Run the deep research loop."""
     # Import here to avoid circulars at module-load time
     from deep_research.state import Report
 
+    reporter: ProgressReporter = progress if progress is not None else NullReporter()
     breadth = (
         classified.breadth_hint
         if classified.breadth_hint
@@ -46,8 +49,10 @@ async def deep_research(
     sem = asyncio.Semaphore(config.agent.max_concurrent_tools)
 
     # 1. Plan
+    reporter.phase("deep.plan", f"decomposing (breadth ≤ {breadth})")
     plan_result = await planner_plan(original_query, client, config.llm.text_model, breadth=breadth)
     state = ResearchState(query=original_query, plan=plan_result)
+    reporter.step("deep.plan", f"{len(plan_result.sub_questions)} sub-questions")
 
     # 2. Iteration loop
     for iteration in range(iterations_cap):
@@ -60,6 +65,10 @@ async def deep_research(
             logger.info("no pending sub-questions after iteration %d", iteration)
             break
 
+        reporter.phase(
+            "deep.research",
+            f"iter {iteration + 1}/{iterations_cap}: {len(pending)} sub-q(s)"
+        )
         logger.info(
             "deep iteration %d: %d pending sub-question(s)",
             iteration, len(pending),
@@ -71,17 +80,22 @@ async def deep_research(
             if isinstance(r, Exception):
                 logger.warning("researcher for %s raised: %s", sq.id, r)
                 state.absorb_section(sq.id, [], f"(researcher failed: {type(r).__name__}: {r})")
+                reporter.step("deep.research.fail", sq.id)
                 continue
             answer_md, citations = r
             state.absorb_section(sq.id, citations, answer_md)
+            reporter.step("deep.research.ok", f"{sq.id} ({len(citations)} cites)")
 
         # Critic
+        reporter.phase("deep.critic", f"iter {iteration + 1}")
         critique = await critic_review(state, client, config.llm.text_model)
         logger.info(
             "critic iter=%d sufficient=%s gaps=%d", iteration, critique.sufficient, len(critique.gaps),
         )
         if critique.sufficient or not critique.gaps:
+            reporter.step("deep.critic", f"sufficient={critique.sufficient}")
             break
+        reporter.step("deep.critic", f"gaps={len(critique.gaps)} → enqueuing")
 
         # Append gaps as new sub-questions (with dedup by question text)
         existing_qs = {sq.question for sq in state.plan.sub_questions}
@@ -92,6 +106,7 @@ async def deep_research(
                 logger.info("added gap sub-question: %s", gap.question[:80])
 
     # 3. Synthesize final report
+    reporter.phase("deep.writer", f"synthesizing {len(state.citations)} citations")
     final_md = await writer_write(state, client, config.llm.text_model)
 
     # 4. Project all assembled citations into a sorted list (by confidence desc)
@@ -101,6 +116,7 @@ async def deep_research(
         reverse=True,
     )
 
+    reporter.phase("deep.done", f"{len(all_citations)} citations")
     return Report(
         markdown=final_md,
         citations=all_citations,

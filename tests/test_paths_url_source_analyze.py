@@ -641,7 +641,7 @@ class TestUrlSourceDispatcher:
         monkeypatch.setattr(_us_module, "analyze_source_node", _fake_analyze)
 
         # Stub the deep path handoff so we don't run the real deep loop
-        async def _fake_followup(classified, original_query, client, tools, config):
+        async def _fake_followup(classified, original_query, client, tools, config, **kwargs):
             from deep_research.state import Report
             return Report(markdown="## Follow-up Research\n\ndeep result body", path="deep")
 

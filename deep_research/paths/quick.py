@@ -20,6 +20,7 @@ from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
+from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import Citation, ClassifiedQuery, Report
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,11 @@ async def quick_search(
     client: AsyncOpenAI,
     tools: ToolRegistry,
     config: AgentTopConfig,
+    progress: ProgressReporter | None = None,
 ) -> Report:
     """Execute the quick path: 1 search + summarize via LLM synthesis."""
+    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter.phase("quick.search", "querying web_search")
     if "web_search" in tools.names():
         search_result = await tools.call(
             "web_search", {"query": classified.search_hint, "max_results": 5}
@@ -49,17 +53,21 @@ async def quick_search(
     top_urls = [c.url for c in citations[:MAX_PAGES_TO_FETCH] if c.url]
     pages_text: list[str] = []
     if top_urls and "fetch_page" in tools.names():
+        reporter.phase("quick.fetch", f"fetching top {len(top_urls)} pages")
         fetches = [tools.call("fetch_page", {"url": u}) for u in top_urls]
         fetched = await asyncio.gather(*fetches, return_exceptions=True)
         for u, fr in zip(top_urls, fetched):
             if isinstance(fr, Exception):
                 logger.warning("fetch_page failed for %s: %s", u, fr)
+                reporter.step("fetch.fail", f"{u}: {type(fr).__name__}")
                 continue
+            reporter.step("fetch.ok", u[:80])
             pages_text.append(f"=== Source: {u} ===\n{fr.content[:4000]}\n")
             for c in fr.citations:
                 if c.url != u and c.url not in {x.url for x in citations}:
                     citations.append(c)
 
+    reporter.phase("quick.synthesize", f"{len(citations)} citations + {len(pages_text)} pages")
     rendered_results = _render_for_llm(original_query, search_result, pages_text)
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
     prompt_text = (
@@ -71,6 +79,7 @@ async def quick_search(
     answer_text, llm_citations = await _synthesize(client, config, prompt_text)
     citations = _merge_citations(citations, llm_citations)
 
+    reporter.phase("quick.done", f"{len(citations)} citations")
     return Report(
         markdown=answer_text,
         citations=citations,

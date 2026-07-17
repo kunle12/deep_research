@@ -4,7 +4,23 @@ A standalone, async-first Python agent that performs **web / deep / academic / s
 
 ## Status
 
-**Alpha** — Phases 1–8 complete. See [`docs/PLAN.md`](docs/PLAN.md) for the full design and [`docs/IMPLEMENTATION_LOG.md`](docs/IMPLEMENTATION_LOG.md) for current progress.
+**Phases 1–9 complete.** All planned MVP features (auto-routing, deep/quick/academic/url-source paths, PDF vision, Playwright MCP, citation-graph mining, CLI with rich live progress) are implemented and tested. Reddit (P10) and the FastAPI microservice wrapper (P11) are intentionally deferred — see [`docs/PLAN.md`](docs/PLAN.md) and [`docs/IMPLEMENTATION_LOG.md`](docs/IMPLEMENTATION_LOG.md).
+
+---
+
+## Table of contents
+
+- [Design highlights](#design-highlights)
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Configure](#configure)
+- [Use](#use)
+  - [CLI](#cli-recommended)
+  - [As a library](#as-a-library-microservice-ready)
+- [Architecture](#architecture)
+- [Follow-up trigger phrases](#follow-up-trigger-phrases)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
@@ -129,25 +145,36 @@ Output controls:
 ```bash
 uv run python -m deep_research "..." --out report.md --cite citations.json
 uv run python -m deep_research "..." --format json --out report.json
+uv run python -m deep_research "..." --quiet        # suppress the live progress panel; logs only
+uv run python -m deep_research "..." --verbose      # debug-level logs + rich traceback on error
 ```
+
+When stdout is a TTY (the common case), the CLI renders a live status panel (`phase` / `elapsed` / recent `step`s) using [`rich.live.Live`](https://rich.readthedocs.io/en/stable/live.html). When stdout is piped to a file or captured by a non-interactive consumer (e.g. unit tests, cron), the live panel auto-disables — no flicker, just the final report.
+Pass `--quiet` / `-q` to force-disable the panel regardless of the TTY check.
 
 ### As a library (microservice-ready)
 
 ```python
 import asyncio
-from deep_research import run_research, AgentConfig
+from pathlib import Path
+from deep_research import run_research, AgentTopConfig
+from deep_research.report import render_report_bibtex
 
-config = AgentConfig.load_yaml("config.yaml")
+config = AgentTopConfig.load_yaml("config.yaml")
 
 async def main():
+    # `progress` is optional; library callers by default get a silent run.
     report = await run_research("Survey RLHF methods", config)
     print(report.markdown)
-    # Save outputs:
-    report.to_markdown_file("report.md")
-    report.to_bibtex_file("refs.bib")  # if academic mode
+    # Save outputs manually (or use the report/ renderers):
+    Path("report.md").write_text(report.markdown)
+    if report.citation_graph and report.citation_graph.nodes:
+        Path("refs.bib").write_text(render_report_bibtex(report))
 
 asyncio.run(main())
 ```
+
+`run_research()` accepts an optional `path_override` (`"quick"` / `"deep"` / `"academic"` / `"url_source"`) — exactly matching the `--quick` / `--deep` / `--academic` / `--url-source` CLI flags — and an optional `progress: ProgressReporter | None` for streaming status updates. Pass `None` (or `NullReporter()`) for silent runs; pass your own implementation of `ProgressReporter` to integrate progress into a UI or log pipeline.
 
 ---
 
@@ -157,18 +184,96 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full design document. In short:
 
 ```
 deep_research/
-├── agent.py            # run_research() public entrypoint
-├── config.py           # AgentConfig pydantic schema
-├── state.py            # ResearchState, Citation, Report
-├── citations.py        # dedup + bibliography formatter
-├── llm/                # OpenAI-compatible client, vision utils, tool-calling loop
+├── agent.py            # run_research() public entrypoint + routing
+├── config.py           # AgentTopConfig pydantic schema (top-level + nested components)
+├── state.py            # ResearchState, Citation, Report, CitationGraph, ...
+├── citations.py        # dedup + bibliography formatter (markdown + bibtex)
+├── progress.py         # ProgressReporter Protocol + NullReporter (no-op default)
+├── llm/                # OpenAI-compatible async client, vision utils, tool-calling loop
 ├── paths/              # classifier, quick, deep, academic, url_source runners
 ├── nodes/              # planner, researcher, critic, writer, analyze_{paper,source}
-├── tools/              # web_search, fetch_page, arxiv, pdf, browser (MCP), reddit (stub)
+├── tools/              # web_search, fetch_page, arxiv, pdf, browser (Playwright MCP), reddit (stub)
 ├── report/             # markdown, bibtex, json_export renderers
-├── cli/app.py          # typer shell (thin wrapper around run_research)
+├── cli/
+│   ├── app.py          # typer shell (thin wrapper around run_research)
+│   └── progress.py     # RichProgressReporter (rich.live.Live panel)
 └── prompts/            # .txt prompt templates
 ```
+
+---
+
+## Follow-up trigger phrases
+
+URL-source mode only spawns the deep path for follow-up research when the user's query *explicitly* asks for critique / gaps / verification. The default phrase list (case-insensitive substring match):
+
+```
+gaps, what's missing, what is missing, omitted, not mentioned,
+limitation, limitations, shortcoming, shortcomings, weakness, weaknesses, flaw, flaws,
+counterexample, counterexamples, refute, refutation, disprove, disprove,
+verify, validate, falsify, check the claims, fact-check, fact check,
+comparison of, compare to, alternative, alternatives, competing,
+what else, what other
+```
+
+Custom phrases can be appended via yaml:
+
+```yaml
+url_source:
+  follow_up_trigger_phrases:
+    - "pull request the methodology"
+    - "where does the math break"
+```
+
+The list lives in the same `paths.url_source._DEFAULT_TRIGGER_PHRASES` constant and is documented in the risk register (item 12) of [`docs/PLAN.md`](docs/PLAN.md).
+
+---
+
+## Troubleshooting
+
+### `poppler` PDF rendering errors
+
+If `pdf_render_pages` returns an error like `PDFInfoNotInstalledError` or `poppler not installed`, install the system binary:
+
+| OS | Command |
+|---|---|
+| macOS (Homebrew) | `brew install poppler` |
+| Debian / Ubuntu | `sudo apt-get install poppler-utils` |
+Verify with `pdftoppm -v`. Text extraction via `pypdf` + `pdfplumber` works without poppler — only vision-page rendering is gated on it.
+
+### `[browser] npx not found on PATH` error
+
+The Playwright MCP browser tool shells out to `npx -y @playwright/mcp@latest`. Install Node.js LTS:
+
+```bash
+brew install node     # or: https://nodejs.org/
+```
+
+Set `browser.enabled: false` in config.yaml if you don't need dynamic-HTML fetches (trafilatura-based extraction still works for static pages).
+
+### `Could not synthesize via LLM (APIConnectionError)`
+
+The CLI surfaces the raw error text. Common causes:
+- LLM endpoint down or unreachable — check `llm.base_url` and that the server is up.
+- Wrong `llm.api_key` for your OpenAI-compatible endpoint.
+- Firewall / proxy blocking outbound HTTPS to the LLM host.
+
+### Live progress panel flickers / leaks into piped output
+
+The reporter auto-disables when stdout isn't a TTY, but if you want a fully clean log stream (no panel), pass `--quiet` / `-q`:
+
+```bash
+uv run python -m deep_research --quiet "..." > report.md
+```
+
+### Empty citation graph from `--academic` / `--dump-graph`
+
+- Confirm `arxiv.enabled: true` (default).
+- Confirm `OPENAI_API_KEY` and the LLM endpoint are reachable.
+- Re-run with `--verbose` to see the per-paper analyze logs.
+
+### Reddit tool "NotImplementedError"
+
+Reddit integration (P10) is intentionally stubbed. To suppress even the stub registration, set `reddit.enabled: false` in config.yaml (default).
 
 ---
 
