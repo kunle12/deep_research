@@ -175,7 +175,17 @@ class _ToolsCtx:
         return self._tools
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        # Future: add explicit teardown for browser MCP subprocess (P8).
+        # P8: explicit teardown for the browser MCP subprocess (closed via the
+        # hook the browser tool registers on the registry at register() time).
+        # We swallow teardown errors so we don't mask the original exception
+        # that triggered __aexit__.
+        if self._tools is not None:
+            close_hook = getattr(self._tools, "_browser_close", None)
+            if close_hook is not None:
+                try:
+                    await close_hook()
+                except Exception as e:
+                    logger.debug("browser MCP teardown raised: %s: %s", type(e).__name__, e)
         self._tools = None
 
 

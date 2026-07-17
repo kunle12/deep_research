@@ -31,6 +31,7 @@ from deep_research.agent import run_research
 from deep_research.config import AgentTopConfig
 from deep_research.report import (
     render_report_bibtex,
+    render_report_citations_json,
     render_report_json,
     render_report_markdown,
 )
@@ -123,6 +124,26 @@ def main(
     out: Path | None = typer.Option(None, "--out", "-o", help="Write final report to this file"),
     fmt: str = typer.Option("markdown", "--format", "-f", help="markdown | json"),
     dump_graph: Path | None = typer.Option(None, "--dump-graph", help="Write BibTeX citation graph to this file (academic mode)"),
+    cite_path: Path | None = typer.Option(
+        None,
+        "--cite",
+        help="Write the Report's citation list to this JSON file (any path mode)",
+    ),
+    max_iterations: int | None = typer.Option(
+        None,
+        "--max-iterations",
+        help="Cap the deep path's iteration loop (overrides agent.max_iterations)",
+    ),
+    max_depth: int | None = typer.Option(
+        None,
+        "--max-depth",
+        help="Academic mode: cap citation-graph recursion depth (overrides academic.max_depth)",
+    ),
+    max_papers: int | None = typer.Option(
+        None,
+        "--max-papers",
+        help="Academic mode: cap total papers analyzed (overrides academic.max_papers)",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
 ) -> None:
     """Run a deep research query and print/write the report."""
@@ -135,6 +156,12 @@ def main(
         raise typer.Exit(code=2)
 
     path_override = _resolve_path_override(quick, deep, academic, url_source)
+    _apply_flag_overrides(
+        config,
+        max_iterations=max_iterations,
+        max_depth=max_depth,
+        max_papers=max_papers,
+    )
 
     import asyncio
 
@@ -172,6 +199,60 @@ def main(
             console.print(f"[green]Wrote citation graph[/green] {dump_graph}")
         else:
             err_console.print(f"[yellow]No citation graph found in report; nothing to dump to {dump_graph}[/yellow]")
+
+    # Citations JSON dump (any path mode)
+    if cite_path is not None:
+        cits_json = render_report_citations_json(report)
+        if cits_json.strip() != "[]":
+            Path(cite_path).write_text(cits_json, encoding="utf-8")
+            console.print(f"[green]Wrote citations[/green] {cite_path}")
+        else:
+            err_console.print(
+                f"[yellow]No citations in report; wrote empty JSON array to {cite_path}[/yellow]"
+            )
+            Path(cite_path).write_text(cits_json, encoding="utf-8")
+
+
+def _apply_flag_overrides(
+    config: AgentTopConfig,
+    *,
+    max_iterations: int | None,
+    max_depth: int | None,
+    max_papers: int | None,
+) -> None:
+    """Patch `config` in-place with CLI flag values when provided.
+
+    Each flag overrides the corresponding YAML knob for the duration of this
+    single CLI invocation. `None` means "user didn't pass the flag" — leave
+    the YAML default intact.
+
+    Validation:
+      - max_iterations must be >= 1
+      - max_depth must be >= 0 (0 = no recursion; analyze seeds only)
+      - max_papers must be >= 1
+    Bad values print a friendly error and exit(2).
+    """
+    if max_iterations is not None:
+        if max_iterations < 1:
+            err_console.print(
+                f"[red]Invalid --max-iterations {max_iterations}[/red]; must be >= 1"
+            )
+            raise typer.Exit(code=2)
+        config.agent.max_iterations = max_iterations
+    if max_depth is not None:
+        if max_depth < 0:
+            err_console.print(
+                f"[red]Invalid --max-depth {max_depth}[/red]; must be >= 0 (0 = no recursion)"
+            )
+            raise typer.Exit(code=2)
+        config.academic.max_depth = max_depth
+    if max_papers is not None:
+        if max_papers < 1:
+            err_console.print(
+                f"[red]Invalid --max-papers {max_papers}[/red]; must be >= 1"
+            )
+            raise typer.Exit(code=2)
+        config.academic.max_papers = max_papers
 
 
 if __name__ == "__main__":

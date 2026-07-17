@@ -270,21 +270,19 @@ class TestCoerce:
         assert "2402.99" in out.title
         assert out.summary == "S"
 
-    def test_old_style_slash_arxiv_id_not_matched_by_regex(self) -> None:
-        r"""Documents that the `\b[a-z-]+/[A-Z]{2}\.\d{7}\b` alternative does
-        NOT match `cs.LG/0702001` (the slash is between the CS cat and the
-        digits, not between a lowercase prefix and an UPPERCASE.subcategory).
+    def test_old_style_slash_arxiv_id_matched_by_regex(self) -> None:
+        r"""Verifies that the `\b[a-z-]+(?:\.[A-Z]{2})?/\d{7}\b` alternative
+        matches `cs.LG/0702001` (old-style arxiv id with subcategory).
 
-        Real old-style arxiv ids look like `cs.LG/0702001`; the regex in
-        `_coerce` does not match this format (it expects `[a-z-]/[A-Z]{2}.\d{7}`
-        i.e. lowercase-slash-UPPER-period-digits). New-style ids like
-        `0704.0001` are still captured. This test fixes the documentation
-        mismatch: refs using only the old format will be dropped.
+        Old-style format: `category[.subcat]/identifier` (7 digits).
+        Both `cs.LG/0702001` and plain `cs/0702001` are now captured.
+        New-style ids like `0704.0001` are still matched.
         """
         import re
 
-        rx = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+/[A-Z]{2}\.\d{7}\b")
-        assert rx.search("See cs.LG/0702001 for early work") is None
+        rx = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")
+        assert rx.search("See cs.LG/0702001 for early work").group(0) == "cs.LG/0702001"
+        assert rx.search("cs/0702001").group(0) == "cs/0702001"
         # New-style IDs match
         assert rx.search("arXiv:0704.0001").group(0) == "0704.0001"
 

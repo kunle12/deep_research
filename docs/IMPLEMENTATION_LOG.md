@@ -291,3 +291,141 @@ $ uv run mypy deep_research/ tests/                                             
 - E2E live behavior with the real arxiv + real LLM is still uncovered. Acceptance criterion "Academic recursive: capped at `max_papers=3` completes in <5 min when seeded from 1 paper" requires a live run.
 - The `_coerce` regex does NOT match old-style arxiv ids like `cs.LG/0702001` (despite appearances). This is documented in `test_old_style_slash_arxiv_id_not_matched_by_regex`; if any real arxiv paper cites via the old format we'll silently drop that ref. Worth tightening in a polish pass.
 - Deep-path unit tests (`tests/test_paths_deep.py`) and per-node unit tests (`tests/test_nodes_*.py` for planner/researcher/critic/writer) are still TODO; P3 instructions noted this gap can be closed in P9.
+
+---
+
+## P8 - tools/browser via Playwright MCP
+
+### Done
+
+- [x] Replaced `tools/browser.py` stub with a real Playwright MCP client backed by the `mcp` SDK (`mcp>=1.27,<2`):
+  - **Lazy connection.** The MCP subprocess (`npx -y @playwright/mcp@latest`) is spawned on the first browser tool call, not at register time. Chromium warm-up (~1-3s) only paid when actually used.
+  - **`_MCPClientCtx`** (`async with` context manager) wraps `mcp.client.stdio.stdio_client` + `mcp.client.session.ClientSession`:
+    - Spawns subprocess via `StdioServerParameters(command=config.browser.mcp_command, args=config.browser.mcp_args)`.
+    - Awaits `ClientSession.initialize()` with a 30s timeout (raises `_MCPStartupError` with a README-pointing install hint on timeout).
+    - `FileNotFoundError` / `OSError` on subprocess spawn → `_MCPStartupError` with helpful message ("Is `npx` / Node.js installed? See README").
+    - Orderly __aexit__ pops the ClientSession and stdio_client in reverse; teardown exceptions swallowed with `logger.debug` so they don't mask the original failure (if any) that triggered __aexit__.
+  - **Curated 4-tool subset** of the 24 tools `@playwright/mcp@latest` exposes (the other 20 are uninteresting for read-only research and would waste LLM context):
+    - `browser_navigate(url)` — attaches a `Citation(source_type="html", discovered_by=ToolName.browser, confidence_score=0.6)` with title extracted via `_title_from_content` so `fetch_page`'s low-yield fallback has provenance.
+    - `browser_snapshot()` — re-uses the active MCP session's a11y tree (callers must have navigated first).
+    - `browser_click(target, element="")` — dispatches to MCP's `browser_click`.
+    - `browser_evaluate(function)` — calls `browser_evaluate`; flagged as "use sparingly" in the description.
+  - **`shutil.which(mcp_command)` preflight** — surfaces "npx not found on PATH" without ever spawning a subprocess; cached startup_error prevents retry within a single run.
+  - **`_mcp_result_to_tool_result`** translates `mcp.types.CallToolResult`:
+    - Joins all `TextContent` items with newlines into `content`
+    - Counts and omits image/audio `ImageContent`/`AudioContent` (binary content isn't useful for plain-text research today; would need to save to disk).
+    - When `isError=True`, populates `ToolResult.error` while keeping the body in `content` for diagnostics.
+  - **`_title_from_content`** handles three formats `@playwright/mcp`'s output takes across versions:
+    1. `- Page Title: <title>` (newer "wrap the snapshot in a file reference and emit metadata" format used by `browser_navigate`).
+    2. `- heading "<title>" [ref=...]` (inlined a11y tree format used by `browser_snapshot`).
+    3. `# <title>` (older MD heading fallback).
+    Falls through to the bare URL when none match.
+- [x] Wired teardown into `agent.py`'s `_ToolsCtx.__aexit__`: if the registry has a `_browser_close` attribute (private contract set by the browser tool's `register()`), the agent calls it when the research run ends. This terminates the MCP subprocess — verified via live `pgrep` that no `playwright/mcp` processes leak after a run.
+- [x] `tests/test_tools_browser.py` (32 tests):
+  - `TestRegistration` — default config registers all 4 tools + `_browser_close` hook; `browser.enabled=False` skips registration entirely.
+  - `TestLazyConnection` — `shutil.which` returning None → `npx not found... See README` install-hint error; second call within same run returns cached failure (no retry).
+  - `TestHappyPathNavigate` — synthetic MCP client returns synthetic TextContent; verify the navigate tool attaches a Citation with the right provenance + title extracted from the `- heading "..."` snapshot line; verify the second navigate reuses the same MCP session (`__aenter__` called once, MCP `call` called twice); navigate short-circuits invalid URLs without spawning the subprocess.
+  - `TestOtherTools` — snapshot / click (target only / target + element) / evaluate each dispatch to the right MCP tool name + arg dict; click without `target` surfaces a clean ToolResult.error via the registry's exception wrapper.
+  - `TestMCPCallFailures` — MCP `call_tool` raising -> `RuntimeError` text surfaces as `ToolResult.error`; MCP `isError=True` -> `ToolResult.error` populated AND body preserved in `content`.
+  - `TestMCPStartupFailures` — `_MCPStartupError` raised by `__aenter__` -> clean install-hint error to caller.
+  - `TestMcpResultToToolResult` — pure unit tests for the helper: text content joined with newlines / binary content omitted-but-counted / `isError=True` populates error / empty content returns empty ToolResult.
+  - `TestTitleFromContent` — Page Title metadata line / `"heading" ... [ref=]` snapshot line / `# Title` MD fallback / no-heading returns empty / spaces preserved / Page Title takes precedence over heading.
+  - `TestIntegration` — navigate then snapshot in the same session uses one `__aenter__` and the right call order; `browser.enabled=False` registers none of the four tools.
+  - `TestTeardown` — `_browser_close()` is a no-op when the MCP was never spawned (idempotent); a sabotaged `__aexit__` that raises is swallowed (logged at debug level) so the agent's `_ToolsCtx.__aexit__` doesn't propagate the error.
+
+### Verification
+
+```bash
+$ uv run pytest tests/test_tools_browser.py -q                       # 32 passed
+$ uv run pytest tests/ -q                                            # 228 passed, 2 skipped
+$ uv run ruff check deep_research/ tests/                            # All checks passed
+$ uv run mypy deep_research/ tests/                                  # Success: no issues found in 55 files
+```
+
+### Live smoke test against real @playwright/mcp subprocess
+
+```bash
+$ uv run python -c "
+import asyncio
+from deep_research.config import AgentTopConfig
+from deep_research.tools import build_tool_registry
+
+async def main():
+    cfg = AgentTopConfig()
+    reg = await build_tool_registry(cfg)
+    try:
+        res = await reg.call('browser_navigate', {'url': 'https://example.com'})
+        assert res.error is None
+        assert res.citations[0].title == 'Example Domain'   # title extracted from - Page Title: line
+        assert res.citations[0].discovered_by.value == 'browser'
+    finally:
+        await reg._browser_close()
+asyncio.run(main())
+"
+$ pgrep -fl "playwright/mcp"                                        # (empty — no leaked subprocess)
+```
+
+### P8 acceptance criteria status
+
+- [x] Playwright MCP subprocess spawned on-demand (lazy) and torn down at run-end via `_browser_close` hook on the registry
+- [x] Curated 4-tool subset (navigate, snapshot, click, evaluate) wired into `ToolRegistry`; other 20 tools dropped to keep LLM tool-schema context small
+- [x] Surfaces a clean install-hint error pointing to the README when `npx` / Node.js is absent (risk register item 8 closed)
+- [x] 30s MCP-initialize timeout with a clean error message (not a silent hang) when the MCP fails to come up
+- [x] MCP `call_tool` runtime errors and `isError=True` responses surface as `ToolResult.error` so downstream `fetch_page`'s browser-fallback falls through to raw HTML gracefully (P4 architecture preserved)
+- [x] All 4 browser tools registered only when `config.browser.enabled=True`
+- [x] Zero subprocess leaks after a clean run (verified via `pgrep`)
+
+### P8 notes for next session
+
+- Live browser_navigate output wraps the actual accessibility snapshot in a file reference (`- [Snapshot](.playwright-mcp/page-....yml)`). For a fuller page-content view, an end-to-end run must follow `browser_navigate` with `browser_snapshot` to retrieve the inlined tree. The navigate tool today surfaces the metadata block only; callers who want the full a11y tree need to call snapshot explicitly. P9 may want to bundle navigate+snapshot into a single `fetch_html_via_browser()` helper.
+- Only 4 of 24 MCP tools exposed; the others (file_upload, drop, fill_form, press_key, type, hover, drag, select_option, tabs, take_screenshot, console_messages, network_request, wait_for) are visible to research agents only when the curator expands the subset in P9. There's a TODO note in the module docstring.
+- `AgentConfig.browser.mcp_command` / `mcp_args` come from YAML; HTTP transport (`config.browser.transport == "http"`) is configured but **not implemented** here — only stdio is wired. If a user wants HTTP MCP transport we'd add a separate `_MCPHttpClientCtx` following the same pattern. Defer to P11 microservice work if it becomes needed.
+
+---
+
+## P3 gap closed — dedicated deep-path node tests
+
+### Done
+
+- [x] `tests/test_nodes_planner.py` (11 tests): happy path (valid JSON, breadth cap, missing id, missing question, invalid tool_hint) + fallback (invalid JSON, LLM exception, empty sub-questions, missing key, empty content)
+- [x] `tests/test_nodes_researcher.py` (10 tests): `_hint_blurb` routing (7 cases), `_parse_final_assistant` (7 cases), `research` integration (happy path, citations, non-JSON, hint blurb prepended, no hint for general-web)
+- [x] `tests/test_nodes_critic.py` (10 tests): `_render_sections_for_prompt` (4 cases), `review` happy path (sufficient, gaps, missing id, invalid tool_hint), `review` fallback (invalid JSON with/without drafts, LLM exception with/without drafts)
+- [x] `tests/test_nodes_writer.py` (10 tests): `_render_sections_for_prompt` (3 cases), `_render_citations_for_prompt` (2 cases), `_concatenate_drafts` (3 cases), `write` happy path (returns markdown, strips fences), `write` fallback (LLM exception, empty response, no drafts)
+- [x] `tests/test_paths_deep.py` (10 tests): full loop with patched nodes, citation sorting, critic iteration with gap append + dedup, no-gaps early break, researcher failure resilience, writer fallback, max_iterations respect, breadth_hint from classified
+
+### Verification
+
+```bash
+$ uv run pytest tests/test_nodes_planner.py tests/test_nodes_researcher.py tests/test_nodes_critic.py tests/test_nodes_writer.py tests/test_paths_deep.py -q
+# 65 passed
+$ uv run pytest tests/ -q
+# 293 passed, 2 skipped
+$ uv run ruff check tests/
+# All checks passed
+$ uv run mypy tests/
+# All checks passed
+```
+
+---
+
+## P7 gap closed — old-style arxiv id regex fix
+
+### Done
+
+- [x] Fixed `_arxiv_rx` regex in `deep_research/nodes/analyze_paper.py`: changed `\b[a-z\-]+/[A-Z]{2}\.\d{7}\b` to `\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b` so it now matches old-style ids like `cs.LG/0702001` and `cs/0702001`.
+- [x] Updated `tests/test_nodes_analyze_paper.py::TestCoerce::test_old_style_slash_arxiv_id_not_matched_by_regex` to `test_old_style_slash_arxiv_id_matched_by_regex` — asserts that both old-style (`cs.LG/0702001`, `cs/0702001`) and new-style (`0704.0001`) IDs are captured.
+
+### Verification
+
+```bash
+$ uv run pytest tests/test_nodes_analyze_paper.py -q
+# 16 passed
+```
+
+---
+
+## README status update
+
+### Done
+
+- [x] Updated `README.md` status from "Phase 1 scaffold" to "Phases 1–8 complete"

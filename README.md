@@ -4,7 +4,7 @@ A standalone, async-first Python agent that performs **web / deep / academic / s
 
 ## Status
 
-**Alpha** — currently in Phase 1 scaffold. See [`docs/PLAN.md`](docs/PLAN.md) for the full design and [`docs/IMPLEMENTATION_LOG.md`](docs/IMPLEMENTATION_LOG.md) for current progress.
+**Alpha** — Phases 1–8 complete. See [`docs/PLAN.md`](docs/PLAN.md) for the full design and [`docs/IMPLEMENTATION_LOG.md`](docs/IMPLEMENTATION_LOG.md) for current progress.
 
 ---
 

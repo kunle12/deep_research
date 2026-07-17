@@ -115,7 +115,7 @@ def _coerce(arxiv_id: str, data: dict[str, Any]) -> PaperAnalysis:
     """
     import re
 
-    _arxiv_rx = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+/[A-Z]{2}\.\d{7}\b")
+    _arxiv_rx = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")
 
     cleaned_key_refs: list[dict[str, Any]] = []
     for ref in data.get("key_references") or []:
