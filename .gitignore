@@ -4,3 +4,4 @@ __pycache__
 .*_cache
 .venv
 .playwright*
+.DS_Store

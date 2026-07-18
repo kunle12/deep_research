@@ -1,8 +1,8 @@
 # Deep Research Agent — Master Plan
 
-> **Status**: v5 — final, proceeded to implementation.
-> **Last update**: Session start. Implementation underway.
-> **Resume guidance**: If a new session is interrupted, read this file first; it contains every locked-in decision. Then read `/Users/xun/dev/deep_research/docs/IMPLEMENTATION_LOG.md` for progress state.
+> **Status**: v6 — final, proceeded to implementation (P1–P9 done, P10.x in-design).  
+> **Last update**: Session start. Implementation underway.  
+> **Resume guidance**: If a session is interrupted, read this file first; it contains every locked-in decision. Then read `docs/IMPLEMENTATION_LOG.md` for progress state.
 
 ---
 
@@ -77,12 +77,13 @@ deep_research/
 │   ├── PLAN.md                   # this file
 │   └── IMPLEMENTATION_LOG.md     # progress tracker
 ├── deep_research/
-│   ├── __init__.py               # exports: run_research, AgentConfig, Report
+│   ├── __init__.py               # exports: run_research, AgentTopConfig, Report
 │   ├── __main__.py               # python -m deep_research → cli.app()
 │   ├── agent.py                  # run_research(query, config) → Report
-│   ├── config.py                 # AgentConfig (pydantic, Strict)
+│   ├── config.py                 # AgentTopConfig (pydantic, Strict)
 │   ├── state.py                  # ResearchState + AcademicState + CitationGraph
 │   ├── citations.py              # Citation model; dedup; bibliography + .bib generator
+│   ├── progress.py               # ProgressReporter Protocol + NullReporter (P9)
 │   │
 │   ├── llm/
 │   │   ├── client.py             # AsyncOpenAI factory
@@ -94,8 +95,9 @@ deep_research/
 │   │   ├── classifier.py         # classify_query() → quick|deep|academic|unclear
 │   │   ├── quick.py              # 1 search + summarize, ~5-15s
 │   │   ├── deep.py               # planner → researcher → critic → writer loop
-│   │   ├── academic.py           # recursive citation graphite traversal
-│   │   └── url_source.py         # URL detection + analyze_source runner
+│   │   ├── academic.py           # recursive citation graph traversal
+│   │   ├── url_source.py         # URL detection + analyze_source runner
+│   │   └── applied.py            # (P12) blog-first research path
 │   │
 │   ├── nodes/
 │   │   ├── planner.py            # used by paths.deep
@@ -103,27 +105,31 @@ deep_research/
 │   │   ├── critic.py             # used by paths.deep
 │   │   ├── writer.py             # used by paths.deep + academic (synthesis)
 │   │   ├── analyze_paper.py      # LLM call: summary + key_references (academic)
-│   │   └── analyze_source.py     # LLM call: summary + claims + follow_ups (url_source)
+│   │   ├── analyze_source.py     # LLM call: summary + claims + follow_ups (url_source)
+│   │   └── glossarize.py         # (P10.6) rule-based cross-run glossary merger
 │   │
 │   ├── tools/
-│   │   ├── base.py               # Tool Protocol + ToolRegistry
+│   │   ├── base.py               # Tool Protocol + ToolResult types
+│   │   ├── registry.py           # build_tool_registry async factory (one reg per run)
 │   │   ├── web_search.py         # Tavily → SearXNG fallback chain
-│   │   ├── fetch_page.py         # httpx + trafilatura + disk cache
+│   │   ├── fetch_page.py         # httpx + trafilatura + diskcache (TTL)
 │   │   ├── browser.py            # Playwright MCP client (async context manager)
 │   │   ├── arxiv.py              # arxiv lib + httpx PDF download + resolve_id
 │   │   ├── pdf.py                # pypdf + pdfplumber + pdf2image + vision embed builder
 │   │   ├── reddit.py             # STUB: NotImplementedError; lazy asyncpraw import
 │   │   ├── url_detector.py       # extract first URL from query text
-│   │   └── url_classifier.py    # classify: arxiv | pdf | html
+│   │   ├── url_classifier.py     # classify: arxiv | pdf | html (sync + async HEAD-probe)
+│   │   └── blog_search.py        # (P10.0) Tavily site: primary + direct-domain fallback
 │   │
 │   ├── report/
 │   │   ├── markdown.py           # render Report (incl. academic graph bibliography)
 │   │   ├── bibtex.py             # emit citation graph → .bib
-│   │   └── json_export.py       # emit Report (incl. graph) → .json
+│   │   ├── json_export.py       # emit Report (incl. graph) → .json
+│   │   └── citations_json.py    # emit citations[] → .json (used by --cite flag)
 │   │
-│   ├── cache.py                  # disk cache wrapper for pages/pdfs
 │   ├── cli/
-│   │   └── app.py                # typer app
+│   │   ├── app.py                # typer app
+│   │   └── progress.py           # RichProgressReporter (live panel, auto-disables off-TTY)
 │   └── prompts/
 │       ├── classifier.txt
 │       ├── planner.txt
@@ -132,7 +138,8 @@ deep_research/
 │       ├── writer.txt
 │       ├── quick_summary.txt
 │       ├── analyze_paper.txt
-│       └── analyze_source.txt
+│       ├── analyze_source.txt
+│       └── glossary_extract.txt   # (P10.6) paragraph appended to synthesis prompts
 │
 └── tests/
     ├── conftest.py
@@ -142,11 +149,24 @@ deep_research/
     ├── test_agent.py
     ├── test_classifier.py
     ├── test_paths_quick.py
+    ├── test_paths_deep.py
     ├── test_paths_academic.py
     ├── test_paths_url_source.py
+    ├── test_paths_url_source_analyze.py
+    ├── test_nodes_planner.py
+    ├── test_nodes_researcher.py
+    ├── test_nodes_critic.py
+    ├── test_nodes_writer.py
+    ├── test_nodes_analyze_paper.py
+    ├── test_progress.py
+    ├── test_cli_app.py
     ├── test_tools_arxiv.py
     ├── test_tools_pdf.py
     ├── test_tools_web_search.py
+    ├── test_tools_fetch_page.py
+    ├── test_tools_fetch_page_p4.py
+    ├── test_tools_browser.py
+    ├── test_url_tools.py
     ├── test_citations.py
     └── test_config.py
 ```
@@ -186,25 +206,29 @@ deep_research/
 
 ---
 
-## Phase plan
+## Phase plan (canonical — single source of truth)
 
-| Phase | Scope | Deliverable |
-|---|---|---|
-| **P1** | Scaffold + README + config + state + path stubs returning placeholder Reports. Mock-LLM dry run of all routing paths. | All paths reachable end-to-end with fakes. |
-| **P2** | paths.quick + tools/web_search (Tavily) + tools/fetch_page + citations. | Real quick results. |
-| **P2.5** | paths.url_source ANALYZE mode (no follow-up). | URL analysis for arxiv + blogs. |
-| **P3** | paths.deep full loop. | Deep report. |
-| **P4** | Web search multi-backend + browser fallback in fetch_page. | Robust fetching. |
-| **P5** | tools/arxiv full pipeline. Wired into deep path. | arxiv surfaced in deep. |
-| **P6** | tools/pdf (pypdf+pdfplumber+pdf2image+vision). Used by url_source + deep + academic. | PDF vision understanding. |
-| **P7** | paths.academic recursive mining + paths.url_source FOLLOW-UP mode. | Academic recursion + URL follow-up research. |
-| **P8** | tools/browser via Playwright MCP. Surfaced to all paths. | Dynamic page fetch. |
-| **P9** | CLI polish: flags, rich progress, finalized README. | Production-ready CLI. |
-| **P10.0** | `blog_search` tool: Tavily `site:` primary + direct-domain fallback. Surfaced to academic + applied paths. | Blogs surfaced. |
-| **P10.5** | Personal Digital Library v1 — `.deep_research_library/` artifact store (PDFs only; no rendered JPEGs persisted) + SQLite metadata DB with auto-ALTER schema migration + `LibraryWriter` middleware + weasyprint markdown→PDF + Playwright print-to-PDF for blogs. `pdl.enabled: true` by default. | Every PDF + every report archived. |
-| **P10.6** | Glossary generation — per-run LLM-call enrichment + rule-based cross-run dedup. `glossary.md` regenerated atomically each run. SQLite `glossary` table with FTS5. | Curated key concepts + acronyms accumulate across runs. |
-| **P11 (later)** | Wire `asyncpraw`. | Reddit access. |
-| **P12 (later)** | Library CLI (`ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary`) + `applied` path (blog-first research) + FastAPI microservice + Dockerfile + poppler setup. | Personal library UX + deployable service. |
+| Phase | Scope | Deliverable | Status |
+|---|---|---|---|
+| **P1** | Scaffold + README + config + state + path stubs returning placeholder Reports. Mock-LLM dry run of all routing paths. | All paths reachable end-to-end with fakes. | done |
+| **P2** | paths.quick + tools/web_search (Tavily) + tools/fetch_page + citations. | Real quick results. | done |
+| **P2.5** | paths.url_source ANALYZE mode (no follow-up). | URL analysis for arxiv + blogs. | done |
+| **P3** | paths.deep full loop. | Deep report. | done |
+| **P4** | Web search multi-backend + browser fallback in fetch_page. | Robust fetching. | done |
+| **P5** | tools/arxiv full pipeline. Wired into deep path. | arxiv surfaced in deep. | done |
+| **P6** | tools/pdf (pypdf+pdfplumber+pdf2image+vision). Used by url_source + deep + academic. | PDF vision understanding. | done |
+| **P7** | paths.academic recursive mining + paths.url_source FOLLOW-UP mode. | Academic recursion + URL follow-up research. | done |
+| **P8** | tools/browser via Playwright MCP. Surfaced to all paths. | Dynamic page fetch. | done |
+| **P9** | CLI polish: flags, rich progress, finalized README, `--quiet` flag, `ProgressReporter` Protocol. | Production-ready CLI + library-friendly progress hooks. | done |
+| **P10.0** | `blog_search` tool: Tavily `site:` primary + direct-domain fallback. Optional academic-path blog-seeding shim. (No `applied` path — that lands in P12.0.) | Blogs surfaced; no persistence. | in-design |
+| **P10.5a** | Personal Digital Library v1 core — `.deep_research_library/` artifact store (PDFs only; no JPEGs persisted) + `StorageBackend` Protocol + SQLite default backend with ordered idempotent migrations (`0001_initial`, `0002_add_glossary`, `0003_add_refresh_foundation`) + `LibraryWriter` middleware (archive_pdf / archive_html / archive_report / record_analysis / record_citation_edge / tag / upsert_glossary_entries) routing through the Protocol + weasyprint markdown→PDF (xhtml2pdf fallback) + Playwright print-to-PDF for blogs. `pdl.enabled: true` by default. | Every arxiv PDF + every report archived; library accumulates. Storage-agnostic. | in-design |
+| **P10.5b** | Refresh foundation — `artifact_versions` + `refresh_jobs` tables + the three `artifacts` refresh columns + `LibraryWriter.{refresh_needed, probe_upstream, run_refresh_job}` public methods + `library refresh` CLI one-shot command. Decoupled from P10.5a so library writes aren't blocked on the scheduler work landing. Schema migrations for these tables ship in P10.5a's `0003_add_refresh_foundation.sql` so the columns exist from day one; P10.5b ships the logic that touches them. | Manual `library refresh` works from day one. | in-design |
+| **P10.6** | Glossary generation — per-run LLM-call enrichment + rule-based cross-run dedup. `glossary.md` regenerated atomically each run. SQLite `glossary` table with FTS5. | Curated key concepts + acronyms accumulate across runs. | in-design |
+| **P11** | Wire `asyncpraw`. | Reddit access. | deferred |
+| **P12.0** | (a) **Postgres `StorageBackend` + asyncpg + conformance test suite** parameterized over both SQLite + Postgres. (b) **Long-running refresh scheduler** (`apscheduler` + `croniter`) wrapping `LibraryWriter.run_refresh_job` on a configurable cron; webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) **`applied` path** (blog-first research) — `paths/applied.py` lands here, not in P10.0. (d) **Library CLI completes**: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh`. (e) **FastAPI microservice** + Dockerfile + poppler setup. | Personal library UX; long-running service that auto-refreshes the library; deployable Postgres-backed microservice. | deferred |
+| **P12.5** | Web UI for browsing the library. | Visual library browser. | optional / deferred |
+
+> **Rule**: any new phase sub-rows must be added to THIS table. The detailed P10.0 / P10.5a / P10.5b / P10.6 sections later in this document are *expositions* of the rows above — they do not introduce new phases. If the table and the prose disagree, the table wins.
 
 ---
 
@@ -326,24 +350,27 @@ python -m deep_research "..." --out report.md --cite citations.json --format mar
 
 - [ ] `python -m deep_research "What is the capital of France?"` auto-classifies `quick`, returns in <15s, with 2-3 citations.
 - [ ] `python -m deep_research "Survey recent RLHF advances"` auto-classifies `deep`/`academic`, produces multi-section Markdown.
-- [ ] `python -m deep_research "..." --range academic --max-depth 2 --max-papers 10 --dump-graph refs.bib` produces Markdown + `refs.bib`.
+- [ ] `python -m deep_research "..." --academic --max-depth 2 --max-papers 10 --dump-graph refs.bib` produces Markdown + `refs.bib`.
 - [ ] `python -m deep_research "..." --quick` bypasses classifier.
 - [ ] `python -m deep_research "Summarize https://arxiv.org/abs/2401.12345"` produces a 1-2 page Markdown analysis w/ summary, key claims, methodology, limitations; no auto follow-up research.
 - [ ] `python -m deep_research "https://arxiv.org/abs/2401.12345 — what are the gaps?"` produces analysis + a separate "follow-up research" section.
 - [ ] `python -m deep_research "https://blog.example.com/post — key claims?"` works for plain HTML; falls back to Playwright MCP if trafilatura returns low content.
-- [ ] `python -m deep_research --url-source "https://example.com/paper.pdf"` auto-detects PDF and uses vision path.
+- [ ] `python -m deep_research --url-source "https://example.com/paper.pdf"` auto-detects PDF and uses vision path (falls back to text-only if `pdf_vision.enabled=false` — no crash).
 - [ ] `--url-source` overrides regex detection.
 - [ ] When no URL detected in query, `--url-source` flag raises a clean error.
 - [ ] `reddit.enabled: false` allows runs without `asyncpraw` installed.
 - [ ] `agent.classifier.enabled: false` routes everything to `deep`.
 - [ ] `await run_research(query, config)` works from a fresh Python process (microservice-ready).
 - [ ] Academic recursive: capped at `max_papers=3` completes in <5 min when seeded from 1 paper.
-- [ ] Citation graph traversal dedups via `arxiv_id`.
+- [ ] Citation graph traversal dedups via version-stripped `arxiv_id` (e.g. `2401.12345v3` and `2401.12345` are the same paper).
+- [ ] CLI `--quiet` flag suppresses the live progress panel; auto-disables when stdout is not a TTY; `ProgressReporter` Protocol is always plumbed through (even when silent).
 - [ ] All tests green: `pytest -q`.
 
 ---
 
-## Risk register
+## Risk register (canonical — single list across all phases)
+
+Risks for already-shipped work (P1–P9) first, then P10.x and later. New risks added by a phase use the next available number; never renumber.
 
 1. Vision cost at academic depth=2: up to ~375 page renders → ~100 VLM calls. Multi-minute runs accepted.
 2. Classifier false-routes: returns `rationale` in report; users can pass flags to override.
@@ -351,12 +378,30 @@ python -m deep_research "..." --out report.md --cite citations.json --format mar
 4. arXiv 3s rate limit: handled by `arxiv` lib + `asyncio.Semaphore(2)` around arxiv tool.
 5. SearXNG public instances increasingly AI-restricted: README recommends self-hosting via Docker.
 6. poppler missing at runtime: catch `PDFInfoNotInstalledError` at startup, emit clear error pointing to README.
-7. MCP SDK v2 churn: pin `mcp>=1.27,<2`.
+7. MCP SDK v2 churn: pin `mcp>=1.27,<2`. (The DNS risk here is *v2* churn — minor v1.x changes are tolerable.)
 8. Node.js LTS absent: `npx -y @playwright/mcp@latest` will fail; detect & emit clear error in P8.
 9. Paywalled / login-walled URLs in url_source mode: extractor's content-length heuristic flag auth-required; emit Report saying so.
 10. Very large PDFs: `fetch_pdf_size_limit_mb` cap, clean error if exceeded.
 11. JS-only blogs return empty HTML: auto-fallback to `tools.browser` when `trafilatura` extraction is <N chars (configurable).
 12. Follow-up trigger heuristic too eager: documented trigger phrase list (visible in README); conservative default.
+13. Blog content is less stable than arxiv — links rot, pages restructure. Mitigated by P10.5a's PDF archival of every blog fetched. (`blog_search`)
+14. Blog-to-arxiv false positives: a blog may mention an arxiv paper tangentially. The LLM call in `analyze_blog` (P12) should filter relevance. (`blog_search`)
+15. Known-domain list is manually curated — stale entries produce dead links. `last_known_good_date` yaml field warns if older than 90d on first use. (`blog_search`)
+16. Direct-domain fetch may be IP-rate-limited by aggressive hosts (429/Retry-After). Surface as `ToolResult.error`, continue to next domain. Mitigated by `domain_fallback_min_spacing_ms: 500ms` default. (`blog_search`)
+17. JS-heavy domains (openai.com, deepmind.google) yield garbage under trafilatura. Mitigated by `fetch_page`'s built-in Playwright MCP low-yield fallback (P4). (`blog_search`)
+18. `weasyprint` system deps (`pango`, `cairo`) absent at runtime → auto-fallback to `xhtml2pdf`; logged as `WARNING`. (`P10.5a`)
+19. SQLite `index.db` exceeds 1 GB → log a one-time `INFO` reminder; user runs `library prune` (P12). (`P10.5a`)
+20. Two concurrent `run_research()` calls writing to the same `index.db` → SQLite single-writer lock; mitigate via `aiosqlite`'s single-connection-per-writer queue + WAL mode + `busy_timeout_ms: 5000`. Add explicit retry-on-busy with exponential backoff up to 3 attempts so transactions exceeding 5s don't surface as user-facing errors. Document that parallel runs serialize writes. (`P10.5a`)
+21. Playwright MCP unavailable for blog→PDF rendering → fall back to `archive_html` raw HTML bytes path; artifact kind flips `pdf` → `html`. Log a `WARNING`. (`P10.5a`)
+22. Content-addressable dedup collisions (SHA-256 collision) — astronomically unlikely; ignore. (`P10.5a`)
+23. Both `weasyprint` AND `xhtml2pdf` fail at runtime → degrade to a markdown-only artifact (`kind="report"`, `bytes_path` points at the `.md` file) so the `reports` row can still be inserted; emit a `WARNING`; do not raise. (`P10.5a`)
+24. Refresh job re-fetches a URL whose upstream permanently 404s → log `WARNING`; set `artifacts.refresh_after_at` to NULL (mark as no-refresh) so future refresh runs skip it. Old artifact bytes remain in the library as historical record; mark `last_refreshed_at` with the 404 timestamp. (`P10.5b`)
+25. Storage-backend abstraction drift: P12's Postgres `StorageBackend` impl might fall behind the SQLite impl if a `LibraryWriter` method's SQL is added to one but not the other. Mitigated by the **conformance test suite** in P12 — SQLite always runs in CI; Postgres runs when `DEEP_RESEARCH_TEST_PG_DSN` is set. (`P12.0`)
+26. `StorageBackend.Protocol` is `runtime_checkable` only — Python's `Protocol` can't enforce return-type safety at runtime. Mitigated by mypy + the explicit `Row` dataclasses + a contract test (`tests/library/test_protocol_conformance.py`) that introspects method signatures at collection time and fails if a backend is missing a method. (`P10.5a`)
+27. LLM emits malformed `glossary` JSON → fallback parser drops the array silently; existing run not affected. (`P10.6`)
+28. LLM emission rates too few or too many glossary entries (we asked 0-10) → no remediation; user can `library glossary --refresh` later for an LLM reconcile pass. (`P10.6`)
+29. Cross-run rule-based glossary dedup misses semantically-same definitions with different wording → flagged for P12's LLM reconcile pass (opt-in CLI command). (`P10.6`)
+30. Glossary `UNIQUE(term_canonical)` constraint requires `acronym_expansion` to share its row with the acronym's row (not stored as a separate row). Mitigated by the schema fix below (single row per canonical term; `acronym_expansion` is a nullable column on the same row). (`P10.6`)
 
 ---
 
@@ -367,7 +412,7 @@ Conservative default list (case-insensitive substring match):
 ```
 gaps, what's missing, what is missing, omitted, not mentioned,
 limitation, limitations, shortcoming, shortcomings, weakness, weaknesses, flaw, flaws,
-counterexample, counterexamples, refute, refutation, disprove, disprove,
+counterexample, counterexamples, refute, refutation, disprove,
 verify, validate, falsify, check the claims, fact-check, fact check,
 comparison of, compare to, alternative, alternatives, competing,
 what else, what other
@@ -382,8 +427,8 @@ User can extend via `config.url_source.follow_up_trigger_phrases: []`.
 If implementation gets disrupted mid-session, do the following in the new session:
 
 1. Read this file (`docs/PLAN.md`) to refresh full plan.
-2. Read `/Users/xun/dev/deep_research/docs/IMPLEMENTATION_LOG.md` to see what's done.
-3. Check `/Users/xun/dev/deep_research/` file tree (use `ls -la` or `find . -type f`).
+2. Read `docs/IMPLEMENTATION_LOG.md` to see what's done.
+3. Check tracked files (`git ls-files`) to verify project structure.
 4. Run `cd /Users/xun/dev/deep_research && uv sync` to verify deps still resolve.
 5. Run `uv run python -m deep_research --help` to confirm CLI still works.
 6. Continue from the next pending item in `IMPLEMENTATION_LOG.md`.
@@ -448,7 +493,7 @@ blog_search:
   domain_fallback_per_domain_limit: 3      # cap posts per domain in direct mode
   domain_fallback_min_spacing_ms: 500      # per-host spacing delay
   cross_ref_arxiv: true                    # auto-detect arxiv IDs in blog body
-  last_known_good_date: "2026-07-17"       # surface stale-domain warning if older than 90d
+  last_known_good_date: "<release_date>"      # surface stale-domain warning if older than 90d; replace with date when P10.0 ships
 ```
 
 ### Path integration
@@ -475,11 +520,7 @@ blog_search:
 
 ### Risk register additions
 
-1. Blog content is less stable than arxiv — links rot, pages restructure. Mitigated by P10.5's PDF archival of every blog fetched.
-2. Blog-to-arxiv false positives: a blog may mention an arxiv paper tangentially. The LLM call in `analyze_blog` (P12) should filter relevance.
-3. Known-domain list is manually curated — stale entries produce dead links. `last_known_good_date` yaml field warns if older than 90d on first use.
-4. Direct-domain fetch may be IP-rate-limited by aggressive hosts (429/Retry-After). Surface as `ToolResult.error`, continue to next domain. Mitigated by `domain_fallback_min_spacing_ms: 500ms` default.
-5. JS-heavy domains (openai.com, deepmind.google) yield garbage under trafilatura. Mitigated by `fetch_page`'s built-in Playwright MCP low-yield fallback (P4).
+See the canonical **Risk register** near the top of this file. P10.0 contributes risks #13–#17 (blog-search-specific).
 
 ### Project structure additions (P10.0)
 
@@ -500,16 +541,15 @@ deep_research/
 P10.0 is intentionally minimal — it ships the tool. Academic-path integration is a 5-line shim (parallel `blog_search` call merged into `citations`). The full `applied` path + `analyze_blog` node + `classifier` admin route belong to P12.
 
 ---
-## P10.5 — Personal Digital Library v1
+## P10.5a — Personal Digital Library v1 (core storage + archival)
 
 ### Motivation
 
 A standalone, opt-out archive of every research artifact, producing a personally-owned knowledge base that accumulates across runs. Every arxiv PDF fetched, every report synthesized, every blog post discovered — bytes-on-disk + structured metadata — so re-researching a topic benefits from prior runs, not from re-fetching URLs that rot. Operates on the principle that **the artifact is the primary source**, not the URL: the same paper fetched via arxiv-by-id vs arxiv-by-URL is one row, not two.
 
-P10.5 ships two foundational capabilities that work together:
+P10.5a ships the **pluggable storage backend** — `StorageBackend` Protocol; SQLite is the default and only backend in P10.5a. The Protocol + Row dataclasses are designed so a Postgres backend can land in P12 without any change to `LibraryWriter` or the existing seam-point call sites.
 
-1. **Pluggable storage backend** — `StorageBackend` Protocol; SQLite is the default and only backend in P10.5. The Protocol + Row dataclasses are designed so a Postgres backend can land in P12 without any change to `LibraryWriter` or the existing seam-point call sites.
-2. **Refresh foundation schema** — even though the long-running scheduler is deferred to P12, the DB tables (`artifact_versions`, `refresh_jobs`) and the public `LibraryWriter` refresh methods ship in P10.5 so a manual `library refresh` CLI command works from day one. P10.5 ships **the foundation**; P12 ships the scheduler.
+P10.5a also ships the **schema foundation** for refresh (`artifact_versions` + `refresh_jobs` tables + `artifacts.{refresh_after_at, last_refreshed_at, upstream_unchanged_since}` columns via migration `0003_add_refresh_foundation.sql`) so the columns exist from day one — but the logic that *uses* them (`probe_upstream`, `run_refresh_job`) ships in P10.5b. This decoupling means library writes aren't blocked on the scheduler work landing.
 
 ### Conceptual model — three tiers
 
@@ -579,9 +619,9 @@ P10.5 ships two foundational capabilities that work together:
 - **Eviction**: no automatic eviction. Grow forever. User can `library prune --older-than 90d` (P12). One-time `INFO` reminder if `index.db` exceeds 1 GB.
 - **Upstream changes**: NEVER overwrite.changed upstream → archive as a new artifact_id + insert `artifact_versions` row. Old bytes remain for historical reference.
 
-### SQLite schema (v1 — ships in P10.5)
+### SQLite schema (v1 — ships in P10.5a)
 
-Single `.db` file (`pdl.root_dir/index.db`). Versioned via `schema_meta`. Auto-ALTER migrations run on first connect. The schema below is the **end state of P10.5**; migrations apply version-by-version from empty.
+Single `.db` file (`pdl.root_dir/index.db`). Versioned via `schema_meta`. Auto-ALTER migrations run on first connect. The schema below is the **end state of P10.5a**; migrations apply version-by-version from empty.
 
 ```sql
 CREATE TABLE schema_meta (
@@ -600,12 +640,12 @@ CREATE TABLE artifacts (
     discovered_by    TEXT,                             -- ToolName.value
     arxiv_id         TEXT,                             -- denormalized for arxiv; null otherwise
     parents          TEXT,                             -- JSON array of artifact_ids (citation-of-...)
-    bytes_path       TEXT NOT NULL,                    -- relative-to-pdl.root_dir
+    bytes_path       TEXT NOT NULL,                    -- for kind=pdf: path to a single file; for kind=html: path to a directory containing page.html + meta.json. Relative to pdl.root_dir.
     bytes_size       INTEGER,
     first_seen_at     TEXT NOT NULL,
     last_touched_at   TEXT NOT NULL,
     raw_metadata     TEXT,                             -- JSON blob
-    -- P10.5 refresh foundation (columns added by migration v3)
+    -- P10.5a refresh foundation (columns added by migration v3; logic in P10.5b)
     refresh_after_at        TEXT,                       -- ISO 8601; computed from refresh_policy at insert
     last_refreshed_at       TEXT,                       -- when LibraryWriter.probe_upstream last ran
     upstream_unchanged_since TEXT,                     -- last SHA-equal probe
@@ -665,7 +705,7 @@ CREATE TABLE tags (
     PRIMARY KEY (tag, artifact_id)
 );
 
--- 6. Glossary (P10.6 — schema shipped in P10.5 migration v2)
+-- 6. Glossary (P10.6 — schema shipped in P10.5a migration v2)
 CREATE TABLE glossary (
     term_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     term         TEXT NOT NULL,
@@ -680,10 +720,11 @@ CREATE TABLE glossary (
     first_seen_run_id TEXT REFERENCES reports(run_id),
     first_seen_artifact_id TEXT REFERENCES artifacts(artifact_id),
     last_updated TEXT NOT NULL,
-    UNIQUE(term_canonical, acronym_expansion)
+    UNIQUE(term_canonical)                    -- acronym_expansion lives on the same row as its term (not a separate row)
+    CHECK (kind IN ('concept','acronym','method','metric','dataset','model','tool'))
 );
 
--- 7 + 8. Refresh foundation (schema shipped in P10.5 migration v3; long-running scheduler deferred to P12)
+-- 7 + 8. Refresh foundation (schema shipped in P10.5a migration v3; long-running scheduler deferred to P12)
 CREATE TABLE artifact_versions (
     artifact_id_old TEXT NOT NULL REFERENCES artifacts(artifact_id),
     artifact_id_new TEXT NOT NULL REFERENCES artifacts(artifact_id),
@@ -724,7 +765,7 @@ CREATE VIRTUAL TABLE glossary_fts USING fts5(
 );
 ```
 
-### Pluggable storage backend — `StorageBackend` Protocol
+### Pluggable storage backend — `StorageBackend` Protocol (P10.5a)
 
 The `LibraryWriter` calls **only** the Protocol, never sqlite3 directly. Postgres backend lands in P12 by satisfying the same Protocol — no changes to `LibraryWriter` or any existing seam-point call site.
 
@@ -735,16 +776,16 @@ deep_research/
         ├── __init__.py                # get_backend(config) factory
         ├── base.py                    # StorageBackend Protocol
         ├── rows.py                    # typed Row dataclasses (shared between backends)
-        ├── sqlite_backend.py          # P10.5 default; uses aiosqlite + stdlib sqlite3
+        ├── sqlite_backend.py          # P10.5a default; uses aiosqlite + stdlib sqlite3
         ├── migrations/
         │   ├── sqlite/
         │   ├── 0001_initial.sql        # schema_meta, artifacts, reports, analyses,
-        │   │                            #   citation_edges, tags, FTS indices (P10.5)
-        │   ├── 0002_add_glossary.sql   # glossary + glossary_fts (P10.5 — schema ready for P10.6)
+        │   │                            #   citation_edges, tags, FTS indices (P10.5a)
+        │   ├── 0002_add_glossary.sql   # glossary + glossary_fts (P10.5a — schema ready for P10.6)
         │   └── 0003_add_refresh_foundation.sql  # artifact_versions + refresh_jobs +
         │                                          #   artifacts.{refresh_after_at,
         │                                          #   last_refreshed_at, upstream_unchanged_since}
-        └── postgres/                  # empty in P10.5; P12.0 fills these:
+        └── postgres/                  # empty in P10.5a; P12.0 fills these:
             └── README.md               # "Postgres migrations land in P12.0"
 ```
 
@@ -782,7 +823,7 @@ class StorageBackend(Protocol):
 
     # -- Analysis, citation_edges, tags, glossary, refresh_jobs --
     # Each gets a typed Row in rows.py + async CRUD methods. Implementation lives
-    # in the backend (sqlite_backend.py in P10.5; postgres_backend.py in P12).
+    # in the backend (sqlite_backend.py in P10.5a; postgres_backend.py in P12).
 
     # -- FTS (backend-encapsulated) --
     async def full_text_search(
@@ -790,7 +831,7 @@ class StorageBackend(Protocol):
     ) -> list[SearchHit]: ...
     async def glossary_search(self, query: str, limit: int) -> list[GlossaryEntry]: ...
 
-    # -- Refresh foundation (P10.5; the scheduler that calls these lands in P12) --
+    # -- Refresh foundation (P10.5a; the scheduler that calls these lands in P12) --
     async def insert_artifact_version(
         self, old_id: str, new_id: str, reason: str, run_id: str
     ) -> None: ...
@@ -805,7 +846,7 @@ class StorageBackend(Protocol):
 
 Tight Row dataclasses (`ArtifactRow`, `ReportRow`, `AnalysisRow`, `CitationEdgeRow`, `TagRow`, `GlossaryEntry`, `RefreshJobRow`, `ArtifactVersionRow`, `SearchHit`) live in `library/storage/rows.py` — shared between both backends so the in-memory shape is identical regardless of which backend is configured.
 
-### `LibraryWriter` middleware — the only integration surface
+### `LibraryWriter` middleware — the only integration surface (P10.5a)
 
 `LibraryWriter.__init__` takes a `storage: StorageBackend`. All artifact/file ops go through it; all SQL goes through `storage.*`. The writer itself is backend-agnostic.
 
@@ -837,7 +878,7 @@ class LibraryWriter:
     async def upsert_glossary_entries(self, entries: list[GlossaryEntry],
                                      run_id: str) -> int: ...
 
-    # -- Refresh foundation (P10.5 ships these; the scheduler that uses them is P12) --
+    # -- Refresh foundation (P10.5a ships these; the scheduler that uses them is P12) --
     def refresh_needed(self, artifact_id: str) -> bool:
         """Compute staleness from refresh_policy.stale_after_days_by_source_type
         against artifacts.last_touched_at. Pure computation; no I/O."""
@@ -854,7 +895,7 @@ class LibraryWriter:
         re_analyze: bool = False, dry_run: bool = False
     ) -> dict:
         """Top-level refresh invocation. Used by:
-          - the `library refresh` CLI command (P10.5, manual)
+          - the `library refresh` CLI command (P10.5b, manual)
           - the long-running scheduler (P12, cron-triggered)
         Both call this same method. Returns a stats dict:
           {considered, refreshed, unchanged, errored, new_versions}
@@ -866,17 +907,17 @@ class LibraryWriter:
 | Existing module | Seam point | Library call |
 |---|---|---|
 | `tools/arxiv.py` `arxiv_download_pdf` | right after disk write returns local path | `archive_pdf(path, arxiv_id=…, source_url=…)` |
-| `tools/fetch_page.py` (P10.5 addition) | after trafilatura/Playwright extracts the blog HTML | `archive_html(url, html, pdf_bytes=playwright_print(url))` |
+| `tools/fetch_page.py` (P10.5a addition) | after trafilatura/Playwright extracts the blog HTML | `archive_html(url, html, pdf_bytes=playwright_print(url))` |
 | `paths/url_source.py` `url_source()` | after `_fetch_arxiv_source` / `_fetch_pdf_source` / `_fetch_html_source` | ensure artifact exists; analyses link via artifact_id |
 | `paths/academic.py` `_analyze_and_recurse` | after `analyze_paper_node` returns | `record_analysis` |
 | `paths/academic.py` after each batch | for batch's discovered children | `record_citation_edge` (one per child) |
 | `agent.py run_research` | at completion (after `return Report(...)`) | `archive_report(report, run_id, config_snapshot)` |
-| `nodes/writer.py` + `paths/academic.py:_synthesize_markdown` + `paths/quick.py:_synthesize` | augmentation of synthesizing LLM prompt (P10.6) — no new seam for P10.5 | `upsert_glossary_entries` (called by writer code path post-synthesis) |
+| `nodes/writer.py` + `paths/academic.py:_synthesize_markdown` + `paths/quick.py:_synthesize` | augmentation of synthesizing LLM prompt (P10.6) — no new seam for P10.5a | `upsert_glossary_entries` (called by writer code path post-synthesis) |
 | `paths/applied.py` (P12) and `paths/quick.py` | per fetched blog/page | `archive_html(url, html, pdf=…)` — aggregation target for blog posts |
 
 `LibraryWriter` is constructed once per `run_research()` call (when `pdl.enabled`), threaded through the same path-module routing as the `ProgressReporter` from P9. When `pdl.enabled: false`, the writer is a No-op `NullLibraryWriter` (decorative null object — zero behavior change).
 
-### weasyprint integration + fallback
+### weasyprint integration + fallback (P10.5a)
 
 Dependency additions (pyproject.toml):
 
@@ -885,11 +926,13 @@ Dependency additions (pyproject.toml):
 | `weasyprint` | BSD-3-Clause | markdown → PDF for report archival |
 | `aiosqlite` | MIT | async SQLite access (stdlib sqlite3 blocks the event loop) |
 | `markdown` | BSD-3-Clause | markdown → HTML intermediate before weasyprint renders to PDF |
-| `xhtml2pdf` (P10.5 `pdf-fallback` extra) | Apache-2.0 | pure-Python fallback when weasyprint's native deps missing |
+| `xhtml2pdf` (P10.5a `pdf-fallback` extra) | Apache-2.0 | pure-Python fallback when weasyprint's native deps missing |
 
 Native deps for `weasyprint` (documented in README prerequisites table): `pango`, `cairo`.
 
 **Auto-fallback**: if `weasyprint` import fails OR `pango`/`cairo` missing at runtime → fall back to `xhtml2pdf` (lower visual quality, no system deps). Both paths produce valid PDFs; the filename is the same; user sees a `WARNING` log line the first time.
+
+**Degraded path when BOTH fail**: if `weasyprint` AND `xhtml2pdf` both error (e.g. system deps missing for both), fall back to a markdown-only artifact (`kind="report"`, `bytes_path` pointing at the `.md` file). Emit a `WARNING`. The `reports` row is still inserted; the run does not crash.
 
 ```python
 try:
@@ -898,13 +941,19 @@ try:
 except (ImportError, OSError) as e:
     logger.warning("weasyprint unavailable (%s); falling back to xhtml2pdf", e)
     from xhtml2pdf import pisa
-    with open(pdf_path, "wb") as fh:
-        pisa.CreatePDF(html, dest=fh)
+    try:
+        with open(pdf_path, "wb") as fh:
+            pisa.CreatePDF(html, dest=fh)
+    except Exception as e2:
+        logger.warning("xhtml2pdf also failed (%s); falling back to markdown-only artifact", e2)
+        # report.md already exists on disk; set bytes_path to it
+        artifact_kind = "report"
+        bytes_path = report_md_path
 ```
 
-### Refresh foundation — what ships in P10.5 vs what's deferred to P12
+### Refresh foundation — columns/tables in P10.5a, logic + CLI in P10.5b
 
-| Foundation (P10.5 — ships now) | Scheduler (P12 — ships later) |
+| Column/table (P10.5a — schema ships now) | Logic + CLI (P10.5b — ships next) | P12 ships later |
 |---|---|
 | `artifacts.refresh_after_at`, `artifacts.last_refreshed_at`, `artifacts.upstream_unchanged_since` columns | Long-running scheduler process |
 | `refresh_jobs` table (filled by `run_refresh_job`) | `apscheduler` integration |
@@ -914,7 +963,7 @@ except (ImportError, OSError) as e:
 | `LibraryWriter.run_refresh_job()` | Auto-recovery on scheduler crash |
 | `library refresh` CLI one-shot command (manual invocation) | Daemonized scheduler service |
 
-CLI command in P10.5 (manual — users cron it themselves until P12):
+CLI command in P10.5b (manual — users cron it themselves until P12):
 
 ```bash
 deep_research library refresh                            # all stale artifacts
@@ -926,14 +975,14 @@ deep_research library refresh --re-analyze               # force re-analyze even
 deep_research library refresh --once                     # explicit: run exactly one cycle (for cron wrappers)
 ```
 
-P10.5 ships `--once` as the default behavior; P12's scheduler wraps the same `run_refresh_job()` in an `apscheduler.CronTrigger` loop. The implementation contract is identical — only the caller differs.
+P10.5b ships `--once` as the default behavior; P12's scheduler wraps the same `run_refresh_job()` in an `apscheduler.CronTrigger` loop. The implementation contract is identical — only the caller differs.
 
 ### Config additions
 
 ```yaml
 pdl:
   enabled: true                                # opt-out within the library, not opt-out of the agent
-  root_dir: ".deep_research_library"           # relative to the cwd of run_research()
+    root_dir: ".deep_research_library"           # relative paths resolved once at config-load time against the cwd of the process; absolute paths used verbatim. `AgentTopConfig` stores the resolved absolute path so `LibraryWriter` never needs to re-resolve.
 
   storage:
     backend: "sqlite"                          # "sqlite" | "postgres"  (postgres lands in P12.0)
@@ -955,35 +1004,33 @@ pdl:
       - "log"                                  # always; future options: "webhook", "email:..."
 ```
 
-### Acceptance criteria
+### Acceptance criteria (P10.5a — core storage + archival)
 
 - [ ] Everything archived is content-addressed (SHA-256[:16]); identical PDFs fetched from arxiv-by-URL vs arxiv-by-arxiv_id are stored once.
 - [ ] Every `run_research()` call commits its final report (markdown + JSON + weasyprint-PDF) to `pdl.root_dir/reports/YYYY/MM/DD/...` with a `<run_id>` for traceability.
 - [ ] Every analyzed paper produces (a) an artifact row for the PDF, (b) an analyses row with key_findings + summary, (c) FTS-indexed extracted_text.
 - [ ] Every blog post archived by `blog_search` (P10.0) produces an artifact row with kind=`pdf` (or kind=`html` if Playwright missing).
-- [ ] Every existing test passes with `pdl.enabled=false` — zero behavior change for users who turn it off.
 - [ ] **`StorageBackend` Protocol** conformance: `LibraryWriter` has zero direct sqlite3/sql calls; all SQL lives in `sqlite_backend.py`. Pop a `grep -n "sqlite3\|aiosqlite" deep_research/library/writer.py` and assert empty.
 - [ ] **Schema migrations** are idempotent + ordered; bumping `schema_version` from v1 → v3 (synthetic empty-then-migrate test) applies all migrations cleanly with no duplicate-column errors.
 - [ ] **`weasyprint` failure auto-falls back** to `xhtml2pdf` with a `WARNING` log; run completes successfully either way; both produce a readable PDF.
+- [ ] **Both PDF renderers fail degraded path**: when `weasyprint` AND `xhtml2pdf` both error, fall back to a markdown-only artifact (`kind="report"`, `bytes_path` pointing at the `.md` file); emit a `WARNING`; the `reports` row is still inserted; the run does not crash.
+- [ ] **`bytes_path` semantics**: for `kind=pdf` artifacts, `bytes_path` points to a single file (e.g. `artifacts/pdf/9f8e7d6c-openai.pdf`). For `kind=html` artifacts, `bytes_path` points to a directory containing `page.html` + `meta.json`. Document this convention in the `ArtifactRow` dataclass docstring.
+- [ ] **Index/storage sizes**: an academic run with `max_papers=5` produces ≤5 PDF artifacts + 1 report PDF + ≤5 analyses rows. Storage impact ≤20MB. No JPEG persisted.
+- [ ] Every existing test passes with `pdl.enabled=false` — zero behavior change for users who turn it off. This is covered by the P1/P2/P3/P4/P5/P6/P7/P8/P9 top-level acceptance criteria — no new top-level item is needed.
+
+### Acceptance criteria (P10.5b — refresh foundation)
+
 - [ ] **`LibraryWriter.refresh_needed(artifact_id)`** correctly returns True for stale-by-policy artifacts and False for fresh or research_report-kind artifacts.
 - [ ] **`LibraryWriter.probe_upstream(artifact_id)`** correctly distinguishes upstream-unchanged (bumps `last_touched_at`, returns `(True, None)`) from upstream-changed (creates new artifact, inserts `artifact_versions` row, returns `(False, new_id)`).
 - [ ] **`LibraryWriter.run_refresh_job()` is idempotent** — calling it twice in a row on an unchanged library second-call returns `considered=0, refreshed=0` (no spurious new-versions rows).
 - [ ] **`library refresh` CLI command** exists with all documented flags (`--source-type`, `--tag`, `--artifact-id`, `--dry-run`, `--re-analyze`, `--once`); `--dry-run` produces zero network fetches.
 - [ ] **Files**: `tests/test_library_writer.py` (artifact dedup, report archival, analysis insert, citation-edge insert, glossary upsert), `tests/test_library_storage_sqlite.py` (backend CRUD + migrations), `tests/test_library_pdf_render.py` (weasyprint primary + xhtml2pdf fallback), `tests/test_library_refresh.py` (`refresh_needed` / `probe_upstream` / `run_refresh_job` lifecycle + CLI flag handling).
-- [ ] **Index/storage sizes**: an academic run with `max_papers=5` produces ≤5 PDF artifacts + 1 report PDF + ≤5 analyses rows. Storage impact ≤20MB. No JPEG persisted.
 
 ### Risk register additions
 
-6. `weasyprint` system deps (`pango`, `cairo`) absent at runtime → auto-fallback to `xhtml2pdf`; logged as `WARNING`.
-7. SQLite `index.db` exceeds 1 GB → log a one-time `INFO` reminder; user runs `library prune` (P12).
-8. Two concurrent `run_research()` calls writing to the same `index.db` → SQLite single-writer lock; mitigate via `aiosqlite`'s single-connection-per-writer queue + WAL mode + `busy_timeout_ms: 5000`. Document that parallel runs serialize writes.
-9. Playwright MCP unavailable for blog→PDF rendering → fall back to `archive_html` raw HTML bytes path; artifact kind flips `pdf` → `html`. Log a `WARNING`.
-10. Content-addressable dedup collisions (SHA-256 collision) — astronomically unlikely; ignore.
-14. Refresh job re-fetches a URL whose upstream permanently 404s → log `WARNING`; delete `artifacts.refresh_after_at` (mark as no-refresh) so future refresh runs skip it. Old artifact bytes remain in the library; mark `last_refreshed_at` with the 404 timestamp.
-15. Storage-backend abstraction drift: P12's Postgres `StorageBackend` impl might fall behind the SQLite impl if a `LibraryWriter` method's SQL is added to one but not the other. Mitigated by the **conformance test suite** in P12 — SQLite always runs in CI; Postgres runs when `DEEP_RESEARCH_TEST_PG_DSN` is set.
-16. `StorageBackend.Protocol` is `runtime_checkable` only — Python's `Protocol` can't enforce return-type safety at runtime. Mitigated by mypy + the explicit `Row` dataclasses; type-checker catches drift.
+See the canonical **Risk register** near the top of this file. P10.5a contributes risks #18–#23 (storage / weasyprint / concurrency / both-renderers-fail / Playwright-unavailable / SHA collision). P10.5b contributes risk #24 (upstream permanently 404s).
 
-### Project structure additions (P10.5)
+### Project structure additions (P10.5a)
 
 ```
 deep_research/
@@ -998,7 +1045,7 @@ deep_research/
         ├── rows.py                     # ArtifactRow, ReportRow, AnalysisRow,
         │                                 #   CitationEdgeRow, TagRow, GlossaryEntry,
         │                                 #   RefreshJobRow, ArtifactVersionRow, SearchHit
-        ├── sqlite_backend.py          # P10.5 default (the only backend in P10.5)
+        ├── sqlite_backend.py          # P10.5a default (the only backend in P10.5a)
         └── migrations/
             ├── sqlite/
             │   ├── 0001_initial.sql
@@ -1008,7 +1055,7 @@ deep_research/
                 └── README.md           # "Postgres migrations land in P12.0"
 ```
 
-### Existing files modified
+### Existing files modified (P10.5a — core storage + archival)
 
 | File | Change |
 |---|---|
@@ -1019,8 +1066,15 @@ deep_research/
 | `paths/academic.py` | After `analyze_paper_node` returns, `await library.record_analysis(...)`; after batch, `await library.record_citation_edges(...)` |
 | `config.py` | Add `PDLConfig` pydantic schema (`enabled`, `root_dir`, `storage.{backend, sqlite.*}`, `refresh.{enabled, stale_after_days_by_source_type, refresh_concurrency, re_analyze_on_change, notify_on_change}`) |
 | `config.example.yaml` | Add `pdl:` section with documented defaults |
-| `pyproject.toml` | Add `weasyprint`, `aiosqlite`, `markdown` to default deps; `xhtml2pdf` to `pdf-fallback` extra; **reserve `postgres` extra** for P12.0 (declared but empty in P10.5) |
+| `pyproject.toml` | Add `weasyprint`, `aiosqlite`, `markdown` to default deps; `xhtml2pdf` to `pdf-fallback` extra; **reserve `postgres` extra** for P12.0 (declared but empty in P10.5a) |
 | `README.md` | Add `pango` + `cairo` to system-binary prerequisites table; add library + `library refresh` CLI section to usage |
+
+### Existing files modified (P10.5b — refresh foundation)
+
+| File | Change |
+|---|---|
+| `library/cli.py` | Wire `--source-type`, `--tag`, `--artifact-id`, `--dry-run`, `--re-analyze`, `--once` flags into `run_refresh_job` |
+| `config.py` | (no change — refresh config fields already landed in P10.5a) |
 
 ---
 ## P10.6 — Glossary generation
@@ -1123,9 +1177,7 @@ For each of `paths/quick.py:_synthesize`, `paths/academic.py:_synthesize_markdow
 
 ### Risk register additions
 
-11. LLM emits malformed `glossary` JSON → fallback parser drops the array silently; existing run not affected.
-12. LLM emission rates too few or too many entries (we asked 0-10) → no remediation; user can `library glossary --refresh` later for an LLM reconcile pass.
-13. Cross-run rule-based dedup misses semantically-same definitions with different wording → flagged for P12's LLM reconcile pass (opt-in CLI command).
+See the canonical **Risk register** near the top of this file. P10.6 contributes risks #27–#30 (LLM glossary emission + cross-run dedup + UNIQUE semantics).
 
 ### Project structure additions (P10.6)
 
@@ -1149,30 +1201,34 @@ deep_research/
 | `library/writer.py` | `upsert_glossary_entries(entries, run_id) -> int` returns count of NEW entries added |
 
 ---
-## Phasing summary
+## Phasing notes (delta over the canonical table at top)
 
-| Phase | Scope | Deliverable |
-|---|---|---|
-| **P10.0** | `blog_search` tool (Tavily `site:` primary + direct-domain HTTP fallback, reusing `fetch_page` for Playwright MCP JS-render). Optional academic-path blog-seeding shim (no `applied` path yet). | Blogs surfaced; no persistence. |
-| **P10.5** (revised) | Personal Digital Library v1 with **pluggable storage backend** foundation — `.deep_research_library/` artifact store (PDFs only; no JPEGs) + `StorageBackend` Protocol + SQLite default backend with ordered idempotent migrations (`0001_initial`, `0002_add_glossary`, `0003_add_refresh_foundation`) + `LibraryWriter` middleware routing through the Protocol (no direct sqlite3 in writer) + weasyprint markdown→PDF (xhtml2pdf fallback) + Playwright print-to-PDF for blogs + **refresh foundation** (`artifact_versions`, `refresh_jobs` tables + `LibraryWriter.{refresh_needed, probe_upstream, run_refresh_job}` public methods + `library refresh` CLI one-shot command). `pdl.enabled: true` by default. | Every arxiv PDF + every report archived; library accumulates; manual `library refresh` works from day one. Storage-agnostic — flipping to Postgres in P12 requires zero changes to `LibraryWriter` callers. |
-| **P10.6** | Glossary generation: per-run LLM-call enrichment (no extra call) + rule-based cross-run dedup. `glossary.md` regenerated atomically each run. SQLite `glossary` table + FTS5 over definitions. | Curated key concepts + acronyms accumulate across runs; browse via `glossary.md`. |
-| **P11** | Wire `asyncpraw`. | Reddit access. |
-| **P12.0** (revised) | (a) **Postgres `StorageBackend` + asyncpg + conformance test suite parameterized over both backends** — `LibraryWriter` API works identically across SQLite and Postgres; flip via `pdl.storage.backend: "postgres"` yaml knob. (b) **Long-running refresh scheduler** (`apscheduler` + `croniter`) running `LibraryWriter.run_refresh_job` on a configurable cron; webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) **`applied` path** (blog-first research). (d) **Library CLI completes**: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary` with `--refresh` LLM reconcile. (e) **FastAPI microservice** + Dockerfile + poppler setup. | Personal library UX; long-running service that auto-refreshes the library; deployable Postgres-backed microservice. |
-| **P12.5** (optional) | Web UI for browsing the library. | Visual library browser. |
+> The canonical phase plan lives near the top of this file. The rows below add **detailed scope deltas** for the P10.x family — they do not redefine phases. Where the two disagree, the canonical table wins.
+
+| Phase | Delta / scope note |
+|---|---|
+| **P10.0** | Tool only; no `applied` path (that lands in P12.0). Optional academic-path blog-seeding shim = 5-line additive change to `paths/academic.py`. |
+| **P10.5a** (split out) | Personal Digital Library v1 core with **pluggable storage backend** foundation. All `LibraryWriter` methods go through the Protocol; migrations `0001_initial` + `0002_add_glossary` + `0003_add_refresh_foundation` ship here so the columns exist from day one. |
+| **P10.5b** (split out) | Refresh foundation logic — `LibraryWriter.{refresh_needed, probe_upstream, run_refresh_job}` + `library refresh` CLI one-shot command. Uses columns/tables already created by P10.5a's `0003` migration. Users cron `deep_research library refresh --once` themselves until P12.0's scheduler lands. |
+| **P10.6** | Glossary generation: per-run LLM-call enrichment (no extra call) + rule-based cross-run dedup. `glossary.md` regenerated atomically each run. SQLite `glossary` table + FTS5 over definitions. |
+| **P11** | Wire `asyncpraw`. Reddit access. |
+| **P12.0** | (a) Postgres `StorageBackend` + asyncpg + conformance suite parameterized over both backends. (b) Long-running refresh scheduler (`apscheduler` + `croniter`) running `LibraryWriter.run_refresh_job` on a configurable cron; webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) `applied` path (`paths/applied.py`) — the **only** phase that introduces it. (d) Library CLI completes: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh` LLM reconcile. (e) FastAPI microservice + Dockerfile + poppler setup. |
+| **P12.5** | Optional web UI for browsing the library. |
 
 ### Refresh-scheduler timeline recap
 
-- **P10.5 ships**: DB tables (`artifact_versions`, `refresh_jobs`) + `LibraryWriter` public methods (`refresh_needed`, `probe_upstream`, `run_refresh_job`) + `library refresh` CLI one-shot command. Users cron `deep_research library refresh --once` themselves if they want periodic refresh before P12.
+- **P10.5a ships**: DB schema (`artifact_versions`, `refresh_jobs`, the three `artifacts` refresh columns) so the columns exist from day one — but no logic touches them yet.
+- **P10.5b ships**: `LibraryWriter` public methods (`refresh_needed`, `probe_upstream`, `run_refresh_job`) + `library refresh` CLI one-shot command. Users cron `deep_research library refresh --once` themselves if they want periodic refresh before P12.
 - **P12.0 ships**: long-running `deep_research scheduler` process; cron config honored; webhook/email notifications.
 
 ### Storage-backend timeline recap
 
-- **P10.5 ships**: `StorageBackend` Protocol + SQLite backend (default). All `LibraryWriter` methods go through the Protocol.
+- **P10.5a ships**: `StorageBackend` Protocol + SQLite backend (default). All `LibraryWriter` methods go through the Protocol.
 - **P12.0 ships**: Postgres backend + `postgres` extra (`asyncpg`) + per-backend migrations + **conformance test suite** parameterized over both fixtures (SQLite always in CI; Postgres when `DEEP_RESEARCH_TEST_PG_DSN` is set).
 
 ---
 
-## Conformance test suite (P12.0 spec — captured here for the P10.5 design contract)
+## Conformance test suite (P12.0 spec — captured here for the P10.5a design contract)
 
 Both backends MUST satisfy every test in these parameters files; drift is a release blocker.
 
