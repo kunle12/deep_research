@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
 from deep_research.progress import NullReporter, ProgressReporter
@@ -302,6 +303,8 @@ async def url_source(
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> Report:
     """Execute the url_source path."""
     reporter: ProgressReporter = progress if progress is not None else NullReporter()
@@ -336,10 +339,13 @@ async def url_source(
         reporter.phase("url.fetch", f"html: {url[:80]}")
         content_text, citations = await _fetch_html_source(url, tools, config)
     else:
+        from datetime import UTC, datetime
         return Report(
             markdown=f"# Error\n\nUnsupported URL type for `{url}` ({url_type.value}).",
             path="unclear",
             classifier_rationale=f"URL unclassifiable: {url_type.value}",
+            created_at=datetime.now(UTC),
+            query=query,
         )
     reporter.step("url.fetch", f"{len(content_text)} chars; {len(page_image_data_urls)} vision pages")
 
@@ -352,11 +358,14 @@ async def url_source(
             f"**Detected type:** `{url_type.value}`\n\n"
             f"**Fetch result:**\n\n```\n{content_text[:2000]}\n```\n"
         )
+        from datetime import UTC, datetime
         return Report(
             markdown=md,
             citations=citations,
             path="url_source",
             classifier_rationale=f"URL detected ({url_type.value}); fetch error encountered",
+            created_at=datetime.now(UTC),
+            query=query,
         )
 
     # LLM analysis call. If pdf_vision rendered pages, we attach them as
@@ -393,11 +402,14 @@ async def url_source(
     if followup_md:
         md = md + "\n\n" + followup_md
 
+    from datetime import UTC, datetime
     return Report(
         markdown=md,
         citations=citations,
         path="url_source_with_followup" if wants_follow_up else "url_source",
         classifier_rationale=f"URL detected; classified as {url_type.value}",
+        created_at=datetime.now(UTC),
+        query=query,
     )
 
 

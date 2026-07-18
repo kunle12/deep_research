@@ -1,0 +1,18 @@
+You are a glossary extraction assistant. Given the research context below, identify
+key concepts, acronyms, methods, metrics, datasets, models, and tools mentioned.
+
+For each term, provide:
+- term: the term as used in text
+- term_canonical: the canonical/normalized form (e.g., lowercased, singular)
+- kind: one of "concept" | "acronym" | "method" | "metric" | "dataset" | "model" | "tool"
+- short_def: a concise definition (1-2 sentences)
+- long_def: a more detailed explanation (2-4 sentences, optional)
+- acronym_expansion: if kind is "acronym", the full expansion (e.g., "Reinforcement Learning from Human Feedback")
+- related_terms: JSON array of related canonical term strings (optional)
+- domain_tags: JSON array of domain tags like "nlp", "vision", "rl", "systems", "math" (optional)
+
+Return a JSON array of objects. If no terms worth extracting, return an empty array [].
+Output ONLY valid JSON — no markdown, no code fences.
+
+Research context:
+{context}

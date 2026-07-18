@@ -16,6 +16,7 @@ import logging
 from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.critic import review as critic_review
 from deep_research.nodes.planner import plan as planner_plan
@@ -34,6 +35,8 @@ async def deep_research(
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> Report:  # noqa: F821 - forward ref
     """Run the deep research loop."""
     # Import here to avoid circulars at module-load time
@@ -107,7 +110,7 @@ async def deep_research(
 
     # 3. Synthesize final report
     reporter.phase("deep.writer", f"synthesizing {len(state.citations)} citations")
-    final_md = await writer_write(state, client, config.llm.text_model)
+    final_md = await writer_write(state, client, config.llm.text_model, writer=writer, run_id=run_id)
 
     # 4. Project all assembled citations into a sorted list (by confidence desc)
     all_citations = sorted(
@@ -117,12 +120,15 @@ async def deep_research(
     )
 
     reporter.phase("deep.done", f"{len(all_citations)} citations")
+    from datetime import UTC, datetime
     return Report(
         markdown=final_md,
         citations=all_citations,
         path="deep",
         classifier_rationale=classified.rationale,
         iterations=state.iteration + 1 if state.plan.sub_questions else 0,
+        created_at=datetime.now(UTC),
+        query=original_query,
     )
 
 

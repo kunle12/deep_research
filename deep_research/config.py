@@ -195,6 +195,21 @@ class AcademicConfig(BaseModel):
     max_key_references_to_recurse: int = 5
 
 
+class BlogSearchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    primary: Literal["tavily", "direct", "both"] = "tavily"
+    use_domains_fallback: bool = True
+    known_domains: list[str] | None = None  # None = use defaults in blog_search.py
+    search_limit: int = 8
+    concurrency: int = 8
+    domain_fallback_per_domain_limit: int = 3
+    domain_fallback_min_spacing_ms: int = 500
+    cross_ref_arxiv: bool = True
+    last_known_good_date: str = ""
+
+
 class UrlSourceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -209,6 +224,47 @@ class UrlSourceConfig(BaseModel):
     auto_follow_up: bool = False
     # If fetch_page returns fewer content chars than this for an HTML url, try browser
     min_content_chars_for_browser_fallback: int = 500
+
+
+class PDLStorageSQLiteConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wal_mode: bool = True
+    busy_timeout_ms: int = 5000
+
+
+class PDLStorageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backend: Literal["sqlite", "postgres"] = "sqlite"
+    sqlite: PDLStorageSQLiteConfig = Field(default_factory=PDLStorageSQLiteConfig)
+    postgres_dsn_env: str = "DEEP_RESEARCH_PG_DSN"
+
+
+class PDLRefreshConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    stale_after_days_by_source_type: dict[str, int] = Field(
+        default_factory=lambda: {
+            "arxiv": 365,
+            "blog": 30,
+            "html": 14,
+            "research_report": 0,
+        }
+    )
+    refresh_concurrency: int = 4
+    re_analyze_on_change: bool = True
+    notify_on_change: list[str] = Field(default_factory=lambda: ["log"])
+
+
+class PDLConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    root_dir: str = ".deep_research_library"
+    storage: PDLStorageConfig = Field(default_factory=PDLStorageConfig)
+    refresh: PDLRefreshConfig = Field(default_factory=PDLRefreshConfig)
 
 
 class AgentTopConfig(BaseModel):
@@ -228,6 +284,8 @@ class AgentTopConfig(BaseModel):
     output: OutputConfig = Field(default_factory=OutputConfig)
     academic: AcademicConfig = Field(default_factory=AcademicConfig)
     url_source: UrlSourceConfig = Field(default_factory=UrlSourceConfig)
+    blog_search: BlogSearchConfig = Field(default_factory=BlogSearchConfig)
+    pdl: PDLConfig = Field(default_factory=PDLConfig)
 
     @model_validator(mode="after")
     def _validate_paths(self) -> AgentTopConfig:
@@ -260,12 +318,14 @@ __all__ = [
     "AgentConfigType",
     "AgentTopConfig",
     "ArxivConfig",
+    "BlogSearchConfig",
     "BrowserConfig",
     "CacheConfig",
     "ClassifierConfig",
     "FetchPageConfig",
     "LLMConfig",
     "OutputConfig",
+    "PDLConfig",
     "PdfVisionConfig",
     "RedditConfig",
     "SearXNGConfig",

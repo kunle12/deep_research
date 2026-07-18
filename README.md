@@ -4,7 +4,7 @@ A standalone, async-first Python agent that performs **web / deep / academic / s
 
 ## Status
 
-**Phases 1–9 complete.** All planned MVP features (auto-routing, deep/quick/academic/url-source paths, PDF vision, Playwright MCP, citation-graph mining, CLI with rich live progress) are implemented and tested. Reddit (P10) and the FastAPI microservice wrapper (P11) are intentionally deferred — see [`docs/PLAN.md`](docs/PLAN.md) and [`docs/IMPLEMENTATION_LOG.md`](docs/IMPLEMENTATION_LOG.md).
+**Phases 1–12 complete.** All planned features (auto-routing, deep/quick/academic/url-source/applied paths, PDF vision, Playwright MCP, citation-graph mining, blog search, personal digital library, glossary generation, Reddit access, Postgres backend, refresh scheduler, FastAPI microservice, CLI with rich live progress) are implemented and tested. See [`docs/PLAN.md`](docs/PLAN.md) and [`docs/IMPLEMENTATION_LOG.md`](docs/IMPLEMENTATION_LOG.md).
 
 ---
 
@@ -150,6 +150,26 @@ uv run python -m deep_research "..." --quiet        # suppress the live progress
 uv run python -m deep_research "..." --verbose      # debug-level logs + rich traceback on error
 ```
 
+Library CLI:
+
+```bash
+uv run deep-research-library ls                     # list recent reports
+uv run deep-research-library find "transformer"     # full-text search
+uv run deep-research-library show <artifact_id>     # artifact details
+uv run deep-research-library tag <id> <tag>         # tag an artifact
+uv run deep-research-library stats                  # library statistics
+uv run deep-research-library prune --older-than 90  # prune old artifacts
+uv run deep-research-library export-bibtex refs.bib # export as BibTeX
+uv run deep-research-library refresh                # refresh stale artifacts
+uv run deep-research-library glossary               # browse glossary
+```
+
+Refresh scheduler:
+
+```bash
+uv run deep-research-scheduler                      # run refresh daemon
+```
+
 When stdout is a TTY (the common case), the CLI renders a live status panel (`phase` / `elapsed` / recent `step`s) using [`rich.live.Live`](https://rich.readthedocs.io/en/stable/live.html). When stdout is piped to a file or captured by a non-interactive consumer (e.g. unit tests, cron), the live panel auto-disables — no flicker, just the final report.
 Pass `--quiet` / `-q` to force-disable the panel regardless of the TTY check.
 
@@ -179,25 +199,25 @@ asyncio.run(main())
 
 ---
 
-## Personal Digital Library (planned, P10.5)
+## Personal Digital Library (P10.5, P12)
 
-Phase 10 (currently specced in [`docs/PLAN.md`](docs/PLAN.md), **not yet implemented**) adds three things that accumulate across runs into a personally-owned knowledge base:
+The Personal Digital Library (`pdl.enabled: true` by default) archives every research artifact to `.deep_research_library/`:
 
-- **P10.0 — `blog_search` tool**: Tavily `site:` queries over a curated list of technical-blog domains (OpenAI, Anthropic, DeepMind, Distill, etc.) with a direct-domain HTTP fetch fallback when Tavily is unconfigured.
-- **P10.5 — Personal Digital Library v1**: every arxiv PDF + every blog post + every report produced by `run_research()` is archived to `.deep_research_library/` (path configurable via `pdl.root_dir`), with SQLite metadata DB (`artifacts`, `reports`, `analyses`, `citation_edges`, `tags`), FTS5 full-text search over extracted text + summaries, and content-addressable dedup so identical PDFs fetched via different routes are stored once. `pdl.enabled: true` by default; opt-out via yaml. Markdown reports are archived as PDFs via `weasyprint`.
-- **P10.6 — Glossary generation**: every synthesizing LLM call asks the model to optionally emit a `glossary` array (no extra LLM call). Cross-run rule-based dedup produces a single `.deep_research_library/glossary.md` regenerated atomically each run, organized by domain tag.
+- **Artifact store**: PDFs, HTML pages, and reports archived with content-addressable dedup (SHA-256[:16])
+- **Metadata DB**: SQLite `index.db` with artifacts, reports, analyses, citation edges, tags, glossary, FTS5 full-text search
+- **Postgres backend** (P12.0): alternative storage via asyncpg when `pdl.storage.backend: "postgres"` with `DEEP_RESEARCH_PG_DSN` env var
+- **Refresh scheduler** (P12.0): `deep-research-scheduler` daemon that periodically probes upstream URLs for changes
+- **Library CLI** (P12.0): `deep-research-library ls|find|show|tag|stats|prune|export-bibtex|refresh|glossary`
+- **Glossary** (P10.6): per-run LLM extraction, cross-run dedup, FTS5 search
 
-### Prerequisites for P10.5 (will land with implementation)
+### Prerequisites
 
 | OS | Command | What |
 |---|---|---|
 | macOS (Homebrew) | `brew install pango cairo` | weasyprint native deps |
 | Debian / Ubuntu | `sudo apt-get install libpango-1.0-0 libpangoft2-1.0-0 libcairo2` | weasyprint native deps |
-| Fedora | `sudo dnf install pango cairo` | weasyprint native deps |
 
-When `pango` / `cairo` are absent at runtime, the library auto-falls back to `xhtml2pdf` (lower visual quality, pure Python) — logged as a `WARNING` on first use. Either PDF-generation path produces a valid report-PDF archived in the library.
-
-See the [full spec in `docs/PLAN.md`](docs/PLAN.md#p10-0--blog-search-tool-tavily-primary--direct-domain-fallback).
+When native deps absent, falls back to `xhtml2pdf` (logged as `WARNING`).
 
 ---
 
@@ -207,20 +227,26 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full design document. In short:
 
 ```
 deep_research/
-├── agent.py            # run_research() public entrypoint + routing
-├── config.py           # AgentTopConfig pydantic schema (top-level + nested components)
-├── state.py            # ResearchState, Citation, Report, CitationGraph, ...
-├── citations.py        # dedup + bibliography formatter (markdown + bibtex)
-├── progress.py         # ProgressReporter Protocol + NullReporter (no-op default)
-├── llm/                # OpenAI-compatible async client, vision utils, tool-calling loop
-├── paths/              # classifier, quick, deep, academic, url_source runners
-├── nodes/              # planner, researcher, critic, writer, analyze_{paper,source}
-├── tools/              # web_search, fetch_page, arxiv, pdf, browser (Playwright MCP), reddit (stub)
-├── report/             # markdown, bibtex, json_export renderers
+├── agent.py              # run_research() public entrypoint + routing
+├── config.py             # AgentTopConfig pydantic schema
+├── state.py              # ResearchState, Citation, Report, CitationGraph, ...
+├── citations.py          # dedup + bibliography formatter (markdown + bibtex)
+├── progress.py           # ProgressReporter Protocol + NullReporter
+├── scheduler.py          # Refresh scheduler daemon (P12.0)
+├── microservice.py       # FastAPI microservice (P12.0)
+├── llm/                  # OpenAI-compatible async client, vision utils, tool-calling loop
+├── paths/                # classifier, quick, deep, academic, url_source, applied runners
+├── nodes/                # planner, researcher, critic, writer, analyze_{paper,source}, glossarize
+├── tools/                # web_search, fetch_page, arxiv, pdf, browser, reddit, blog_search
+├── report/               # markdown, bibtex, json_export renderers
+├── library/              # Personal Digital Library (P10.5)
+│   ├── writer.py         # LibraryWriter middleware
+│   ├── cli.py            # Library CLI commands
+│   └── storage/          # StorageBackend Protocol + SQLite + Postgres backends
 ├── cli/
-│   ├── app.py          # typer shell (thin wrapper around run_research)
-│   └── progress.py     # RichProgressReporter (rich.live.Live panel)
-└── prompts/            # .txt prompt templates
+│   ├── app.py            # typer shell
+│   └── progress.py       # RichProgressReporter
+└── prompts/              # .txt prompt templates
 ```
 
 ---
@@ -294,9 +320,31 @@ uv run python -m deep_research --quiet "..." > report.md
 - Confirm `OPENAI_API_KEY` and the LLM endpoint are reachable.
 - Re-run with `--verbose` to see the per-paper analyze logs.
 
-### Reddit tool "NotImplementedError"
+### Reddit tool errors
 
-Reddit integration (P10) is intentionally stubbed. To suppress even the stub registration, set `reddit.enabled: false` in config.yaml (default).
+Reddit integration (P11) requires:
+1. `uv sync --extra reddit` to install `asyncpraw`
+2. `reddit.enabled: true` in config.yaml
+3. `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` env vars set
+
+If any of these are missing, the tool returns a clean error message (no crash). By default `reddit.enabled: false`, so the tool is not registered at all.
+
+### Postgres backend
+
+Set `pdl.storage.backend: "postgres"` and `DEEP_RESEARCH_PG_DSN` env var. Requires `uv sync --extra postgres` to install `asyncpg`.
+
+### Refresh scheduler
+
+Run `deep-research-scheduler` as a daemon. It probes upstream URLs on a cron schedule (default: every 6 hours). Configure via `pdl.refresh.*` yaml keys.
+
+### FastAPI microservice
+
+Run `uv run python -m deep_research.microservice` or use the Dockerfile:
+```bash
+docker build -t deep-research .
+docker run -p 8080:8080 deep-research
+```
+POST `/research` with `{"query": "...", "config_path": "config.yaml"}`.
 
 ---
 

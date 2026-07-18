@@ -15,7 +15,7 @@ agent:
   max_concurrent_tools: 8        # asyncio.Semaphore bound on parallel tool dispatch
   classifier:
     enabled: true
-    force_path: null             # null | "quick" | "deep" | "academic" | "url_source"
+    force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"
     min_query_length_for_deep: 30
 
 search:
@@ -46,7 +46,7 @@ arxiv:
   request_delay_s: 3.0
 
 reddit:
-  enabled: false                  # STUB — flip when asyncpraw + creds ready
+  enabled: false                  # requires `uv sync --extra reddit` + API credentials
   client_id_env: "REDDIT_CLIENT_ID"
   client_secret_env: "REDDIT_CLIENT_SECRET"
   user_agent: "deep_research_bot/0.1"
@@ -60,7 +60,7 @@ pdf_vision:
   max_dim: 1024                   # longest side in px after downscale
   jpeg_quality: 80
   batch_size: 4                   # pages per VLM call
-  text_extract_first: true        # also extract text alongside vision
+  text_extract_first: true        # also run text extraction alongside vision
 
 fetch_page:
   enabled: true
@@ -98,5 +98,37 @@ url_source:
   fetch_html_size_limit_mb: 10
   head_probe_timeout_s: 8
   follow_up_trigger_phrases: []   # extend built-in heuristic
-  auto_follow_up: false          # recommended: only on explicit request
+  auto_follow_up: false           # recommended: only on explicit request
   min_content_chars_for_browser_fallback: 500
+
+blog_search:
+  enabled: true
+  primary: "tavily"                      # "tavily" | "direct" | "both"
+  use_domains_fallback: true             # engage direct-domain fetch when Tavily unconfigured
+  known_domains: null                    # null = use defaults in blog_search.py
+  search_limit: 8                        # max blog posts returned per call
+  concurrency: 8                         # HTTP-only, cheaper than PDF
+  domain_fallback_per_domain_limit: 3    # cap posts per domain in direct mode
+  domain_fallback_min_spacing_ms: 500    # per-host spacing delay
+  cross_ref_arxiv: true                  # auto-detect arxiv IDs in blog body
+  last_known_good_date: ""               # surface stale-domain warning if older than 90d
+
+pdl:
+  enabled: true                          # archive artifacts by default
+  root_dir: ".deep_research_library"     # path to library root
+  storage:
+    backend: "sqlite"                    # "sqlite" | "postgres" (postgres requires asyncpg)
+    sqlite:
+      wal_mode: true
+      busy_timeout_ms: 5000
+    postgres_dsn_env: "DEEP_RESEARCH_PG_DSN"
+  refresh:
+    enabled: true
+    stale_after_days_by_source_type:
+      arxiv: 365
+      blog: 30
+      html: 14
+      research_report: 0
+    refresh_concurrency: 4
+    re_analyze_on_change: true
+    notify_on_change: ["log"]

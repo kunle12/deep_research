@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_paper import (
     analyze as analyze_paper_node,
@@ -61,6 +63,8 @@ async def academic_research(
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> Report:
     """Execute the academic recursive-mining path.
 
@@ -82,6 +86,20 @@ async def academic_research(
     reporter.phase("academic.seed", f"gathering seeds (n ≤ {cfg.seed_count})")
     seeds = await _gather_seeds(classified, original_query, tools, config, seeds_citations)
     reporter.step("academic.seed", f"{len(seeds)} seed papers")
+
+    # P10.0 optional: run parallel blog fetch and merge into citations
+    blog_citations: list[Citation] = []
+    if config.blog_search.enabled and "blog_search" in tools.names():
+        reporter.step("academic.seed", "fetching blog context")
+        try:
+            blog_result = await tools.call(
+                "blog_search", {"query": original_query, "max_results": 5}
+            )
+            if blog_result.error is None:
+                blog_citations = list(blog_result.citations)
+                reporter.step("academic.seed", f"{len(blog_citations)} blog citations")
+        except Exception:
+            logger.info("blog_search in academic path failed; skipping")
 
     # Enqueue seed nodes at depth 0 (parent_arxiv_id=None, rationale="")
     queue_white: list[tuple[PaperNode, int, str | None]] = [
@@ -127,6 +145,19 @@ async def academic_research(
             processed.add(base)
             graph.analyses[base] = analysis
             analyses[base] = analysis
+
+            # P10.5a: record analysis + citation edges in library
+            if isinstance(writer, LibraryWriter) and run_id:
+                artifact = await writer.storage.find_artifact_by_arxiv_id(base)
+                if artifact:
+                    await writer.record_analysis(artifact.artifact_id, analysis, run_id, "analyze_paper")
+                    for ref in analysis.key_references:
+                        if ref.arxiv_id:
+                            await writer.record_citation_edge(
+                                artifact.artifact_id, ref.arxiv_id,
+                                weight=0.5, run_id=run_id,
+                                rationale=f"key reference in {base}",
+                            )
             logger.info(
                 "analyzed arxiv=%s depth=%d title=%r refs=%d",
                 base, depth, (analysis.title or "")[:60], len(analysis.key_references),
@@ -189,7 +220,7 @@ async def academic_research(
     # ---- SYNTHESIZE --------------------------------------------------------
     reporter.phase("academic.synthesize", f"{len(analyses)} analyses")
     final_md = await _synthesize_markdown(
-        original_query, analyses, client, config.llm.text_model
+        original_query, analyses, client, config.llm.text_model, blog_citations, writer, run_id
     )
 
     # Collect citations from PaperNodes (use what we resolved; metadata is
@@ -224,13 +255,14 @@ async def academic_research(
             )
     # Dedup by url + keep highest confidence (avoid double seeds)
     seen: dict[str, Citation] = {}
-    for c in citations + seeds_citations:
+    for c in citations + seeds_citations + blog_citations:
         existing = seen.get(c.url)
         if existing is None or existing.confidence_score < c.confidence_score:
             seen[c.url] = c
     citations = sorted(seen.values(), key=lambda c: c.confidence_score, reverse=True)
 
     reporter.phase("academic.done", f"{len(analyses)} papers; {len(citations)} citations")
+    from datetime import UTC, datetime
     return Report(
         markdown=final_md,
         citations=citations,
@@ -238,53 +270,8 @@ async def academic_research(
         citation_graph=graph,
         classifier_rationale=classified.rationale,
         iterations=len(processed),
-    )
-
-    # Collect citations from PaperNodes (use what we resolved; metadata is
-    # sparse for un-resolved child refs but the URL is still valid).
-    citations: list[Citation] = []
-    for aid, node in graph.nodes.items():
-        if aid in analyses:
-            a = analyses[aid]
-            citations.append(
-                Citation(
-                    url=f"https://arxiv.org/abs/{aid}",
-                    title=a.title or node.title,
-                    snippet=(a.summary or "")[:300],
-                    source_type="arxiv",
-                    arxiv_id=aid,
-                    authors=node.authors,
-                    confidence_score=0.8,
-                    discovered_by=None,  # populated as None for graph-sourced
-                )
-            )
-        else:
-            citations.append(
-                Citation(
-                    url=f"https://arxiv.org/abs/{aid}",
-                    title=node.title,
-                    snippet=node.rationale,
-                    source_type="arxiv",
-                    arxiv_id=aid,
-                    authors=node.authors,
-                    confidence_score=0.5,
-                )
-            )
-    # Dedup by url + keep highest confidence (avoid double seeds)
-    seen: dict[str, Citation] = {}
-    for c in citations + seeds_citations:
-        existing = seen.get(c.url)
-        if existing is None or existing.confidence_score < c.confidence_score:
-            seen[c.url] = c
-    citations = sorted(seen.values(), key=lambda c: c.confidence_score, reverse=True)
-
-    return Report(
-        markdown=final_md,
-        citations=citations,
-        path="academic",
-        citation_graph=graph,
-        classifier_rationale=classified.rationale,
-        iterations=len(processed),
+        created_at=datetime.now(UTC),
+        query=original_query,
     )
 
 
@@ -405,6 +392,9 @@ async def _synthesize_markdown(
     analyses: dict[str, Any],
     client: AsyncOpenAI,
     model: str,
+    blog_citations: list | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> str:
     """Run a single LLM synthesis call over all paper analyses.
 
@@ -429,27 +419,49 @@ async def _synthesize_markdown(
         )
     digest = "\n\n".join(digest_lines)
 
+    # P10.0: inject blog context when available
+    blog_section = ""
+    if blog_citations:
+        blog_lines: list[str] = []
+        for c in blog_citations:
+            blog_lines.append(f"- [{c.title}]({c.url}): {c.snippet[:200]}")
+        blog_section = f"\n\n# Blog context\n{chr(10).join(blog_lines)}"
+
+    system_msg = (
+        "You are an academic synthesis writer. Given a set of analyses of "
+        "discovered academic papers (with recursively-mined citations), write "
+        "a 2-4 section markdown report answering the user's research query. "
+        "Cite each paper inline using the bare-URL form "
+        "([arxiv:ID](https://arxiv.org/abs/ID))."
+    )
+    # P10.6 glossary augmentation
+    glossary_prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
+    if glossary_prompt_path.exists():
+        glossary_text = glossary_prompt_path.read_text().strip()
+        if glossary_text:
+            system_msg += "\n\n" + glossary_text
+
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an academic synthesis writer. Given a set of analyses of "
-                "discovered academic papers (with recursively-mined citations), write "
-                "a 2-4 section markdown report answering the user's research query. "
-                "Cite each paper inline using the bare-URL form "
-                "([arxiv:ID](https://arxiv.org/abs/ID))."
-            ),
-        },
+        {"role": "system", "content": system_msg},
         {
             "role": "user",
-            "content": f"# Research query\n{original_query}\n\n# Paper analyses digest\n{digest}",
+            "content": f"# Research query\n{original_query}\n\n# Paper analyses digest\n{digest}{blog_section}",
         },
     ]
     try:
         resp = await client.chat.completions.create(
             model=model, messages=messages, temperature=0.0
         )
-        return (resp.choices[0].message.content or "").strip() or _fallback_synthesis(original_query, analyses)
+        md = (resp.choices[0].message.content or "").strip() or _fallback_synthesis(original_query, analyses)
+
+        # P10.6 glossary extraction
+        if isinstance(writer, LibraryWriter) and run_id:
+            from deep_research.nodes.glossarize import parse_glossary_from_response
+            glossary_entries = parse_glossary_from_response(md, run_id)
+            if glossary_entries:
+                await writer.upsert_glossary_entries(glossary_entries, run_id)
+
+        return md
     except Exception as e:
         logger.warning("academic synthesis LLM call failed: %s: %s; using fallback", type(e).__name__, e)
         return _fallback_synthesis(original_query, analyses)

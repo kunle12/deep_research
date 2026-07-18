@@ -50,6 +50,8 @@ app = typer.Typer(
 )
 
 
+
+
 def _setup_logging(verbose: bool) -> None:
     """Config root logger with rich-friendly formatting."""
     level = logging.DEBUG if verbose else logging.INFO

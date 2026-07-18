@@ -19,6 +19,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import Citation, ClassifiedQuery, Report
@@ -37,6 +38,8 @@ async def quick_search(
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> Report:
     """Execute the quick path: 1 search + summarize via LLM synthesis."""
     reporter: ProgressReporter = progress if progress is not None else NullReporter()
@@ -76,15 +79,18 @@ async def quick_search(
         .replace("{results}", rendered_results)
     )
 
-    answer_text, llm_citations = await _synthesize(client, config, prompt_text)
+    answer_text, llm_citations = await _synthesize(client, config, prompt_text, writer, run_id)
     citations = _merge_citations(citations, llm_citations)
 
     reporter.phase("quick.done", f"{len(citations)} citations")
+    from datetime import UTC, datetime
     return Report(
         markdown=answer_text,
         citations=citations,
         path="quick",
         classifier_rationale=classified.rationale,
+        created_at=datetime.now(UTC),
+        query=original_query,
     )
 
 
@@ -119,23 +125,30 @@ async def _synthesize(
     client: AsyncOpenAI,
     config: AgentTopConfig,
     prompt_text: str,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> tuple[str, list[Citation]]:
     """Call the LLM with the quick_summary prompt."""
     citations: list[Citation] = []
     try:
+        system_msg = (
+            "You are a quick research synthesizer. "
+            "Respond with a SINGLE JSON object and NOTHING ELSE - no markdown fences, "
+            'no surrounding text. Schema: '
+            '{"answer": "<markdown string>", '
+            '"citations": [{"url":"...","title":"...","snippet":"...","confidence_score":0.8}]}'
+        )
+        # P10.6 glossary augmentation
+        glossary_prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
+        if glossary_prompt_path.exists():
+            glossary_text = glossary_prompt_path.read_text().strip()
+            if glossary_text:
+                system_msg += "\n\n" + glossary_text
+
         resp = await client.chat.completions.create(
             model=config.llm.text_model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a quick research synthesizer. "
-                        "Respond with a SINGLE JSON object and NOTHING ELSE - no markdown fences, "
-                        'no surrounding text. Schema: '
-                        '{"answer": "<markdown string>", '
-                        '"citations": [{"url":"...","title":"...","snippet":"...","confidence_score":0.8}]}'
-                    ),
-                },
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt_text},
             ],
             temperature=0.0,
@@ -158,6 +171,12 @@ async def _synthesize(
                         source_type="web",
                     )
                 )
+            # P10.6 glossary extraction
+            if isinstance(writer, LibraryWriter) and run_id:
+                from deep_research.nodes.glossarize import parse_glossary_from_response
+                glossary_entries = parse_glossary_from_response(raw, run_id)
+                if glossary_entries:
+                    await writer.upsert_glossary_entries(glossary_entries, run_id)
         except json.JSONDecodeError:
             answer_md = raw
     except Exception as e:

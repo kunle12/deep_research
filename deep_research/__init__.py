@@ -6,13 +6,15 @@ Public API re-exports:
 """
 
 from deep_research.agent import run_research
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, BlogSearchConfig, PDLConfig
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.state import (
     AcademicState,
     Citation,
     CitationGraph,
     ClassifiedQuery,
     Critique,
+    GlossaryEntry,
     PaperAnalysis,
     PaperNode,
     QueryPlan,
@@ -29,10 +31,15 @@ __version__ = "0.1.0"
 __all__ = [
     "AcademicState",
     "AgentTopConfig",
+    "BlogSearchConfig",
     "Citation",
     "CitationGraph",
     "ClassifiedQuery",
     "Critique",
+    "GlossaryEntry",
+    "LibraryWriter",
+    "NullLibraryWriter",
+    "PDLConfig",
     "PaperAnalysis",
     "PaperNode",
     "QueryPlan",

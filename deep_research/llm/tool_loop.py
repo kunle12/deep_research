@@ -55,6 +55,7 @@ class ToolRegistry:
         self._tools: dict[str, ToolFunc] = {}
         self._schemas: list[dict] = []
         self._semaphore: asyncio.Semaphore | None = None  # set by agent
+        self.writer: Any | None = None  # optional LibraryWriter for tool-side archival
 
     def register(
         self,

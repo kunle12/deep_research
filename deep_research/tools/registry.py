@@ -62,6 +62,11 @@ async def build_tool_registry(config: AgentTopConfig) -> ToolRegistry:
     else:
         logger.debug("reddit disabled — registering NO stub")
 
+    if config.blog_search.enabled:
+        from deep_research.tools import blog_search
+
+        await blog_search.register(reg, config)
+
     logger.info("registered tools: %s", reg.names())
     return reg
 

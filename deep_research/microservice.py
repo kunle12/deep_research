@@ -1,0 +1,68 @@
+"""FastAPI microservice — wraps run_research as an HTTP endpoint.
+
+P12(e): implemented. Provides a single POST /research endpoint that accepts
+a query and optional config path, runs the agent, and returns the Report as JSON.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+from deep_research import run_research
+from deep_research.config import AgentTopConfig
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Deep Research Agent", version="0.1.0")
+
+
+class ResearchRequest(BaseModel):
+    query: str
+    path_override: str | None = None
+    config_path: str = "config.yaml"
+
+
+class ResearchResponse(BaseModel):
+    markdown: str
+    path: str
+    citations: list[dict[str, Any]]
+    iterations: int = 0
+
+
+@app.post("/research", response_model=ResearchResponse)
+async def research_endpoint(request: ResearchRequest) -> ResearchResponse:
+    """Run a research query and return the result."""
+
+    config = AgentTopConfig.load_yaml(request.config_path)
+    try:
+        report = await run_research(
+            query=request.query,
+            config=config,
+            path_override=request.path_override,
+        )
+    except Exception as e:
+        logger.exception("research failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return ResearchResponse(
+        markdown=report.markdown,
+        path=report.path,
+        citations=[c.model_dump() for c in report.citations],
+        iterations=report.iterations,
+    )
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+def serve(host: str = "0.0.0.0", port: int = 8080) -> None:
+    """Start the FastAPI microservice."""
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port)

@@ -1,23 +1,4 @@
-"""Deep Research Agent - public async entrypoint.
-
-Usage:
-
-    from deep_research import run_research, AgentTopConfig
-
-    config = AgentTopConfig.load_yaml("config.yaml")
-    report = await run_research("your query here", config)
-    print(report.markdown)
-
-Routing logic:
-  1. If `config.agent.classifier.force_path` is set, use that path (skip URL detection too).
-  2. Else, if a URL is detected in the query text, route to paths.url_source.
-  3. Else, if classifier.enabled, call classifier LLM and dispatch on its output.
-  4. Else (classifier disabled, no force path, no URL), default to paths.deep.
-
-CLI flags (when invoked via `python -m deep_research`):
-  - --quick / --deep / --academic / --url-source override the classifier/URL detection entirely.
-  - These map to `force_path` in `agent.classifier` config OR are passed via `path_override`.
-"""
+"""Deep Research Agent - public async entrypoint."""
 
 from __future__ import annotations
 
@@ -38,7 +19,6 @@ from deep_research.tools.url_detector import extract_first_url, strip_url_from_q
 
 logger = logging.getLogger(__name__)
 
-
 PathOverride = Literal["quick", "deep", "academic", "url_source"]
 
 
@@ -51,13 +31,8 @@ async def run_research(
 ) -> Report:
     """Top-level public entrypoint.
 
-    `path_override` (optional) takes precedence over both classifier and URL
-    detection. CLI commands should pass `--quick/--deep/--academic/--url-source`
-    flag value here.
-
-    `progress` (optional) — when provided, the agent calls `phase()` / `step()`
-    as it moves through routing and each path's sub-phases. Library callers
-    omit it for a silent run. The CLI passes a `RichProgressReporter`.
+    `path_override` takes precedence over both classifier and URL detection.
+    `progress` — when provided, the agent calls phase/step as it moves through routing.
     """
     reporter: ProgressReporter = progress if progress is not None else NullReporter()
 
@@ -78,7 +53,6 @@ async def run_research(
             url = extract_first_url(query) or query.strip()
             remainder = strip_url_from_query(query, url) if url != query.strip() else ""
             if not _looks_like_url(url):
-                # User forced --url-source but no URL given; emit friendly error.
                 reporter.phase("error", "--url-source without URL")
                 reporter.complete()
                 return Report(
@@ -93,8 +67,6 @@ async def run_research(
                 )
             reporter.complete()
             return report
-        # Other overrides (quick / deep / academic) go through normal dispatch
-        # with a fabricated ClassifiedQuery
         classified = ClassifiedQuery(
             path=QueryPlan(path_override),
             rationale=f"explicit --{path_override} override",
@@ -174,7 +146,7 @@ async def run_research(
 async def _dispatch_classified(
     classified: ClassifiedQuery,
     original_query: str,
-    client,  # openai.AsyncOpenAI
+    client,
     tools: ToolRegistry,
     config: AgentTopConfig,
     reporter: ProgressReporter,
@@ -196,7 +168,6 @@ async def _dispatch_classified(
             classifier_rationale=classified.rationale,
             clarifying_questions=list(classified.clarifying_questions),
         )
-    # Defensive fallback
     return await deep_research(classified, original_query, client, tools, config, reporter)
 
 
@@ -214,7 +185,7 @@ async def _dispatch_url_source(
 
 
 class _ToolsCtx:
-    """Async context manager wrapper around build_tool_registry() so we can `async with` it."""
+    """Async context manager wrapper around build_tool_registry()."""
 
     def __init__(self, config: AgentTopConfig) -> None:
         self._config = config
@@ -225,10 +196,6 @@ class _ToolsCtx:
         return self._tools
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        # P8: explicit teardown for the browser MCP subprocess (closed via the
-        # hook the browser tool registers on the registry at register() time).
-        # We swallow teardown errors so we don't mask the original exception
-        # that triggered __aexit__.
         if self._tools is not None:
             close_hook = getattr(self._tools, "_browser_close", None)
             if close_hook is not None:

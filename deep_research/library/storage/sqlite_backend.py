@@ -1,0 +1,609 @@
+"""SQLite storage backend — P10.5a default.
+
+Uses aiosqlite + stdlib sqlite3. WAL mode + busy_timeout for concurrent safety.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+
+from deep_research.library.storage.rows import (
+    AnalysisRow,
+    ArtifactRow,
+    CitationEdgeRow,
+    GlossaryEntry,
+    RefreshJobRow,
+    ReportRow,
+    SearchHit,
+    TagRow,
+)
+
+logger = logging.getLogger(__name__)
+
+_MIGRATION_DIR = Path(__file__).resolve().parent / "migrations" / "sqlite"
+
+# Ordered migration files — each file bumps schema_version by 1
+_MIGRATION_FILES = [
+    "0001_initial.sql",
+    "0002_add_glossary.sql",
+    "0003_add_refresh_foundation.sql",
+]
+
+
+def _parse_migration_version(filename: str) -> int:
+    """Extract version number from filename like '0002_add_glossary.sql'."""
+    parts = filename.split("_", 1)
+    try:
+        return int(parts[0])
+    except ValueError:
+        return 0
+
+
+class SqliteStorageBackend:
+    """SQLite implementation of StorageBackend.
+
+    All methods are async. Uses aiosqlite for non-blocking SQL operations.
+    WAL mode + busy_timeout=5000 for concurrent-write safety.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._conn: aiosqlite.Connection | None = None
+
+    # -- Lifecycle --
+
+    async def connect(self) -> None:
+        """Open the SQLite connection with WAL mode and busy timeout."""
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._conn = await aiosqlite.connect(
+            self._db_path,
+            timeout=5000,  # busy_timeout_ms
+        )
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.execute("PRAGMA busy_timeout=5000")
+        await self._conn.execute("PRAGMA foreign_keys=ON")
+        await self.ensure_schema()
+
+    async def close(self) -> None:
+        if self._conn is not None:
+            await self._conn.commit()
+            await self._conn.close()
+            self._conn = None
+
+    # -- Schema management --
+
+    async def current_schema_version(self) -> int:
+        """Read the current schema version from schema_meta.
+
+        Returns 0 if schema_meta table doesn't exist yet (fresh database).
+        """
+        if self._conn is None:
+            return 0
+        try:
+            cursor = await self._conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+            )
+            row = await cursor.fetchone()
+        except Exception:
+            # Table doesn't exist yet — fresh database
+            return 0
+        if row is None:
+            return 0
+        try:
+            return int(row[0])
+        except (ValueError, TypeError):
+            return 0
+
+    async def apply_migration(self, version: int) -> None:
+        """Apply a specific migration file by version number."""
+        if self._conn is None:
+            raise RuntimeError("SQLite backend not connected")
+        # Find migration file for this version
+        for fname in _MIGRATION_FILES:
+            if _parse_migration_version(fname) == version:
+                sql_path = _MIGRATION_DIR / fname
+                sql = sql_path.read_text(encoding="utf-8")
+                await self._conn.executescript(sql)
+                await self._conn.commit()
+                logger.info("applied migration v%d: %s", version, fname)
+                return
+        raise ValueError(f"No migration found for version {version}")
+
+    async def ensure_schema(self) -> None:
+        """Idempotent: apply any pending migrations up to the latest."""
+        current = await self.current_schema_version()
+        latest = len(_MIGRATION_FILES)
+        for version in range(current + 1, latest + 1):
+            await self.apply_migration(version)
+        if current < latest:
+            logger.info("schema migrated from v%d to v%d", current, latest)
+
+    # -- Helpers --
+
+    async def _execute(self, sql: str, params: tuple = ()) -> Any:
+        if self._conn is None:
+            raise RuntimeError("SQLite backend not connected")
+        return await self._conn.execute(sql, params)
+
+    async def _fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
+        cursor = await self._execute(sql, params)
+        return await cursor.fetchone()
+
+    async def _fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
+        cursor = await self._execute(sql, params)
+        return await cursor.fetchall()
+
+    async def _ensure_conn(self) -> None:
+        if self._conn is None:
+            await self.connect()
+
+    # -- Artifact ops --
+
+    async def upsert_artifact(self, artifact: ArtifactRow) -> str:
+        await self._ensure_conn()
+        sql = """
+            INSERT OR REPLACE INTO artifacts (
+                artifact_id, kind, source_url, source_type, title, authors,
+                discovered_by, arxiv_id, parents, bytes_path, bytes_size,
+                first_seen_at, last_touched_at, raw_metadata,
+                refresh_after_at, last_refreshed_at, upstream_unchanged_since
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        await self._execute(sql, (
+            artifact.artifact_id, artifact.kind, artifact.source_url,
+            artifact.source_type, artifact.title, artifact.authors,
+            artifact.discovered_by, artifact.arxiv_id, artifact.parents,
+            artifact.bytes_path, artifact.bytes_size,
+            artifact.first_seen_at, artifact.last_touched_at,
+            artifact.raw_metadata,
+            artifact.refresh_after_at, artifact.last_refreshed_at,
+            artifact.upstream_unchanged_since,
+        ))
+        await self._conn.commit()
+        return artifact.artifact_id
+
+    async def get_artifact(self, artifact_id: str) -> ArtifactRow | None:
+        await self._ensure_conn()
+        row = await self._fetchone(
+            "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
+        )
+        if row is None:
+            return None
+        return self._row_to_artifact(row)
+
+    async def find_artifact_by_url(self, url: str) -> ArtifactRow | None:
+        await self._ensure_conn()
+        row = await self._fetchone(
+            "SELECT * FROM artifacts WHERE source_url = ?", (url,)
+        )
+        if row is None:
+            return None
+        return self._row_to_artifact(row)
+
+    async def find_artifact_by_arxiv_id(self, arxiv_id: str) -> ArtifactRow | None:
+        await self._ensure_conn()
+        row = await self._fetchone(
+            "SELECT * FROM artifacts WHERE arxiv_id = ?", (arxiv_id,)
+        )
+        if row is None:
+            return None
+        return self._row_to_artifact(row)
+
+    async def artifacts_needing_refresh(
+        self, scope_kind: str, scope_value: str, limit: int
+    ) -> list[ArtifactRow]:
+        await self._ensure_conn()
+        # scope_kind can be "source_type" | "tag" | "artifact_id"
+        if scope_kind == "source_type":
+            sql = """
+                SELECT * FROM artifacts
+                WHERE source_type = ?
+                  AND refresh_after_at IS NOT NULL
+                  AND (last_refreshed_at IS NULL OR last_refreshed_at < refresh_after_at)
+                LIMIT ?
+            """
+            rows = await self._fetchall(sql, (scope_value, limit))
+        elif scope_kind == "tag":
+            sql = """
+                SELECT a.* FROM artifacts a
+                JOIN tags t ON t.artifact_id = a.artifact_id
+                WHERE t.tag = ?
+                  AND a.refresh_after_at IS NOT NULL
+                  AND (a.last_refreshed_at IS NULL OR a.last_refreshed_at < a.refresh_after_at)
+                LIMIT ?
+            """
+            rows = await self._fetchall(sql, (scope_value, limit))
+        elif scope_kind == "artifact_id":
+            sql = """
+                SELECT * FROM artifacts
+                WHERE artifact_id = ?
+                  AND refresh_after_at IS NOT NULL
+            """
+            rows = await self._fetchall(sql, (scope_value,))
+        else:
+            return []
+        return [self._row_to_artifact(r) for r in rows]
+
+    def _row_to_artifact(self, row: tuple) -> ArtifactRow:
+        return ArtifactRow(
+            artifact_id=row[0],
+            kind=row[1],
+            source_url=row[2],
+            source_type=row[3],
+            title=row[4],
+            authors=row[5],
+            discovered_by=row[6],
+            arxiv_id=row[7],
+            parents=row[8],
+            bytes_path=row[9],
+            bytes_size=row[10],
+            first_seen_at=row[11],
+            last_touched_at=row[12],
+            raw_metadata=row[13],
+            refresh_after_at=row[14],
+            last_refreshed_at=row[15],
+            upstream_unchanged_since=row[16],
+        )
+
+    # -- Report ops --
+
+    async def insert_report(self, report: ReportRow) -> None:
+        await self._ensure_conn()
+        sql = """
+            INSERT OR REPLACE INTO reports (
+                run_id, started_at, completed_at, original_query, path_taken,
+                classifier_rationale, iterations, config_snapshot, markdown,
+                artifact_id, citations_json, classifier_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        await self._execute(sql, (
+            report.run_id, report.started_at, report.completed_at,
+            report.original_query, report.path_taken,
+            report.classifier_rationale, report.iterations,
+            report.config_snapshot, report.markdown,
+            report.artifact_id, report.citations_json, report.classifier_json,
+        ))
+        await self._conn.commit()
+
+    async def get_report(self, run_id: str) -> ReportRow | None:
+        await self._ensure_conn()
+        row = await self._fetchone(
+            "SELECT * FROM reports WHERE run_id = ?", (run_id,)
+        )
+        if row is None:
+            return None
+        return ReportRow(
+            run_id=row[0], started_at=row[1], completed_at=row[2],
+            original_query=row[3], path_taken=row[4],
+            classifier_rationale=row[5], iterations=row[6],
+            config_snapshot=row[7], markdown=row[8],
+            artifact_id=row[9], citations_json=row[10],
+            classifier_json=row[11],
+        )
+
+    async def list_reports(self, limit: int) -> list[ReportRow]:
+        await self._ensure_conn()
+        rows = await self._fetchall(
+            "SELECT * FROM reports ORDER BY started_at DESC LIMIT ?", (limit,)
+        )
+        results: list[ReportRow] = []
+        for r in rows:
+            results.append(ReportRow(
+                run_id=r[0], started_at=r[1], completed_at=r[2],
+                original_query=r[3], path_taken=r[4],
+                classifier_rationale=r[5], iterations=r[6],
+                config_snapshot=r[7], markdown=r[8],
+                artifact_id=r[9], citations_json=r[10],
+                classifier_json=r[11],
+            ))
+        return results
+
+    # -- Analysis ops --
+
+    async def insert_analysis(self, analysis: AnalysisRow) -> str:
+        await self._ensure_conn()
+        sql = """
+            INSERT OR REPLACE INTO analyses (
+                analysis_id, artifact_id, run_id, analyzer, summary,
+                key_findings, methodology, limitations, gaps, follow_ups,
+                key_references, relevance_to_query, analyzed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        await self._execute(sql, (
+            analysis.analysis_id, analysis.artifact_id, analysis.run_id,
+            analysis.analyzer, analysis.summary, analysis.key_findings,
+            analysis.methodology, analysis.limitations, analysis.gaps,
+            analysis.follow_ups, analysis.key_references,
+            analysis.relevance_to_query, analysis.analyzed_at,
+        ))
+        await self._conn.commit()
+        return analysis.analysis_id
+
+    async def get_analysis(self, analysis_id: str) -> AnalysisRow | None:
+        await self._ensure_conn()
+        row = await self._fetchone(
+            "SELECT * FROM analyses WHERE analysis_id = ?", (analysis_id,)
+        )
+        if row is None:
+            return None
+        return AnalysisRow(
+            analysis_id=row[0], artifact_id=row[1], run_id=row[2],
+            analyzer=row[3], summary=row[4], key_findings=row[5],
+            methodology=row[6], limitations=row[7], gaps=row[8],
+            follow_ups=row[9], key_references=row[10],
+            relevance_to_query=row[11], analyzed_at=row[12],
+        )
+
+    async def get_analyses_for_artifact(
+        self, artifact_id: str
+    ) -> list[AnalysisRow]:
+        await self._ensure_conn()
+        rows = await self._fetchall(
+            "SELECT * FROM analyses WHERE artifact_id = ?", (artifact_id,)
+        )
+        results: list[AnalysisRow] = []
+        for r in rows:
+            results.append(AnalysisRow(
+                analysis_id=r[0], artifact_id=r[1], run_id=r[2],
+                analyzer=r[3], summary=r[4], key_findings=r[5],
+                methodology=r[6], limitations=r[7], gaps=r[8],
+                follow_ups=r[9], key_references=r[10],
+                relevance_to_query=r[11], analyzed_at=r[12],
+            ))
+        return results
+
+    # -- Citation edge ops --
+
+    async def insert_citation_edge(self, edge: CitationEdgeRow) -> None:
+        await self._ensure_conn()
+        sql = """
+            INSERT OR REPLACE INTO citation_edges (
+                source_artifact_id, target_artifact_id, target_arxiv_id,
+                rationale, weight, discovered_in_run
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        await self._execute(sql, (
+            edge.source_artifact_id, edge.target_artifact_id,
+            edge.target_arxiv_id, edge.rationale, edge.weight,
+            edge.discovered_in_run,
+        ))
+        await self._conn.commit()
+
+    async def get_citation_edges_for_source(
+        self, artifact_id: str
+    ) -> list[CitationEdgeRow]:
+        await self._ensure_conn()
+        rows = await self._fetchall(
+            "SELECT * FROM citation_edges WHERE source_artifact_id = ?",
+            (artifact_id,)
+        )
+        results: list[CitationEdgeRow] = []
+        for r in rows:
+            results.append(CitationEdgeRow(
+                source_artifact_id=r[0], target_artifact_id=r[1],
+                target_arxiv_id=r[2], rationale=r[3], weight=r[4],
+                discovered_in_run=r[5],
+            ))
+        return results
+
+    # -- Tag ops --
+
+    async def upsert_tag(self, tag: TagRow) -> None:
+        await self._ensure_conn()
+        sql = """
+            INSERT OR REPLACE INTO tags (tag, artifact_id, applied_in_run)
+            VALUES (?, ?, ?)
+        """
+        await self._execute(sql, (
+            tag.tag, tag.artifact_id, tag.applied_in_run,
+        ))
+        await self._conn.commit()
+
+    async def get_tags_for_artifact(self, artifact_id: str) -> list[TagRow]:
+        await self._ensure_conn()
+        rows = await self._fetchall(
+            "SELECT * FROM tags WHERE artifact_id = ?", (artifact_id,)
+        )
+        results: list[TagRow] = []
+        for r in rows:
+            results.append(TagRow(tag=r[0], artifact_id=r[1], applied_in_run=r[2]))
+        return results
+
+    async def get_artifacts_by_tag(self, tag: str) -> list[str]:
+        await self._ensure_conn()
+        rows = await self._fetchall(
+            "SELECT artifact_id FROM tags WHERE tag = ?", (tag,)
+        )
+        return [r[0] for r in rows]
+
+    # -- Glossary ops --
+
+    async def upsert_glossary_entries(
+        self, entries: list[GlossaryEntry], run_id: str
+    ) -> int:
+        count = 0
+        for e in entries:
+            await self.upsert_glossary_entry(e)
+            count += 1
+        return count
+
+    async def upsert_glossary_entry(self, entry: GlossaryEntry) -> None:
+        await self._ensure_conn()
+        sql = """
+            INSERT OR REPLACE INTO glossary (
+                term, term_canonical, kind, short_def, long_def,
+                acronym_expansion, related_terms, domain_tags, confidence,
+                first_seen_run_id, first_seen_artifact_id, last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        await self._execute(sql, (
+            entry.term, entry.term_canonical, entry.kind, entry.short_def,
+            entry.long_def, entry.acronym_expansion, entry.related_terms,
+            entry.domain_tags, entry.confidence,
+            entry.first_seen_run_id, entry.first_seen_artifact_id,
+            entry.last_updated,
+        ))
+        await self._conn.commit()
+
+    async def get_glossary_entry(
+        self, term_canonical: str
+    ) -> GlossaryEntry | None:
+        await self._ensure_conn()
+        row = await self._fetchone(
+            "SELECT * FROM glossary WHERE term_canonical = ?", (term_canonical,)
+        )
+        if row is None:
+            return None
+        return GlossaryEntry(
+            term_id=row[0], term=row[1], term_canonical=row[2],
+            kind=row[3], short_def=row[4], long_def=row[5],
+            acronym_expansion=row[6], related_terms=row[7],
+            domain_tags=row[8], confidence=row[9],
+            first_seen_run_id=row[10], first_seen_artifact_id=row[11],
+            last_updated=row[12],
+        )
+
+    async def list_glossary_entries(self) -> list[GlossaryEntry]:
+        await self._ensure_conn()
+        rows = await self._fetchall("SELECT * FROM glossary ORDER BY term_canonical")
+        results: list[GlossaryEntry] = []
+        for r in rows:
+            results.append(GlossaryEntry(
+                term_id=r[0], term=r[1], term_canonical=r[2],
+                kind=r[3], short_def=r[4], long_def=r[5],
+                acronym_expansion=r[6], related_terms=r[7],
+                domain_tags=r[8], confidence=r[9],
+                first_seen_run_id=r[10], first_seen_artifact_id=r[11],
+                last_updated=r[12],
+            ))
+        return results
+
+    # -- Refresh foundation --
+
+    async def insert_artifact_version(
+        self, old_id: str, new_id: str, reason: str, run_id: str
+    ) -> None:
+        await self._ensure_conn()
+        from datetime import UTC, datetime
+
+        sql = """
+            INSERT OR REPLACE INTO artifact_versions (
+                artifact_id_old, artifact_id_new, reason, discovered_at, discovered_in_run
+            ) VALUES (?, ?, ?, ?, ?)
+        """
+        await self._execute(sql, (
+            old_id, new_id, reason,
+            datetime.now(UTC).isoformat(), run_id,
+        ))
+        await self._conn.commit()
+
+    async def start_refresh_job(
+        self, scope_kind: str, scope_value: str
+    ) -> str:
+        await self._ensure_conn()
+        import uuid
+        from datetime import UTC, datetime
+
+        job_id = str(uuid.uuid4())
+        sql = """
+            INSERT INTO refresh_jobs (
+                job_id, started_at, scope_kind, scope_value, status
+            ) VALUES (?, ?, ?, ?, 'running')
+        """
+        await self._execute(sql, (
+            job_id, datetime.now(UTC).isoformat(), scope_kind, scope_value,
+        ))
+        await self._conn.commit()
+        return job_id
+
+    async def complete_refresh_job(
+        self,
+        job_id: str,
+        considered: int,
+        refreshed: int,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        await self._ensure_conn()
+        from datetime import UTC, datetime
+
+        sql = """
+            UPDATE refresh_jobs SET
+                completed_at = ?,
+                artifacts_considered = ?,
+                artifacts_refreshed = ?,
+                status = ?,
+                error = ?
+            WHERE job_id = ?
+        """
+        await self._execute(sql, (
+            datetime.now(UTC).isoformat(), considered, refreshed,
+            status, error, job_id,
+        ))
+        await self._conn.commit()
+
+    async def get_refresh_job(self, job_id: str) -> RefreshJobRow | None:
+        await self._ensure_conn()
+        sql = "SELECT * FROM refresh_jobs WHERE job_id = ?"
+        cursor = await self._execute(sql, (job_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return RefreshJobRow(
+            job_id=row[0], started_at=row[1], completed_at=row[2],
+            scope_kind=row[3], scope_value=row[4],
+            artifacts_considered=row[5], artifacts_refreshed=row[6],
+            status=row[7], error=row[8],
+        )
+
+    # -- FTS --
+
+    async def full_text_search(
+        self, query: str, *, kind: str, limit: int
+    ) -> list[SearchHit]:
+        await self._ensure_conn()
+        # Search analyses FTS index for artifacts of given kind
+        sql = """
+            SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+            FROM search_index
+            JOIN analyses an ON an.rowid = search_index.rowid
+            JOIN artifacts a ON a.artifact_id = an.artifact_id
+            WHERE search_index MATCH ? AND a.kind = ?
+            LIMIT ?
+        """
+        rows = await self._fetchall(sql, (query, kind, limit))
+        results: list[SearchHit] = []
+        for r in rows:
+            results.append(SearchHit(
+                artifact_id=r[0], title=r[1] or "", authors=r[2] or "",
+                summary=r[3] or "", extracted_text=r[4] or "",
+                score=1.0,
+            ))
+        return results
+
+    async def glossary_search(
+        self, query: str, limit: int
+    ) -> list[GlossaryEntry]:
+        await self._ensure_conn()
+        sql = """
+            SELECT g.* FROM glossary_fts
+            JOIN glossary g ON g.term_id = glossary_fts.rowid
+            WHERE glossary_fts MATCH ?
+            LIMIT ?
+        """
+        rows = await self._fetchall(sql, (query, limit))
+        results: list[GlossaryEntry] = []
+        for r in rows:
+            results.append(GlossaryEntry(
+                term_id=r[0], term=r[1], term_canonical=r[2],
+                kind=r[3], short_def=r[4], long_def=r[5],
+                acronym_expansion=r[6], related_terms=r[7],
+                domain_tags=r[8], confidence=r[9],
+                first_seen_run_id=r[10], first_seen_artifact_id=r[11],
+                last_updated=r[12],
+            ))
+        return results
