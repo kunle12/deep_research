@@ -57,10 +57,10 @@ class TestRegistration:
         assert "browser_click" in reg.names()
         assert "browser_evaluate" in reg.names()
         # The teardown hook is on the registry
-        assert hasattr(reg, "_browser_close")
-        assert callable(reg._browser_close)
+        assert hasattr(reg, "_close_hook")
+        assert callable(reg._close_hook)
         # Tear down cleanly so no leaked resources
-        await reg._browser_close()
+        await reg.close()
 
     @pytest.mark.asyncio
     async def test_browser_disabled_skips_registration(self) -> None:
@@ -104,7 +104,7 @@ class TestLazyConnection:
         assert "README" in res.error
         # No content was returned
         assert res.content == ""
-        await reg._browser_close()
+        await reg.close()
 
     @pytest.mark.asyncio
     async def test_subsequent_calls_do_not_retry_after_failure(self, monkeypatch) -> None:
@@ -118,7 +118,7 @@ class TestLazyConnection:
         second = await reg.call("browser_navigate", {"url": "https://example.com"})
         assert second.error is not None
         assert second.error == first.error
-        await reg._browser_close()
+        await reg.close()
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ class TestHappyPathNavigate:
         assert cit.title == "Welcome to Example"
         # The MCP `browser_navigate` was called with the URL
         assert fake_mcp.call_log == [("browser_navigate", {"url": "https://example.com/page"})]
-        await reg._browser_close()
+        await reg.close()
         # The session was entered exactly once and exited on teardown
         assert fake_mcp.enter_calls == 1
         assert fake_mcp.exit_calls == 1
@@ -251,7 +251,7 @@ class TestHappyPathNavigate:
         assert len(fake_mcp.call_log) == 2
         assert fake_mcp.call_log[0] == ("browser_navigate", {"url": "https://example.com/a"})
         assert fake_mcp.call_log[1] == ("browser_navigate", {"url": "https://example.com/b"})
-        await reg._browser_close()
+        await reg.close()
         assert fake_mcp.exit_calls == 1
 
     @pytest.mark.asyncio
@@ -284,7 +284,7 @@ class TestHappyPathNavigate:
         assert res.error is not None
         assert "invalid url" in res.error.lower()
         assert spawned == []  # never spawned
-        await reg._browser_close()
+        await reg.close()
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +305,7 @@ class TestOtherTools:
         assert res.error is None
         assert "snapshot tree" in res.content
         assert fake_mcp.call_log == [("browser_snapshot", {})]
-        await reg._browser_close()
+        await reg.close()
 
     @pytest.mark.asyncio
     async def test_click_passes_target_and_optional_element(self, monkeypatch) -> None:
@@ -324,7 +324,7 @@ class TestOtherTools:
         assert fake_mcp.call_log[1] == (
             "browser_click", {"target": "ref=s2", "element": "Submit button"}
         )
-        await reg._browser_close()
+        await reg.close()
 
     @pytest.mark.asyncio
     async def test_click_requires_target_argument(self, monkeypatch) -> None:
@@ -342,7 +342,7 @@ class TestOtherTools:
         # The registry's catch-all surfaces "{type(e).__name__}: {e}" so we
         # should see TypeError / missing target
         assert "TypeError" in res.error or "target" in res.error
-        await reg._browser_close()
+        await reg.close()
 
     @pytest.mark.asyncio
     async def test_evaluate_passes_function_argument(self, monkeypatch) -> None:
@@ -356,7 +356,7 @@ class TestOtherTools:
         assert res.error is None
         assert "42" in res.content
         assert fake_mcp.call_log == [("browser_evaluate", {"function": "() => 6 * 7"})]
-        await reg._browser_close()
+        await reg.close()
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +377,7 @@ class TestMCPCallFailures:
         assert res.error is not None
         assert "RuntimeError" in res.error
         assert "chromium crashed" in res.error
-        await reg._browser_close()
+        await reg.close()
 
     @pytest.mark.asyncio
     async def test_mcp_iserror_true_surfaces_as_error(self, monkeypatch) -> None:
@@ -393,7 +393,7 @@ class TestMCPCallFailures:
         assert res.error is not None
         # isError content is preserved in `content` too
         assert "selector not found" in res.content
-        await reg._browser_close()
+        await reg.close()
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +422,7 @@ class TestMCPStartupFailures:
         res = await reg.call("browser_navigate", {"url": "https://x.test"})
         assert res.error is not None
         assert "30s" in res.error or "timed out" in res.error.lower()
-        await reg._browser_close()
+        await reg.close()
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +556,7 @@ class TestIntegration:
             ("browser_navigate", {"url": "https://x.test"}),
             ("browser_snapshot", {}),
         ]
-        await reg._browser_close()
+        await reg.close()
         assert fake_mcp.exit_calls == 1
 
     @pytest.mark.asyncio
@@ -583,9 +583,9 @@ class TestTeardown:
         # Just register; never invoke browser_navigate
         reg = await build_tool_registry(cfg)
         # Should not raise
-        await reg._browser_close()
+        await reg.close()
         # Idempotent — calling again is fine
-        await reg._browser_close()
+        await reg.close()
 
     @pytest.mark.asyncio
     async def test_close_swallows_exit_exceptions(self, monkeypatch) -> None:
@@ -604,7 +604,7 @@ class TestTeardown:
         # Spawn the session
         await reg.call("browser_navigate", {"url": "https://x.test"})
         # Tear down — should not raise despite the sabotaged __aexit__
-        await reg._browser_close()
+        await reg.close()
         # And the holder was cleared
         assert fake_mcp.enter_calls == 1
         assert fake_mcp.exit_calls == 0  # we sabotaged __aexit__
@@ -616,7 +616,7 @@ class TestTeardown:
 
 
 async def _teardown_quietly(reg: ToolRegistry) -> None:
-    await reg._browser_close()
+    await reg.close()
 
 
 def _patch_which(monkeypatch) -> None:

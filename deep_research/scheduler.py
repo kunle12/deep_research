@@ -41,7 +41,7 @@ class RefreshScheduler:
                     source_type,
                     result["considered"],
                     result["refreshed"],
-                    len(result["errors"]),
+                    result["errored"],
                 )
             await backend.close()
         except Exception as e:
@@ -82,7 +82,7 @@ def _run_scheduler(config_path: str = "config.yaml") -> None:
     asyncio.set_event_loop(loop)
 
     def _signal_handler(*_args: Any) -> None:
-        asyncio.ensure_future(scheduler.shutdown(), loop=loop)  # noqa: RUF006
+        asyncio.create_task(scheduler.shutdown())
 
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)

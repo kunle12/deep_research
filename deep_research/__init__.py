@@ -14,7 +14,6 @@ from deep_research.state import (
     CitationGraph,
     ClassifiedQuery,
     Critique,
-    GlossaryEntry,
     PaperAnalysis,
     PaperNode,
     QueryPlan,
@@ -36,7 +35,7 @@ __all__ = [
     "CitationGraph",
     "ClassifiedQuery",
     "Critique",
-    "GlossaryEntry",
+
     "LibraryWriter",
     "NullLibraryWriter",
     "PDLConfig",

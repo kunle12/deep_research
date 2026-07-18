@@ -68,11 +68,11 @@ class TestHintBlurb:
         assert _hint_blurb("arxiv", ["web_search"]) == ""
 
     def test_reddit_with_tool_available(self) -> None:
-        out = _hint_blurb("reddit", ["reddit", "web_search"])
+        out = _hint_blurb("reddit", ["reddit_search", "web_search"])
         assert "Reddit" in out
 
     def test_reddit_without_tool_returns_empty(self) -> None:
-        assert _hint_blurb("reddit", []) == ""
+        assert _hint_blurb("reddit", ["web_search"]) == ""
 
     def test_browser_required_with_tool(self) -> None:
         out = _hint_blurb("browser-required", ["browser_navigate"])

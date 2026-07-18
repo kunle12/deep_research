@@ -190,16 +190,29 @@ def library_export_bibtex(
 @library_app.command("refresh")
 def library_refresh(
     source_type: str | None = typer.Option(None, "--source-type", help="Filter by source type"),
+    tag: str | None = typer.Option(None, "--tag", help="Filter by tag"),
+    artifact_id: str | None = typer.Option(None, "--artifact-id", help="Refresh a specific artifact"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be refreshed without fetching"),
+    re_analyze: bool = typer.Option(False, "--re-analyze", help="Force re-analysis even if content unchanged"),
+    once: bool = typer.Option(False, "--once", help="Run exactly one cycle and exit"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
     """Refresh stale artifacts in the personal library."""
     async def _run():
         _cfg, backend, writer = await _get_backend_and_writer(config_path)
-        scope = source_type or "html"
-        result = await writer.run_refresh_job("source_type", scope)
+        if artifact_id:
+            scope_kind, scope_value = "artifact_id", artifact_id
+        elif tag:
+            scope_kind, scope_value = "tag", tag
+        else:
+            scope_kind, scope_value = "source_type", source_type or "html"
+        result = await writer.run_refresh_job(
+            scope_kind, scope_value,
+            dry_run=dry_run,
+        )
         typer.echo(f"Refresh job: considered={result['considered']}, "
                    f"refreshed={result['refreshed']}, "
-                   f"errors={len(result['errors'])}")
+                   f"errored={result['errored']}")
         await backend.close()
 
     asyncio.run(_run())

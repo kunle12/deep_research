@@ -85,7 +85,7 @@ def _hint_blurb(tool_hint: str, available: list[str]) -> str:
             "tool call, then optionally fetch_page on the most-relevant returned URL. "
             "Only fall back to general web_search if arxiv returns nothing.\n\n"
         )
-    if tool_hint == "reddit" and "reddit" in available:
+    if tool_hint == "reddit" and "reddit_search" in available:
         return (
             "Hint: this sub-question benefits from Reddit discussion data via the "
             "`reddit` tool, when relevant. Supplement with web_search if needed.\n\n"

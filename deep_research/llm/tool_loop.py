@@ -19,7 +19,7 @@ from deep_research.state import Citation
 logger = logging.getLogger(__name__)
 
 
-class ToolResult(BaseException if False else object):
+class ToolResult:
     """Standard return shape for tool calls.
 
     - `content` becomes the string the LLM sees in the tool role message.
@@ -56,6 +56,16 @@ class ToolRegistry:
         self._schemas: list[dict] = []
         self._semaphore: asyncio.Semaphore | None = None  # set by agent
         self.writer: Any | None = None  # optional LibraryWriter for tool-side archival
+
+    async def close(self) -> None:
+        """Close any async resources held by tools (e.g., browser MCP)."""
+        # Tools can set _close_hook during registration
+        hook = getattr(self, "_close_hook", None)
+        if hook is not None:
+            try:
+                await hook()
+            except Exception as e:
+                logger.debug("tool close hook raised: %s: %s", type(e).__name__, e)
 
     def register(
         self,

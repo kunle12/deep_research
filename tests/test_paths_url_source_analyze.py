@@ -29,10 +29,10 @@ from deep_research.paths.url_source import (
     _fetch_arxiv_source,
     _fetch_html_source,
     _fetch_pdf_source,
-    _parse_pdf_path,
     _render_analysis_markdown,
     url_source,
 )
+from deep_research.tools.pdf_utils import parse_pdf_path as _parse_pdf_path
 from deep_research.state import Citation, SourceAnalysis, ToolName
 
 _us_module = _sys.modules["deep_research.paths.url_source"]
@@ -496,7 +496,7 @@ class TestUrlSourceDispatcher:
 
     @pytest.mark.asyncio
     async def test_html_url_uses_fetch_page_then_analyze(self, monkeypatch) -> None:
-        async def _fake_html(_url: str, _tools: ToolRegistry, _cfg: AgentTopConfig):
+        async def _fake_html(_url: str, _tools: ToolRegistry, _cfg: AgentTopConfig, **kw: Any):
             return ("extracted blog text", [_cit("https://blog.example/post")])
 
         monkeypatch.setattr(_us_module, "_fetch_html_source", _fake_html)
@@ -568,7 +568,7 @@ class TestUrlSourceDispatcher:
     @pytest.mark.asyncio
     async def test_fetch_failure_short_circuits_without_analyze(self, monkeypatch) -> None:
         # Content starting with "HTTP" triggers the fetch-failed branch
-        async def _fake_html(_url: str, _tools: ToolRegistry, _cfg: AgentTopConfig):
+        async def _fake_html(_url: str, _tools: ToolRegistry, _cfg: AgentTopConfig, **kw: Any):
             return ("HTTP 503 from upstream", [])
 
         monkeypatch.setattr(_us_module, "_fetch_html_source", _fake_html)

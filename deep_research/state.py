@@ -13,20 +13,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class GlossaryEntry(BaseModel):
-    """A glossary entry for the personal library."""
-    model_config = ConfigDict(extra="forbid")
-    term: str
-    term_canonical: str
-    kind: Literal["concept", "acronym", "method", "metric", "dataset", "model", "tool"] = "concept"
-    short_def: str | None = None
-    long_def: str | None = None
-    acronym_expansion: str | None = None
-    related_terms: list[str] = Field(default_factory=list)
-    confidence: float = 0.0
-    domain_tags: list[str] = Field(default_factory=list)
-
-
 class ToolName(str, Enum):
     web_search = "web_search"
     fetch_page = "fetch_page"
@@ -267,7 +253,7 @@ __all__ = [
     "CitationGraph",
     "ClassifiedQuery",
     "Critique",
-    "GlossaryEntry",
+
     "PaperAnalysis",
     "PaperNode",
     "QueryPlan",

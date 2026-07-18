@@ -222,7 +222,7 @@ class LibraryWriter:
             markdown=report.markdown,
             artifact_id=artifact_id,
             citations_json=json.dumps([c.model_dump(mode="json") for c in report.citations]) if report.citations else None,
-            classifier_json=json.dumps(report.classifier_rationale) if report.classifier_rationale else None,
+            classifier_json=report.classifier_rationale if report.classifier_rationale else None,
         )
         await self._storage.insert_report(report_row)
         return artifact_id

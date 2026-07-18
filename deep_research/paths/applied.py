@@ -11,6 +11,7 @@ import logging
 from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import (
@@ -29,6 +30,8 @@ async def applied_research(
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> Report:
     """Execute the blog-first applied research path.
 
@@ -70,6 +73,9 @@ async def applied_research(
             if result.error is None:
                 fetched_texts.append(result.content[:8000])
                 reporter.step("applied.fetch", f"post {i + 1}: {c.title[:60]}")
+                # Archive HTML in library if writer is configured
+                if isinstance(writer, LibraryWriter) and run_id:
+                    await writer.archive_html(c.url, result.content)
 
     # Step 3: synthesize report
     reporter.phase("applied.synthesize", "writing report")

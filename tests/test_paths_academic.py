@@ -281,8 +281,9 @@ class TestFetchPaperText:
         reg = _registry(
             {"arxiv_download_pdf": _download, "pdf_extract_text": _extract}
         )
-        out = await _fetch_paper_text("2401.1", reg)
-        assert out == "extracted body"
+        text, pdf_path = await _fetch_paper_text("2401.1", reg)
+        assert text == "extracted body"
+        assert pdf_path is not None
 
     @pytest.mark.asyncio
     async def test_download_failure_falls_back_to_resolve(self) -> None:
@@ -295,7 +296,7 @@ class TestFetchPaperText:
         reg = _registry(
             {"arxiv_download_pdf": _download, "pdf_extract_text": _noop_tool, "arxiv_resolve": _resolve}
         )
-        out = await _fetch_paper_text("2401.1", reg)
+        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
         assert out == "metadata-only content"
 
     @pytest.mark.asyncio
@@ -304,7 +305,7 @@ class TestFetchPaperText:
             return ToolResult(content="", error="HTTP 503")
 
         reg = _registry({"arxiv_download_pdf": _download, "pdf_extract_text": _noop_tool})
-        out = await _fetch_paper_text("2401.1", reg)
+        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
         assert out == ""
 
     @pytest.mark.asyncio
@@ -313,13 +314,13 @@ class TestFetchPaperText:
             return ToolResult(content="resolved metadata")
 
         reg = _registry({"arxiv_resolve": _resolve})
-        out = await _fetch_paper_text("2401.1", reg)
+        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
         assert out == "resolved metadata"
 
     @pytest.mark.asyncio
     async def test_no_pdf_tools_no_resolve_returns_empty(self) -> None:
         reg = _registry({})
-        out = await _fetch_paper_text("2401.1", reg)
+        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
         assert out == ""
 
     @pytest.mark.asyncio
@@ -335,7 +336,7 @@ class TestFetchPaperText:
         reg = _registry(
             {"arxiv_download_pdf": _download, "pdf_extract_text": _extract}
         )
-        out = await _fetch_paper_text("2401.1", reg)
+        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
         assert out == "error: not a path"
 
 

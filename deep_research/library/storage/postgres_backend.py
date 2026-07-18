@@ -294,7 +294,7 @@ class PostgresStorageBackend:
 
     # -- Analysis ops --
 
-    async def insert_analysis(self, analysis: AnalysisRow) -> None:
+    async def insert_analysis(self, analysis: AnalysisRow) -> str:
         await self._ensure_conn()
         sql = """
             INSERT INTO analyses (

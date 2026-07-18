@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Literal
 
 from deep_research.config import AgentTopConfig
 from deep_research.llm.client import LLMClient
 from deep_research.llm.tool_loop import ToolRegistry
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import (
     ClassifiedQuery,
@@ -36,6 +38,16 @@ async def run_research(
     """
     reporter: ProgressReporter = progress if progress is not None else NullReporter()
 
+    # LibraryWriter setup (optional, based on config)
+    writer: LibraryWriter | NullLibraryWriter | None = None
+    run_id: str = ""
+    if config.pdl.enabled:
+        from deep_research.library.storage import get_backend
+        backend = await get_backend(config)
+        writer = LibraryWriter(backend, config.pdl.root_dir)
+        run_id = uuid.uuid4().hex[:16]
+        writer.set_run_id(run_id)
+
     if not query or not query.strip():
         reporter.phase("error", "empty query")
         reporter.complete()
@@ -52,7 +64,7 @@ async def run_research(
         if path_override == "url_source":
             url = extract_first_url(query) or query.strip()
             remainder = strip_url_from_query(query, url) if url != query.strip() else ""
-            if not _looks_like_url(url):
+            if not url.startswith(("http://", "https://")):
                 reporter.phase("error", "--url-source without URL")
                 reporter.complete()
                 return Report(
@@ -63,9 +75,11 @@ async def run_research(
             reporter.phase("url_source", "fetching source")
             async with LLMClient(config.llm) as client, _build_tools(config) as tools:
                 report = await _dispatch_url_source(
-                    url, remainder, client, tools, config, reporter
+                    url, remainder, client, tools, config, reporter,
+                    writer=writer, run_id=run_id,
                 )
             reporter.complete()
+            await _archive_report(report, writer, run_id)
             return report
         classified = ClassifiedQuery(
             path=QueryPlan(path_override),
@@ -75,9 +89,11 @@ async def run_research(
         reporter.phase(path_override, f"--{path_override} override")
         async with LLMClient(config.llm) as client, _build_tools(config) as tools:
             report = await _dispatch_classified(
-                classified, query, client, tools, config, reporter
+                classified, query, client, tools, config, reporter,
+                writer=writer, run_id=run_id,
             )
         reporter.complete()
+        await _archive_report(report, writer, run_id)
         return report
 
     # Step 2 — config force_path (yaml) second-highest priority
@@ -92,9 +108,11 @@ async def run_research(
         )
         async with LLMClient(config.llm) as client, _build_tools(config) as tools:
             report = await _dispatch_classified(
-                classified, query, client, tools, config, reporter
+                classified, query, client, tools, config, reporter,
+                writer=writer, run_id=run_id,
             )
         reporter.complete()
+        await _archive_report(report, writer, run_id)
         return report
 
     # Step 3 — URL detection routes to url_source
@@ -105,9 +123,11 @@ async def run_research(
         reporter.phase("url_source", f"auto-detected URL: {url[:80]}")
         async with LLMClient(config.llm) as client, _build_tools(config) as tools:
             report = await _dispatch_url_source(
-                url, remainder, client, tools, config, reporter
+                url, remainder, client, tools, config, reporter,
+                writer=writer, run_id=run_id,
             )
         reporter.complete()
+        await _archive_report(report, writer, run_id)
         return report
 
     # Step 4 — classifier (or default to deep if disabled)
@@ -121,9 +141,11 @@ async def run_research(
         )
         async with LLMClient(config.llm) as client, _build_tools(config) as tools:
             report = await _dispatch_classified(
-                classified, query, client, tools, config, reporter
+                classified, query, client, tools, config, reporter,
+                writer=writer, run_id=run_id,
             )
         reporter.complete()
+        await _archive_report(report, writer, run_id)
         return report
 
     reporter.phase("routing", "classifier LLM call")
@@ -137,9 +159,11 @@ async def run_research(
             f"chosen by classifier: {classified.rationale[:80]}",
         )
         report = await _dispatch_classified(
-            classified, query, client, tools, config, reporter
+            classified, query, client, tools, config, reporter,
+            writer=writer, run_id=run_id,
         )
     reporter.complete()
+    await _archive_report(report, writer, run_id)
     return report
 
 
@@ -150,16 +174,20 @@ async def _dispatch_classified(
     tools: ToolRegistry,
     config: AgentTopConfig,
     reporter: ProgressReporter,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> Report:
     """Run the path chosen by the classifier."""
-    from deep_research.paths import academic_research, deep_research, quick_search
+    from deep_research.paths import academic_research, applied_research, deep_research, quick_search
 
     if classified.path == QueryPlan.quick:
-        return await quick_search(classified, original_query, client, tools, config, reporter)
+        return await quick_search(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
     if classified.path == QueryPlan.deep:
-        return await deep_research(classified, original_query, client, tools, config, reporter)
+        return await deep_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
     if classified.path == QueryPlan.academic:
-        return await academic_research(classified, original_query, client, tools, config, reporter)
+        return await academic_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
+    if classified.path == QueryPlan.applied:
+        return await applied_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
     if classified.path == QueryPlan.unclear:
         reporter.phase("clarify", "need clarification")
         return Report(
@@ -168,7 +196,7 @@ async def _dispatch_classified(
             classifier_rationale=classified.rationale,
             clarifying_questions=list(classified.clarifying_questions),
         )
-    return await deep_research(classified, original_query, client, tools, config, reporter)
+    return await deep_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
 
 
 async def _dispatch_url_source(
@@ -178,10 +206,12 @@ async def _dispatch_url_source(
     tools: ToolRegistry,
     config: AgentTopConfig,
     reporter: ProgressReporter,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> Report:
     from deep_research.paths import url_source
 
-    return await url_source(url, remainder, client, tools, config, reporter)
+    return await url_source(url, remainder, client, tools, config, reporter, writer=writer, run_id=run_id)
 
 
 class _ToolsCtx:
@@ -197,12 +227,7 @@ class _ToolsCtx:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._tools is not None:
-            close_hook = getattr(self._tools, "_browser_close", None)
-            if close_hook is not None:
-                try:
-                    await close_hook()
-                except Exception as e:
-                    logger.debug("browser MCP teardown raised: %s: %s", type(e).__name__, e)
+            await self._tools.close()
         self._tools = None
 
 
@@ -210,8 +235,11 @@ def _build_tools(config: AgentTopConfig) -> _ToolsCtx:
     return _ToolsCtx(config)
 
 
-def _looks_like_url(s: str) -> bool:
-    return s.startswith("http://") or s.startswith("https://")
+async def _archive_report(report: Report, writer: LibraryWriter | None, run_id: str) -> None:
+    """Archive report in the personal digital library if writer is configured."""
+    if isinstance(writer, LibraryWriter) and run_id:
+        await writer.archive_report(report, run_id)
+        await writer.storage.close()
 
 
 __all__ = ["run_research"]

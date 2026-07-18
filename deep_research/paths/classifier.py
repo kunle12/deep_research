@@ -48,7 +48,7 @@ async def classify_query(
         content = resp.choices[0].message.content or "{}"
         data = json.loads(content)
         path_str = str(data.get("path", "deep")).lower()
-        if path_str not in {"quick", "deep", "academic", "unclear"}:
+        if path_str not in {"quick", "deep", "academic", "applied", "unclear", "url_source"}:
             path_str = "deep"
         return ClassifiedQuery(
             path=QueryPlan(path_str),

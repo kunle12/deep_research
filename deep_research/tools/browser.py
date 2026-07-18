@@ -356,10 +356,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 logger.debug("browser MCP close raised: %s: %s", type(e).__name__, e)
 
     # Publish the close hook on the registry so the agent can call it on
-    # teardown. Using a private attribute so we don't change the public
-    # ToolRegistry API; this is an internal contract between the browser
-    # tool and the agent's _ToolsCtx.
-    reg._browser_close = _close
+    # teardown. This is an internal contract between the browser tool and
+    # the agent's _ToolsCtx, accessed via ToolRegistry.close().
+    reg._close_hook = _close
 
 
 # ---------------------------------------------------------------------------

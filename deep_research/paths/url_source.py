@@ -28,6 +28,7 @@ from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
 from deep_research.progress import NullReporter, ProgressReporter
 from deep_research.state import Citation, Report
+from deep_research.tools.pdf_utils import parse_pdf_path, parse_rendered_pages
 from deep_research.tools.url_classifier import (
     UrlType,
     classify_url,
@@ -36,8 +37,6 @@ from deep_research.tools.url_classifier import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from deep_research.llm.tool_loop import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +91,8 @@ async def _fetch_arxiv_source(
     *,
     render_pages: bool = False,
     max_pages: int = 25,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> tuple[str, str, list[Citation], list[str]]:
     """Resolve + download + extract text of an arxiv paper.
 
@@ -110,10 +111,11 @@ async def _fetch_arxiv_source(
 
     text = ""
     page_urls: list[str] = []
+    pdf_path: str | None = None
     if "arxiv_download_pdf" in tools.names():
         dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
         if dl.error is None:
-            pdf_path = _parse_pdf_path(dl.content)
+            pdf_path = parse_pdf_path(dl.content)
             if pdf_path and "pdf_extract_text" in tools.names():
                 extract = await tools.call("pdf_extract_text", {"file_path": pdf_path})
                 text = extract.content
@@ -121,10 +123,24 @@ async def _fetch_arxiv_source(
                 render = await tools.call(
                     "pdf_render_pages", {"file_path": pdf_path, "max_pages": max_pages}
                 )
-                page_urls = _parse_rendered_pages(render)
+                page_urls = parse_rendered_pages(render)
     if not text:
         text = meta_res.content  # at least show meta as fallback content
     citations = [cit] if cit else [meta_res.citations[0]] if meta_res.citations else []
+
+    # Archive PDF in library if writer is configured
+    if isinstance(writer, LibraryWriter) and pdf_path and run_id:
+        import uuid
+        from pathlib import Path
+        _ = run_id
+        await writer.archive_pdf(
+            Path(pdf_path),
+            arxiv_id=arxiv_id,
+            source_url=f"https://arxiv.org/abs/{arxiv_id}",
+            title=title,
+            source_type="arxiv",
+        )
+
     return (text, title, citations, page_urls)
 
 
@@ -134,6 +150,8 @@ async def _fetch_pdf_source(
     *,
     render_pages: bool = False,
     max_pages: int = 25,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> tuple[str, list[Citation], list[str]]:
     """Download a PDF from a direct URL and extract text via the pdf tool.
 
@@ -155,7 +173,7 @@ async def _fetch_pdf_source(
         render = await tools.call(
             "pdf_render_pages", {"file_path": str(pdf_path), "max_pages": max_pages}
         )
-        page_urls = _parse_rendered_pages(render)
+        page_urls = parse_rendered_pages(render)
     if not text:
         text = "(PDF text extraction not available yet — vision path may still work)"
 
@@ -166,6 +184,19 @@ async def _fetch_pdf_source(
         source_type="pdf",
         confidence_score=0.7,
     )
+
+    # Archive PDF in library if writer is configured
+    if isinstance(writer, LibraryWriter) and run_id:
+        import uuid
+        from pathlib import Path
+        _ = run_id
+        await writer.archive_pdf(
+            Path(pdf_path),
+            source_url=url,
+            title=cit.title,
+            source_type="pdf",
+        )
+
     return (text, [cit], page_urls)
 
 
@@ -200,6 +231,8 @@ async def _fetch_html_source(
     url: str,
     tools: ToolRegistry,
     config: AgentTopConfig,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> tuple[str, list[Citation]]:
     """Fetch an HTML page via fetch_page.
 
@@ -210,36 +243,17 @@ async def _fetch_html_source(
     if "fetch_page" not in tools.names():
         return ("(fetch_page tool not registered)", [])
     res = await tools.call("fetch_page", {"url": url})
+
+    # Archive HTML in library if writer is configured
+    if isinstance(writer, LibraryWriter) and res.content and run_id:
+        import uuid
+        _ = run_id
+        await writer.archive_html(url, res.content)
+
     return (res.content, list(res.citations))
 
 
-def _parse_pdf_path(content_str: str) -> str | None:
-    """Best-effort parse of the download_pdf tool's returned content as a path."""
-    if not content_str or not content_str.strip():
-        return None
-    lines = content_str.strip().splitlines()
-    s = lines[0].strip() if lines else ""
-    return s if s.startswith("/") else None
 
-
-def _parse_rendered_pages(render_result: ToolResult) -> list[str]:
-    """Decode the JSON returned by `pdf_render_pages` into a list of data URLs.
-
-    The pdf tool returns `{"pages": ["data:image/jpeg;base64,...", ...], "count": N}`.
-    Returns [] on any error or non-JSON content so callers stay robust.
-    """
-    if render_result.error is not None or not render_result.content:
-        return []
-    try:
-        import json
-
-        data = json.loads(render_result.content)
-        pages = data.get("pages") if isinstance(data, dict) else None
-        if not isinstance(pages, list):
-            return []
-        return [p for p in pages if isinstance(p, str) and p.startswith("data:")]
-    except Exception:
-        return []
 
 
 def _render_analysis_markdown(
@@ -328,16 +342,20 @@ async def url_source(
     if url_type == UrlType.arxiv and arxiv_id:
         reporter.phase("url.fetch", f"arxiv:{arxiv_id}")
         content_text, _title, citations, page_image_data_urls = await _fetch_arxiv_source(
-            arxiv_id, tools, render_pages=render_pdf, max_pages=max_pdf_pages
+            arxiv_id, tools, render_pages=render_pdf, max_pages=max_pdf_pages,
+            writer=writer, run_id=run_id,
         )
     elif url_type == UrlType.pdf:
         reporter.phase("url.fetch", f"pdf download: {url[:80]}")
         content_text, citations, page_image_data_urls = await _fetch_pdf_source(
-            url, tools, render_pages=render_pdf, max_pages=max_pdf_pages
+            url, tools, render_pages=render_pdf, max_pages=max_pdf_pages,
+            writer=writer, run_id=run_id,
         )
     elif url_type == UrlType.html:
         reporter.phase("url.fetch", f"html: {url[:80]}")
-        content_text, citations = await _fetch_html_source(url, tools, config)
+        content_text, citations = await _fetch_html_source(
+            url, tools, config, writer=writer, run_id=run_id,
+        )
     else:
         from datetime import UTC, datetime
         return Report(

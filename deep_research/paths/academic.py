@@ -52,6 +52,7 @@ from deep_research.state import (
     Report,
 )
 from deep_research.tools.arxiv import _strip_version
+from deep_research.tools.pdf_utils import parse_pdf_path, parse_rendered_pages
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ async def academic_research(
                 "academic.analyze", f"depth={depth} arxiv={base} parent={parent or '-'}"
             )
             # fetch + analyze
-            paper_text = await _fetch_paper_text(node.arxiv_id, tools)
+            paper_text, pdf_path = await _fetch_paper_text(node.arxiv_id, tools)
             page_urls: list[str] = []
             if config.pdf_vision.enabled and "pdf_render_pages" in tools.names():
                 page_urls = await _render_paper_pages(node.arxiv_id, tools, max_pages=10)
@@ -146,8 +147,18 @@ async def academic_research(
             graph.analyses[base] = analysis
             analyses[base] = analysis
 
-            # P10.5a: record analysis + citation edges in library
+            # P10.5a: archive PDF + record analysis + citation edges in library
             if isinstance(writer, LibraryWriter) and run_id:
+                # Archive PDF first so artifact exists for analysis recording
+                if pdf_path:
+                    from pathlib import Path
+                    await writer.archive_pdf(
+                        Path(pdf_path),
+                        arxiv_id=base,
+                        source_url=f"https://arxiv.org/abs/{node.arxiv_id}",
+                        title=node.title or analysis.title or None,
+                        source_type="arxiv",
+                    )
                 artifact = await writer.storage.find_artifact_by_arxiv_id(base)
                 if artifact:
                     await writer.record_analysis(artifact.artifact_id, analysis, run_id, "analyze_paper")
@@ -328,29 +339,28 @@ async def _gather_seeds(
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> str:
-    """Download + extract text. Returns metadata-content string on failure."""
+async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> tuple[str, str | None]:
+    """Download + extract text. Returns (text, pdf_path_or_None) on success,
+    or (metadata-content string, None) on failure."""
     if "arxiv_download_pdf" not in tools.names() or "pdf_extract_text" not in tools.names():
         # Fall back to arxiv_resolve metadata if that's all we have
         if "arxiv_resolve" in tools.names():
             resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
-            return resolved.content or ""
-        return ""
+            return (resolved.content or "", None)
+        return ("", None)
     dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
     if dl.error is not None:
         logger.info("arxiv_download_pdf failed for %s: %s; trying metadata", arxiv_id, dl.error)
         if "arxiv_resolve" in tools.names():
             resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
-            return resolved.content or ""
-        return ""
-    # Parse dl.content first line as an absolute path
-    content = (dl.content or "").strip()
-    first_line = content.splitlines()[0].strip() if content else ""
-    if not first_line.startswith("/"):
-        logger.warning("arxiv_download_pdf returned unexpected content for %s: %r", arxiv_id, content[:100])
-        return content
-    extracted = await tools.call("pdf_extract_text", {"file_path": first_line})
-    return extracted.content or ""
+            return (resolved.content or "", None)
+        return ("", None)
+    pdf_path = parse_pdf_path(dl.content)
+    if pdf_path is None:
+        logger.warning("arxiv_download_pdf returned unexpected content for %s: %r", arxiv_id, (dl.content or "")[:100])
+        return (dl.content or "", None)
+    extracted = await tools.call("pdf_extract_text", {"file_path": pdf_path})
+    return (extracted.content or "", pdf_path)
 
 
 async def _render_paper_pages(arxiv_id: str, tools: ToolRegistry, max_pages: int = 10) -> list[str]:
@@ -361,25 +371,13 @@ async def _render_paper_pages(arxiv_id: str, tools: ToolRegistry, max_pages: int
     dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
     if dl.error is not None:
         return []
-    content = (dl.content or "").strip()
-    first_line = content.splitlines()[0].strip() if content else ""
-    if not first_line.startswith("/"):
+    pdf_path = parse_pdf_path(dl.content)
+    if pdf_path is None:
         return []
     render = await tools.call(
-        "pdf_render_pages", {"file_path": first_line, "max_pages": max_pages}
+        "pdf_render_pages", {"file_path": pdf_path, "max_pages": max_pages}
     )
-    if render.error is not None or not render.content:
-        return []
-    try:
-        import json
-
-        data = json.loads(render.content)
-        pages = data.get("pages") if isinstance(data, dict) else None
-        if not isinstance(pages, list):
-            return []
-        return [p for p in pages if isinstance(p, str) and p.startswith("data:")]
-    except Exception:
-        return []
+    return parse_rendered_pages(render)
 
 
 # ---------------------------------------------------------------------------
