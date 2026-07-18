@@ -77,23 +77,11 @@ def _run_scheduler(config_path: str = "config.yaml") -> None:
 
     scheduler = RefreshScheduler(cfg)
 
-    # Handle SIGINT/SIGTERM for graceful shutdown
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    def _signal_handler(*_args: Any) -> None:
-        asyncio.create_task(scheduler.shutdown())
-
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
-
+    # Use asyncio.run() — signal handling is built-in via KeyboardInterrupt
     try:
-        loop.run_until_complete(scheduler.run())
+        asyncio.run(scheduler.run())
     except KeyboardInterrupt:
         pass
-    finally:
-        loop.run_until_complete(scheduler.shutdown())
-        loop.close()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,23 @@ async def analyze(
         )
 
 
+_ARXIV_RX = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")
+
+
+def _bool_coerce(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in {"true", "yes", "1"}
+    return bool(v)
+
+
+def _list_of_str(v: Any) -> list[str]:
+    if isinstance(v, list):
+        return [str(x) for x in v if isinstance(x, (str, int, float))]
+    return []
+
+
 def _coerce(arxiv_id: str, data: dict[str, Any]) -> PaperAnalysis:
     """Loose-coerce a JSON-decoded LLM payload into a strict `PaperAnalysis`.
 
@@ -113,20 +131,14 @@ def _coerce(arxiv_id: str, data: dict[str, Any]) -> PaperAnalysis:
     emits is filtered here. Field types are kept strict-compatible with the
     pydantic model (`extra="forbid"`).
     """
-    import re
-
-    _arxiv_rx = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")
-
     cleaned_key_refs: list[dict[str, Any]] = []
     for ref in data.get("key_references") or []:
         if not isinstance(ref, dict):
             continue
         aid = ref.get("arxiv_id")
-        # Tolerate the LLM putting the id INSIDE other text by extracting the
-        # first arxiv-id-shaped substring when the literal id is malformed.
         if not aid:
             cand = ref.get("title", "") or ref.get("rationale", "") or ""
-            m = _arxiv_rx.search(cand)
+            m = _ARXIV_RX.search(cand)
             if m:
                 aid = m.group(0)
         if not aid:
@@ -148,28 +160,14 @@ def _coerce(arxiv_id: str, data: dict[str, Any]) -> PaperAnalysis:
             }
         )
 
-    def _bool(v: Any) -> bool:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            return v.strip().lower() in {"true", "yes", "1"}
-        return bool(v)
-
-    def _list_of_str(v: Any) -> list[str]:
-        if isinstance(v, list):
-            return [str(x) for x in v if isinstance(x, (str, int, float))]
-        return []
-
     payload = {
         "title": str(data.get("title", "") or f"(unknown title) {arxiv_id}"),
         "summary": str(data.get("summary", "") or ""),
         "key_findings": _list_of_str(data.get("key_findings")),
         "relevance_to_query": str(data.get("relevance_to_query", "") or ""),
-        # `methodology` and `limitations` have list/str defaults in the model;
-        # don't set None (pydantic strict-mode rejects it).
         "methodology": str(data.get("methodology", "") or ""),
         "limitations": _list_of_str(data.get("limitations")),
-        "is_key_reference": _bool(data.get("is_key_reference", False)),
+        "is_key_reference": _bool_coerce(data.get("is_key_reference", False)),
         "key_references": cleaned_key_refs,
         "extraction_text": str(data.get("extraction_text", "") or ""),
         "figure_descriptions": _list_of_str(data.get("figure_descriptions")),

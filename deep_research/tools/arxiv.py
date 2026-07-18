@@ -173,32 +173,33 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Global semaphore so the agent never exceeds `concurrency` simultaneous
-    # arxiv API calls (per the arXiv 3s/call rate limit).
+    # arxiv API calls (per the arXiv 3s/call rate limit). Uses a single lock
+    # for ALL tool names since arxiv's rate limit is per-API-key, not per-operation.
     api_sem = asyncio.Semaphore(cfg.concurrency)
-    last_call_locks: dict[str, asyncio.Lock] = {}
-    last_call_times: dict[str, float] = {}
+    _global_lock = asyncio.Lock()
+    _last_call_time: float = 0.0
 
-    async def _rate_limited(name: str, fn: Any, *args: Any) -> Any:
-        """Wrap a sync arxiv-library call with both a concurrency semaphore
-        and a per-Customer spacing delay of `request_delay_s` seconds.
+    async def _rate_limited(fn: Any, *args: Any) -> Any:
+        """Wrap a sync arxiv-library call with concurrency semaphore and
+        a global spacing delay of `request_delay_s` seconds between calls.
         """
+        nonlocal _last_call_time
         async with api_sem:
-            lock = last_call_locks.setdefault(name, asyncio.Lock())
-            async with lock:
+            async with _global_lock:
                 import time
 
                 now = time.monotonic()
-                elapsed = now - last_call_times.get(name, 0.0)
+                elapsed = now - _last_call_time
                 if elapsed < cfg.request_delay_s:
                     await asyncio.sleep(cfg.request_delay_s - elapsed)
                 # Run the blocking lib call in a worker thread.
                 result = await asyncio.to_thread(fn, *args)
-                last_call_times[name] = time.monotonic()
+                _last_call_time = time.monotonic()
                 return result
 
     async def _search(query: str, max_results: int = 10, **_: Any) -> ToolResult:
         max_results = min(max_results, cfg.max_results_per_query)
-        citations = await _rate_limited("search", _sync_search, query, max_results)
+        citations = await _rate_limited(_sync_search, query, max_results)
         if not citations:
             return ToolResult(
                 content=f"No arxiv search results for query: {query!r}",
@@ -215,7 +216,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         arxiv_id = arxiv_id.strip()
         if not arxiv_id:
             return ToolResult(content="", error="arxiv_resolve requires non-empty arxiv_id")
-        cit = await _rate_limited("resolve", _sync_resolve, arxiv_id)
+        cit = await _rate_limited(_sync_resolve, arxiv_id)
         if cit is None:
             return ToolResult(
                 content=f"No arxiv result for id {arxiv_id!r}",

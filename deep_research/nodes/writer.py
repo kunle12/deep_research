@@ -60,11 +60,8 @@ async def write(
                 md = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
 
         # P10.6 glossary extraction from writer response
-        if isinstance(writer, LibraryWriter) and run_id:
-            from deep_research.nodes.glossarize import parse_glossary_from_response
-            glossary_entries = parse_glossary_from_response(md, run_id)
-            if glossary_entries:
-                await writer.upsert_glossary_entries(glossary_entries, run_id)
+        from deep_research.nodes.glossarize import extract_and_save_glossary
+        await extract_and_save_glossary(md, run_id, writer)
 
         return md
     except Exception as e:

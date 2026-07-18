@@ -56,12 +56,11 @@ class ToolRegistry:
         self._schemas: list[dict] = []
         self._semaphore: asyncio.Semaphore | None = None  # set by agent
         self.writer: Any | None = None  # optional LibraryWriter for tool-side archival
+        self._close_hooks: list = []  # async callables to run during close()
 
     async def close(self) -> None:
         """Close any async resources held by tools (e.g., browser MCP)."""
-        # Tools can set _close_hook during registration
-        hook = getattr(self, "_close_hook", None)
-        if hook is not None:
+        for hook in self._close_hooks:
             try:
                 await hook()
             except Exception as e:

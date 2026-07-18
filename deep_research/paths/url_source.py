@@ -26,7 +26,7 @@ from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
-from deep_research.progress import NullReporter, ProgressReporter
+from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import Citation, Report
 from deep_research.tools.pdf_utils import parse_pdf_path, parse_rendered_pages
 from deep_research.tools.url_classifier import (
@@ -152,6 +152,7 @@ async def _fetch_pdf_source(
     max_pages: int = 25,
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",
+    pdf_cache_dir: str | None = None,
 ) -> tuple[str, list[Citation], list[str]]:
     """Download a PDF from a direct URL and extract text via the pdf tool.
 
@@ -159,9 +160,9 @@ async def _fetch_pdf_source(
     `render_pages=True` and `pdf_render_pages` is registered, also returns
     VLM-ready JPEG data URLs for the first `max_pages` pages.
     """
-    pdf_path = await _download_pdf_to_cache(url)
-    if isinstance(pdf_path, str) and pdf_path.startswith("("):
-        # Download failed — pdf_path carries the error string
+    pdf_path = await _download_pdf_to_cache(url, pdf_cache_dir)
+    if isinstance(pdf_path, str):
+        # Download failed — pdf_path is an error message
         return (pdf_path, [], [])
 
     text = ""
@@ -200,10 +201,11 @@ async def _fetch_pdf_source(
     return (text, [cit], page_urls)
 
 
-async def _download_pdf_to_cache(url: str) -> str | Path:
+async def _download_pdf_to_cache(url: str, cache_dir: str | None = None) -> str | Path:
     """Download a PDF from URL to a tmp cache; return Path or error string.
 
     Caches by URL digest so repeat calls during the same run don't re-download.
+    Uses `cache_dir` if provided, otherwise falls back to ~/.cache/deep_research/pdfs.
     """
     import hashlib
     import os
@@ -212,7 +214,7 @@ async def _download_pdf_to_cache(url: str) -> str | Path:
     import httpx
 
     digest = hashlib.sha256(url.encode()).hexdigest()[:16]
-    tmp_dir = Path(os.path.expanduser("~/.cache/deep_research/pdfs"))
+    tmp_dir = Path(cache_dir) if cache_dir else Path(os.path.expanduser("~/.cache/deep_research/pdfs"))
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_pdf = tmp_dir / f"{digest}.pdf"
     if tmp_pdf.exists() and tmp_pdf.stat().st_size > 1024:
@@ -321,7 +323,7 @@ async def url_source(
     run_id: str = "",
 ) -> Report:
     """Execute the url_source path."""
-    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter: ProgressReporter = ensure_reporter(progress)
     reporter.phase("url.classify", url[:80])
     url_type = await classify_url(
         url, head_probe_timeout_s=config.url_source.head_probe_timeout_s
@@ -350,6 +352,7 @@ async def url_source(
         content_text, citations, page_image_data_urls = await _fetch_pdf_source(
             url, tools, render_pages=render_pdf, max_pages=max_pdf_pages,
             writer=writer, run_id=run_id,
+            pdf_cache_dir=config.arxiv.pdf_cache_dir,
         )
     elif url_type == UrlType.html:
         reporter.phase("url.fetch", f"html: {url[:80]}")
@@ -403,9 +406,10 @@ async def url_source(
 
     # Optional follow-up: spawn deep path with the analysis gaps as planner seeds
     followup_md = ""
+    followup_citations: list[Citation] = []
     if wants_follow_up and (analysis.gaps or analysis.follow_ups):
         reporter.phase("url.followup", f"gaps={len(analysis.gaps)}; follow_ups={len(analysis.follow_ups)}")
-        followup_md = await _maybe_run_follow_up(
+        followup_md, followup_citations = await _maybe_run_follow_up(
             analysis=analysis,
             original_url=url,
             user_query=query or "",
@@ -417,13 +421,19 @@ async def url_source(
     else:
         reporter.phase("url.done", "no follow-up")
 
-    if followup_md:
-        md = md + "\n\n" + followup_md
+    # Merge follow-up citations into the main citation list
+    all_citations = list(citations)
+    if followup_citations:
+        seen = {c.url for c in all_citations}
+        for c in followup_citations:
+            if c.url not in seen:
+                all_citations.append(c)
+                seen.add(c.url)
 
     from datetime import UTC, datetime
     return Report(
-        markdown=md,
-        citations=citations,
+        markdown=md + "\n\n" + followup_md if followup_md else md,
+        citations=all_citations,
         path="url_source_with_followup" if wants_follow_up else "url_source",
         classifier_rationale=f"URL detected; classified as {url_type.value}",
         created_at=datetime.now(UTC),
@@ -439,11 +449,13 @@ async def _maybe_run_follow_up(
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
-) -> str:
-    """Run deep-path follow-up research seeded from the analysis's gaps/follow_ups."""
-    from deep_research.state import ClassifiedQuery, QueryPlan
+) -> tuple[str, list[Citation]]:
+    """Run deep-path follow-up research seeded from the analysis's gaps/follow_ups.
+    Returns (markdown_section, follow_up_citations).
+    """
+    from deep_research.state import ClassifiedQuery, QueryPlan, Report
 
-    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter: ProgressReporter = ensure_reporter(progress)
     sub_qs: list[dict] = []
     # Prefer `gaps`; fall back to follow_ups topics.
     for g in analysis.gaps:
@@ -455,7 +467,7 @@ async def _maybe_run_follow_up(
             if t:
                 sub_qs.append({"question": t, "rationale": w})
     if not sub_qs:
-        return ""
+        return ("", [])
 
     # Build a synthetic user query the deep planner can work from
     synthetic_query = (
@@ -464,7 +476,7 @@ async def _maybe_run_follow_up(
         + "\n".join(f"- {sq['question']}" for sq in sub_qs)
     )
 
-    # Hand off to deep path. P7 will replace this with a tighter integration.
+    # Hand off to deep path.
     from deep_research.paths.deep import deep_research as deep_path
 
     classified = ClassifiedQuery(
@@ -472,15 +484,15 @@ async def _maybe_run_follow_up(
         rationale=f"Follow-up research spawned by url_source analysis of {original_url}",
         search_hint=user_query or synthetic_query,
     )
-    followup_report = await deep_path(
+    followup_report: Report = await deep_path(
         classified, synthetic_query, client, tools, config, progress=progress
     )
 
     if not followup_report.markdown:
-        return ""
+        return ("", [])
 
     reporter.phase("url.followup.done", "follow-up research complete")
-    return "## Follow-up Research\n\n" + followup_report.markdown
+    return ("## Follow-up Research\n\n" + followup_report.markdown, followup_report.citations)
 
 
 __all__ = ["query_asks_for_follow_up", "url_source"]

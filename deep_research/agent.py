@@ -10,7 +10,7 @@ from deep_research.config import AgentTopConfig
 from deep_research.llm.client import LLMClient
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
-from deep_research.progress import NullReporter, ProgressReporter
+from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     ClassifiedQuery,
     QueryPlan,
@@ -36,7 +36,7 @@ async def run_research(
     `path_override` takes precedence over both classifier and URL detection.
     `progress` — when provided, the agent calls phase/step as it moves through routing.
     """
-    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter: ProgressReporter = ensure_reporter(progress)
 
     # LibraryWriter setup (optional, based on config)
     writer: LibraryWriter | NullLibraryWriter | None = None
@@ -57,99 +57,96 @@ async def run_research(
             classifier_rationale="Empty query supplied.",
         )
 
-    # Step 1 — explicit override (from CLI flag) wins
-    if path_override:
-        logger.info("path override: %s", path_override)
-        reporter.phase("routing", f"--{path_override} override")
-        if path_override == "url_source":
-            url = extract_first_url(query) or query.strip()
-            remainder = strip_url_from_query(query, url) if url != query.strip() else ""
-            if not url.startswith(("http://", "https://")):
-                reporter.phase("error", "--url-source without URL")
-                reporter.complete()
-                return Report(
-                    markdown=f"# Error\n\n`--url-source` requires a URL. Got: `{query!r}`.",
-                    path="unclear",
-                    classifier_rationale="--url-source override with non-URL query.",
-                )
-            reporter.phase("url_source", "fetching source")
-            async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+    # Extract URL for url_source override (needs pre-check before async with)
+    if path_override == "url_source":
+        url = extract_first_url(query) or query.strip()
+        remainder = strip_url_from_query(query, url) if url != query.strip() else ""
+        if not url.startswith(("http://", "https://")):
+            reporter.phase("error", "--url-source without URL")
+            reporter.complete()
+            return Report(
+                markdown=f"# Error\n\n`--url-source` requires a URL. Got: `{query!r}`.",
+                path="unclear",
+                classifier_rationale="--url-source override with non-URL query.",
+            )
+
+    # Single async with block for LLM client + tools — all routing happens inside
+    async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+        # Step 1 — explicit override (from CLI flag) wins
+        if path_override:
+            logger.info("path override: %s", path_override)
+            reporter.phase("routing", f"--{path_override} override")
+            if path_override == "url_source":
+                reporter.phase("url_source", "fetching source")
                 report = await _dispatch_url_source(
                     url, remainder, client, tools, config, reporter,
+                    writer=writer, run_id=run_id,
+                )
+            else:
+                classified = ClassifiedQuery(
+                    path=QueryPlan(path_override),
+                    rationale=f"explicit --{path_override} override",
+                    search_hint=query,
+                )
+                reporter.phase(path_override, f"--{path_override} override")
+                report = await _dispatch_classified(
+                    classified, query, client, tools, config, reporter,
                     writer=writer, run_id=run_id,
                 )
             reporter.complete()
             await _archive_report(report, writer, run_id)
             return report
-        classified = ClassifiedQuery(
-            path=QueryPlan(path_override),
-            rationale=f"explicit --{path_override} override",
-            search_hint=query,
-        )
-        reporter.phase(path_override, f"--{path_override} override")
-        async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+
+        # Step 2 — config force_path (yaml) second-highest priority
+        if config.agent.classifier.force_path:
+            force = config.agent.classifier.force_path
+            logger.info("config force_path: %s", force)
+            reporter.phase("routing", f"config.force_path = {force!r}")
+            classified = ClassifiedQuery(
+                path=QueryPlan(force),
+                rationale=f"config.force_path = {force!r}",
+                search_hint=query,
+            )
             report = await _dispatch_classified(
                 classified, query, client, tools, config, reporter,
                 writer=writer, run_id=run_id,
             )
-        reporter.complete()
-        await _archive_report(report, writer, run_id)
-        return report
+            reporter.complete()
+            await _archive_report(report, writer, run_id)
+            return report
 
-    # Step 2 — config force_path (yaml) second-highest priority
-    if config.agent.classifier.force_path:
-        force = config.agent.classifier.force_path
-        logger.info("config force_path: %s", force)
-        reporter.phase("routing", f"config.force_path = {force!r}")
-        classified = ClassifiedQuery(
-            path=QueryPlan(force),
-            rationale=f"config.force_path = {force!r}",
-            search_hint=query,
-        )
-        async with LLMClient(config.llm) as client, _build_tools(config) as tools:
-            report = await _dispatch_classified(
-                classified, query, client, tools, config, reporter,
-                writer=writer, run_id=run_id,
-            )
-        reporter.complete()
-        await _archive_report(report, writer, run_id)
-        return report
-
-    # Step 3 — URL detection routes to url_source
-    url = extract_first_url(query)
-    if url and config.url_source.enabled:
-        remainder = strip_url_from_query(query, url)
-        logger.info("URL detected: %s (remainder: %r)", url, remainder)
-        reporter.phase("url_source", f"auto-detected URL: {url[:80]}")
-        async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+        # Step 3 — URL detection routes to url_source
+        url = extract_first_url(query)
+        if url and config.url_source.enabled:
+            remainder = strip_url_from_query(query, url)
+            logger.info("URL detected: %s (remainder: %r)", url, remainder)
+            reporter.phase("url_source", f"auto-detected URL: {url[:80]}")
             report = await _dispatch_url_source(
                 url, remainder, client, tools, config, reporter,
                 writer=writer, run_id=run_id,
             )
-        reporter.complete()
-        await _archive_report(report, writer, run_id)
-        return report
+            reporter.complete()
+            await _archive_report(report, writer, run_id)
+            return report
 
-    # Step 4 — classifier (or default to deep if disabled)
-    if not config.agent.classifier.enabled:
-        logger.info("classifier disabled; defaulting to deep.")
-        reporter.phase("deep", "classifier disabled; defaulting to deep")
-        classified = ClassifiedQuery(
-            path=QueryPlan.deep,
-            rationale="classifier disabled by config",
-            search_hint=query,
-        )
-        async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+        # Step 4 — classifier (or default to deep if disabled)
+        if not config.agent.classifier.enabled:
+            logger.info("classifier disabled; defaulting to deep.")
+            reporter.phase("deep", "classifier disabled; defaulting to deep")
+            classified = ClassifiedQuery(
+                path=QueryPlan.deep,
+                rationale="classifier disabled by config",
+                search_hint=query,
+            )
             report = await _dispatch_classified(
                 classified, query, client, tools, config, reporter,
                 writer=writer, run_id=run_id,
             )
-        reporter.complete()
-        await _archive_report(report, writer, run_id)
-        return report
+            reporter.complete()
+            await _archive_report(report, writer, run_id)
+            return report
 
-    reporter.phase("routing", "classifier LLM call")
-    async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+        reporter.phase("routing", "classifier LLM call")
         from deep_research.paths import classify_query
 
         classified = await classify_query(query, client, config.llm.text_model)
@@ -162,6 +159,7 @@ async def run_research(
             classified, query, client, tools, config, reporter,
             writer=writer, run_id=run_id,
         )
+
     reporter.complete()
     await _archive_report(report, writer, run_id)
     return report
@@ -238,8 +236,14 @@ def _build_tools(config: AgentTopConfig) -> _ToolsCtx:
 async def _archive_report(report: Report, writer: LibraryWriter | None, run_id: str) -> None:
     """Archive report in the personal digital library if writer is configured."""
     if isinstance(writer, LibraryWriter) and run_id:
-        await writer.archive_report(report, run_id)
-        await writer.storage.close()
+        try:
+            await writer.archive_report(report, run_id)
+        except Exception as e:
+            logger.warning("archive_report failed: %s: %s", type(e).__name__, e)
+        try:
+            await writer.storage.close()
+        except Exception as e:
+            logger.warning("storage close failed: %s: %s", type(e).__name__, e)
 
 
 __all__ = ["run_research"]

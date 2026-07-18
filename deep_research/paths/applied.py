@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
-from deep_research.progress import NullReporter, ProgressReporter
+from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     Citation,
     ClassifiedQuery,
@@ -38,7 +38,7 @@ async def applied_research(
     Seeds from blog_search, fetches top blog posts, and synthesizes a
     markdown report focused on practical / implementation details.
     """
-    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter: ProgressReporter = ensure_reporter(progress)
 
     # Step 1: blog search
     reporter.phase("applied.seed", "searching technical blogs")

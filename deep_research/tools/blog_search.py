@@ -194,9 +194,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             except Exception as e:
                 logger.warning("blog_search direct failed: %s", e)
 
-        # Cross-ref arxiv IDs in blog content (stub for now)
-        if cfg.cross_ref_arxiv:
-            pass  # Future: scan blog content for arxiv IDs
+        # Cross-ref arxiv IDs in blog content (placeholder for future implementation)
 
         # Dedup by URL
         seen = set()

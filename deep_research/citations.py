@@ -7,7 +7,6 @@ the post-processing utilities.
 from __future__ import annotations
 
 import re
-from collections import OrderedDict
 
 from deep_research.state import Citation, CitationGraph, PaperNode
 
@@ -37,15 +36,8 @@ def extract_arxiv_ids(text: str) -> list[str]:
     return out
 
 
-def dedup_citations(citations: list[Citation]) -> list[Citation]:
-    """Dedup by URL, keeping highest-confidence variant."""
-    out: OrderedDict[str, Citation] = OrderedDict()
-    for c in citations:
-        key = c.url
-        existing = out.get(key)
-        if existing is None or existing.confidence_score < c.confidence_score:
-            out[key] = c
-    return list(out.values())
+# dedup_citations was removed — it duplicated logic in ResearchState.absorb_citations
+# and path-local merge helpers. Use those instead.
 
 
 def render_bibliography_markdown(citations: list[Citation]) -> str:
@@ -131,7 +123,6 @@ def _bibtex_escape(s: str) -> str:
 
 
 __all__ = [
-    "dedup_citations",
     "extract_arxiv_ids",
     "render_bibliography_markdown",
     "render_bibtex",

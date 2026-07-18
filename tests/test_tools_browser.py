@@ -56,9 +56,9 @@ class TestRegistration:
         assert "browser_snapshot" in reg.names()
         assert "browser_click" in reg.names()
         assert "browser_evaluate" in reg.names()
-        # The teardown hook is on the registry
-        assert hasattr(reg, "_close_hook")
-        assert callable(reg._close_hook)
+        # The teardown hook list is on the registry
+        assert hasattr(reg, "_close_hooks")
+        assert len(reg._close_hooks) > 0
         # Tear down cleanly so no leaked resources
         await reg.close()
 

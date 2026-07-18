@@ -21,7 +21,7 @@ from openai import AsyncOpenAI
 from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
-from deep_research.progress import NullReporter, ProgressReporter
+from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import Citation, ClassifiedQuery, Report
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ async def quick_search(
     run_id: str = "",
 ) -> Report:
     """Execute the quick path: 1 search + summarize via LLM synthesis."""
-    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter: ProgressReporter = ensure_reporter(progress)
     reporter.phase("quick.search", "querying web_search")
     if "web_search" in tools.names():
         search_result = await tools.call(
@@ -172,11 +172,8 @@ async def _synthesize(
                     )
                 )
             # P10.6 glossary extraction
-            if isinstance(writer, LibraryWriter) and run_id:
-                from deep_research.nodes.glossarize import parse_glossary_from_response
-                glossary_entries = parse_glossary_from_response(raw, run_id)
-                if glossary_entries:
-                    await writer.upsert_glossary_entries(glossary_entries, run_id)
+            from deep_research.nodes.glossarize import extract_and_save_glossary
+            await extract_and_save_glossary(raw, run_id, writer)
         except json.JSONDecodeError:
             answer_md = raw
     except Exception as e:

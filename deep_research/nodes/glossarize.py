@@ -12,118 +12,34 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-
-from openai import AsyncOpenAI
 
 from deep_research.library.storage.rows import GlossaryEntry
+from deep_research.library.writer import LibraryWriter
 
 logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
 
 
-def _load_prompt() -> str:
-    """Load the glossary extraction prompt template."""
-    try:
-        return _PROMPT_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        logger.warning("glossary_extract.txt not found; using fallback prompt")
-        return (
-            "Extract key concepts, acronyms, methods, metrics, datasets, models, "
-            "and tools from the research context. Return a JSON array of objects "
-            "with fields: term, term_canonical, kind, short_def. Return [] if none."
-        )
+# _load_prompt and extract_glossary were removed — they were unused.
+# Glossary extraction is done inline via parse_glossary_from_response.
 
 
-async def extract_glossary(
-    context: str,
-    client: AsyncOpenAI,
-    model: str,
-) -> list[dict[str, Any]]:
-    """Extract glossary entries from research context via an LLM call."""
-    if not context or not context.strip():
-        return []
-
-    prompt_template = _load_prompt()
-    messages = [
-        {"role": "system", "content": prompt_template},
-        {"role": "user", "content": context},
-    ]
-
-    try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.0,
-            response_format={"type": "json_object"},
-        )
-        content = (resp.choices[0].message.content or "").strip()
-        if not content:
-            return []
-        parsed = json.loads(content)
-        if isinstance(parsed, list):
-            return parsed
-        if isinstance(parsed, dict):
-            for key in ("glossary", "terms", "entries"):
-                if key in parsed and isinstance(parsed[key], list):
-                    return parsed[key]
-            return []
-        return []
-    except json.JSONDecodeError as e:
-        logger.warning("glossary LLM returned invalid JSON: %s", e)
-        return []
-    except Exception as e:
-        logger.warning("glossary LLM call failed: %s: %s", type(e).__name__, e)
-        return []
+async def extract_and_save_glossary(
+    response_text: str,
+    run_id: str,
+    writer: LibraryWriter | None,
+) -> None:
+    """Parse glossary entries from an LLM response and persist them via the library writer."""
+    if not isinstance(writer, LibraryWriter) or not run_id:
+        return
+    glossary_entries = parse_glossary_from_response(response_text, run_id)
+    if glossary_entries:
+        await writer.upsert_glossary_entries(glossary_entries, run_id)
 
 
-def _coerce(entries: list[dict]) -> list[dict]:
-    """Normalize glossary entries to canonical shape."""
-    coerced: list[dict] = []
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        term = e.get("term", "").strip()
-        if not term:
-            continue
-        canonical = e.get("term_canonical", term.lower().strip())
-        kind = e.get("kind", "concept")
-        if kind not in ("concept", "acronym", "method", "metric", "dataset", "model", "tool"):
-            kind = "concept"
-        coerced.append({
-            "term": term,
-            "term_canonical": canonical,
-            "kind": kind,
-            "short_def": e.get("short_def", ""),
-            "long_def": e.get("long_def"),
-            "acronym_expansion": e.get("acronym_expansion"),
-            "related_terms": e.get("related_terms"),
-            "domain_tags": e.get("domain_tags"),
-            "confidence": e.get("confidence", 0.5),
-        })
-    return coerced
-
-
-def _dedup_rule_based(
-    new_entries: list[dict], existing: list[dict]
-) -> list[dict]:
-    """Rule-based cross-run dedup."""
-    merged: dict[str, dict] = {}
-    for e in existing:
-        merged[e.get("term_canonical", e.get("term", "").lower().strip())] = e
-    for e in new_entries:
-        key = e.get("term_canonical", e.get("term", "").lower().strip())
-        if not key:
-            continue
-        if key in merged:
-            existing_conf = merged[key].get("confidence", 0)
-            new_conf = e.get("confidence", 0)
-            if new_conf > existing_conf:
-                merged[key] = e
-        else:
-            merged[key] = e
-    return list(merged.values())
+# _coerce and _dedup_rule_based were removed — they were unused.
+# Glossary normalization happens inline in parse_glossary_from_response.
 
 
 def parse_glossary_from_response(
@@ -272,9 +188,7 @@ def merge_glossary_entries(
 
 __all__ = [
     "_canonicalize",
-    "_coerce",
-    "_dedup_rule_based",
-    "extract_glossary",
+    "extract_and_save_glossary",
     "merge_glossary_entries",
     "parse_glossary_from_response",
     "render_glossary_md",

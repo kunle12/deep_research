@@ -44,7 +44,7 @@ def classify_url_sync(url: str) -> UrlType:
     host = (parsed.netloc or "").lower()
     path = (parsed.path or "").lower()
 
-    if "arxiv.org" in host:
+    if host == "arxiv.org" or host.endswith(".arxiv.org"):
         return UrlType.arxiv
     if path.endswith(".pdf"):
         return UrlType.pdf

@@ -43,7 +43,7 @@ from deep_research.nodes.analyze_paper import (
 from deep_research.nodes.analyze_paper import (
     extract_key_reference_arxiv_ids,
 )
-from deep_research.progress import NullReporter, ProgressReporter
+from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     Citation,
     CitationGraph,
@@ -77,7 +77,7 @@ async def academic_research(
         both the markdown bibliography AND the citation-graph structure.
     """
     cfg = config.academic
-    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter: ProgressReporter = ensure_reporter(progress)
     graph = CitationGraph()
     analyses: dict[str, Any] = {}  # arxiv_id -> PaperAnalysis
     processed: set[str] = set()  # version-stripped ids we've already analyzed
@@ -118,12 +118,15 @@ async def academic_research(
             if base in processed:
                 logger.debug("arxiv_id %s already processed; skipping", base)
                 return
-            if len(processed) >= cfg.max_papers:
+
+            # Claim slot BEFORE analysis to avoid TOCTOU race on max_papers.
+            # Under semaphore, the check+add is atomic (GIL protects dict ops).
+            processed.add(base)
+            if len(processed) > cfg.max_papers:
                 logger.info("max_papers=%d reached; skipping enqueued %s", cfg.max_papers, base)
                 return
 
             # node already added to graph by _gather_seeds OR by the enqueuer
-            # (so children edges can be recorded even if we later skip analysis)
             graph.add_node(node)
 
             reporter.step(
@@ -135,6 +138,13 @@ async def academic_research(
             if config.pdf_vision.enabled and "pdf_render_pages" in tools.names():
                 page_urls = await _render_paper_pages(node.arxiv_id, tools, max_pages=10)
 
+            # Skip LLM analysis if paper_text is empty (e.g., download failed)
+            if not paper_text.strip():
+                logger.warning("arxiv=%s has no extractable text; skipping analysis", base)
+                graph.analyses[base] = None
+                analyses[base] = None
+                return
+
             analysis = await analyze_paper_node(
                 arxiv_id=node.arxiv_id,
                 paper_text=paper_text,
@@ -143,7 +153,6 @@ async def academic_research(
                 model=config.llm.text_model,
                 page_image_data_urls=page_urls or None,
             )
-            processed.add(base)
             graph.analyses[base] = analysis
             analyses[base] = analysis
 
@@ -238,8 +247,8 @@ async def academic_research(
     # sparse for un-resolved child refs but the URL is still valid).
     citations: list[Citation] = []
     for aid, node in graph.nodes.items():
-        if aid in analyses:
-            a = analyses[aid]
+        a = analyses.get(aid)
+        if a is not None:
             citations.append(
                 Citation(
                     url=f"https://arxiv.org/abs/{aid}",
@@ -249,7 +258,7 @@ async def academic_research(
                     arxiv_id=aid,
                     authors=node.authors,
                     confidence_score=0.8,
-                    discovered_by=None,  # populated as None for graph-sourced
+                    discovered_by=None,
                 )
             )
         else:
@@ -406,8 +415,11 @@ async def _synthesize_markdown(
         )
 
     # Build a condensed digest of each analysis for the prompt.
+    # Skip entries where analysis is None (paper had no extractable text).
     digest_lines: list[str] = []
     for i, (aid, a) in enumerate(analyses.items(), start=1):
+        if a is None:
+            continue
         digest_lines.append(
             f"### Paper {i}: arxiv:{aid} — {a.title}\n"
             f"Summary: {a.summary}\n"
@@ -416,6 +428,12 @@ async def _synthesize_markdown(
             f"Limitations: {'; '.join(a.limitations) if a.limitations else 'N/A'}\n"
         )
     digest = "\n\n".join(digest_lines)
+    if not digest.strip():
+        return (
+            "# Academic Research Report\n\n"
+            "No arxiv papers had extractable text. Re-check the arxiv tool "
+            "registration and your network/POPPLER setup.\n"
+        )
 
     # P10.0: inject blog context when available
     blog_section = ""
@@ -453,11 +471,8 @@ async def _synthesize_markdown(
         md = (resp.choices[0].message.content or "").strip() or _fallback_synthesis(original_query, analyses)
 
         # P10.6 glossary extraction
-        if isinstance(writer, LibraryWriter) and run_id:
-            from deep_research.nodes.glossarize import parse_glossary_from_response
-            glossary_entries = parse_glossary_from_response(md, run_id)
-            if glossary_entries:
-                await writer.upsert_glossary_entries(glossary_entries, run_id)
+        from deep_research.nodes.glossarize import extract_and_save_glossary
+        await extract_and_save_glossary(md, run_id, writer)
 
         return md
     except Exception as e:
@@ -473,6 +488,9 @@ def _fallback_synthesis(original_query: str, analyses: dict[str, Any]) -> str:
         f"**Papers analyzed:** {len(analyses)}\n",
     ]
     for aid, a in analyses.items():
+        if a is None:
+            lines.append(f"\n## {aid} (no extractable text)\n")
+            continue
         lines.append(f"\n## {a.title or aid}\n")
         lines.append(f"_(arxiv:[{aid}](https://arxiv.org/abs/{aid}))_\n")
         if a.summary:

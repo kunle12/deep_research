@@ -53,4 +53,11 @@ class NullReporter:
         return None
 
 
-__all__ = ["NullReporter", "ProgressReporter"]
+
+
+def ensure_reporter(progress: ProgressReporter | None) -> ProgressReporter:
+    """Return a ProgressReporter; default to NullReporter when None."""
+    return progress if progress is not None else NullReporter()
+
+
+__all__ = ["NullReporter", "ProgressReporter", "ensure_reporter"]

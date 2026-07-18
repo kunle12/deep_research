@@ -22,7 +22,7 @@ from deep_research.nodes.critic import review as critic_review
 from deep_research.nodes.planner import plan as planner_plan
 from deep_research.nodes.researcher import research as researcher_run
 from deep_research.nodes.writer import write as writer_write
-from deep_research.progress import NullReporter, ProgressReporter
+from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import ClassifiedQuery, ResearchState, SubQuestion
 
 logger = logging.getLogger(__name__)
@@ -42,14 +42,13 @@ async def deep_research(
     # Import here to avoid circulars at module-load time
     from deep_research.state import Report
 
-    reporter: ProgressReporter = progress if progress is not None else NullReporter()
+    reporter: ProgressReporter = ensure_reporter(progress)
     breadth = (
         classified.breadth_hint
         if classified.breadth_hint
         else config.agent.max_subquestions
     )
     iterations_cap = config.agent.max_iterations
-    sem = asyncio.Semaphore(config.agent.max_concurrent_tools)
 
     # 1. Plan
     reporter.phase("deep.plan", f"decomposing (breadth ≤ {breadth})")
@@ -76,13 +75,13 @@ async def deep_research(
             "deep iteration %d: %d pending sub-question(s)",
             iteration, len(pending),
         )
-        # Parallel dispatch
-        tasks = [_run_one_researcher(sq, client, config, tools, sem) for sq in pending]
+        # Parallel dispatch (no outer semaphore — ToolRegistry handles concurrency)
+        tasks = [_run_one_researcher(sq, client, config, tools) for sq in pending]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
                 logger.warning("researcher for %s raised: %s", sq.id, r)
-                state.absorb_section(sq.id, [], f"(researcher failed: {type(r).__name__}: {r})")
+                # Don't mark as covered — critic can re-request this sub-question
                 reporter.step("deep.research.fail", sq.id)
                 continue
             answer_md, citations = r
@@ -95,8 +94,11 @@ async def deep_research(
         logger.info(
             "critic iter=%d sufficient=%s gaps=%d", iteration, critique.sufficient, len(critique.gaps),
         )
-        if critique.sufficient or not critique.gaps:
-            reporter.step("deep.critic", f"sufficient={critique.sufficient}")
+        if critique.sufficient:
+            reporter.step("deep.critic", "sufficient")
+            break
+        if not critique.gaps:
+            logger.warning("critic said insufficient but returned no gaps — forcing stop")
             break
         reporter.step("deep.critic", f"gaps={len(critique.gaps)} → enqueuing")
 
@@ -137,13 +139,11 @@ async def _run_one_researcher(
     client: AsyncOpenAI,
     config: AgentTopConfig,
     tools: ToolRegistry,
-    sem: asyncio.Semaphore,
 ) -> tuple[str, list]:
-    """Wrap the researcher call in a semaphore for concurrency control."""
-    async with sem:
-        return await researcher_run(
-            sq, client, config.llm.text_model, tools,
-        )
+    """Run the researcher for one sub-question. Concurrency is handled by ToolRegistry's semaphore."""
+    return await researcher_run(
+        sq, client, config.llm.text_model, tools,
+    )
 
 
 __all__ = ["deep_research"]
