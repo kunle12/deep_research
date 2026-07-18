@@ -1,4 +1,5 @@
--- 0001_initial: schema_meta, artifacts, reports, analyses, citation_edges, tags, FTS indices
+-- Consolidated initial schema: all tables (artifacts, reports, analyses,
+-- citation_edges, tags, glossary, artifact_versions, refresh_jobs, FTS indices)
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -74,9 +75,51 @@ CREATE TABLE IF NOT EXISTS tags (
     PRIMARY KEY (tag, artifact_id)
 );
 
--- Postgres FTS via tsvector (no FTS5 — that's SQLite-specific)
+CREATE TABLE IF NOT EXISTS glossary (
+    term_id      SERIAL PRIMARY KEY,
+    term         TEXT NOT NULL,
+    term_canonical TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    short_def    TEXT,
+    long_def     TEXT,
+    acronym_expansion TEXT,
+    related_terms TEXT,
+    domain_tags  TEXT,
+    confidence   REAL,
+    first_seen_run_id TEXT REFERENCES reports(run_id),
+    first_seen_artifact_id TEXT REFERENCES artifacts(artifact_id),
+    last_updated TEXT NOT NULL,
+    UNIQUE(term_canonical),
+    CHECK (kind IN ('concept','acronym','method','metric','dataset','model','tool'))
+);
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+    artifact_id_old TEXT NOT NULL REFERENCES artifacts(artifact_id),
+    artifact_id_new TEXT NOT NULL REFERENCES artifacts(artifact_id),
+    reason          TEXT NOT NULL,
+    discovered_at   TEXT NOT NULL,
+    discovered_in_run TEXT REFERENCES reports(run_id),
+    PRIMARY KEY (artifact_id_old, artifact_id_new)
+);
+
+CREATE TABLE IF NOT EXISTS refresh_jobs (
+    job_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    completed_at        TEXT,
+    scope_kind          TEXT NOT NULL,
+    scope_value         TEXT NOT NULL,
+    artifacts_considered INTEGER,
+    artifacts_refreshed   INTEGER,
+    status              TEXT NOT NULL,
+    error               TEXT
+);
+
+-- Postgres FTS via tsvector
 CREATE INDEX IF NOT EXISTS idx_analyses_summary ON analyses USING gin(to_tsvector('english', coalesce(summary, '')));
 CREATE INDEX IF NOT EXISTS idx_analyses_key_findings ON analyses USING gin(to_tsvector('english', coalesce(key_findings, '')));
+CREATE INDEX IF NOT EXISTS idx_glossary_fts ON glossary USING gin(
+    to_tsvector('english', coalesce(term, '') || ' ' || coalesce(short_def, '') || ' ' || coalesce(long_def, ''))
+);
 
 -- Record schema version
 INSERT INTO schema_meta (key, value) VALUES ('schema_version', '1')

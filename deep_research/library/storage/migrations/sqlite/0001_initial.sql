@@ -1,4 +1,5 @@
--- 0001_initial: schema_meta, artifacts, reports, analyses, citation_edges, tags, FTS indices
+-- Consolidated initial schema: all tables (artifacts, reports, analyses,
+-- citation_edges, tags, glossary, artifact_versions, refresh_jobs, FTS indices)
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -75,6 +76,45 @@ CREATE TABLE IF NOT EXISTS tags (
     PRIMARY KEY (tag, artifact_id)
 );
 
+CREATE TABLE IF NOT EXISTS glossary (
+    term_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    term         TEXT NOT NULL,
+    term_canonical TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    short_def    TEXT,
+    long_def     TEXT,
+    acronym_expansion TEXT,
+    related_terms TEXT,
+    domain_tags  TEXT,
+    confidence   REAL,
+    first_seen_run_id TEXT REFERENCES reports(run_id),
+    first_seen_artifact_id TEXT REFERENCES artifacts(artifact_id),
+    last_updated TEXT NOT NULL,
+    UNIQUE(term_canonical),
+    CHECK (kind IN ('concept','acronym','method','metric','dataset','model','tool'))
+);
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+    artifact_id_old TEXT NOT NULL REFERENCES artifacts(artifact_id),
+    artifact_id_new TEXT NOT NULL REFERENCES artifacts(artifact_id),
+    reason          TEXT NOT NULL,
+    discovered_at   TEXT NOT NULL,
+    discovered_in_run TEXT REFERENCES reports(run_id),
+    PRIMARY KEY (artifact_id_old, artifact_id_new)
+);
+
+CREATE TABLE IF NOT EXISTS refresh_jobs (
+    job_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    completed_at        TEXT,
+    scope_kind          TEXT NOT NULL,
+    scope_value         TEXT NOT NULL,
+    artifacts_considered INTEGER,
+    artifacts_refreshed   INTEGER,
+    status              TEXT NOT NULL,
+    error               TEXT
+);
+
 -- FTS5 virtual tables
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
     artifact_id UNINDEXED,
@@ -84,6 +124,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
     extracted_text,
     content='analyses',
     content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS glossary_fts USING fts5(
+    term, short_def, long_def, related_terms,
+    content='glossary', content_rowid='term_id',
     tokenize='porter unicode61'
 );
 

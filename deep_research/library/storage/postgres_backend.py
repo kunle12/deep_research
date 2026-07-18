@@ -21,21 +21,7 @@ from deep_research.library.storage.rows import (
 
 logger = logging.getLogger(__name__)
 
-_MIGRATION_DIR = Path(__file__).resolve().parent / "migrations" / "postgres"
-
-_MIGRATION_FILES = [
-    "0001_initial.sql",
-    "0002_add_glossary.sql",
-    "0003_add_refresh_foundation.sql",
-]
-
-
-def _parse_migration_version(filename: str) -> int:
-    parts = filename.split("_", 1)
-    try:
-        return int(parts[0])
-    except ValueError:
-        return 0
+_MIGRATION_FILE = Path(__file__).resolve().parent / "migrations" / "postgres" / "0001_initial.sql"
 
 
 class PostgresStorageBackend:
@@ -61,41 +47,13 @@ class PostgresStorageBackend:
 
     # -- Schema management --
 
-    async def current_schema_version(self) -> int:
-        if self._conn is None:
-            return 0
-        try:
-            row = await self._conn.fetchval(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-            )
-        except Exception:
-            return 0
-        if row is None:
-            return 0
-        try:
-            return int(row)
-        except (ValueError, TypeError):
-            return 0
-
-    async def apply_migration(self, version: int) -> None:
+    async def ensure_schema(self) -> None:
+        """Create all tables if they don't exist. Single consolidated migration."""
         if self._conn is None:
             raise RuntimeError("Postgres backend not connected")
-        for fname in _MIGRATION_FILES:
-            if _parse_migration_version(fname) == version:
-                sql_path = _MIGRATION_DIR / fname
-                sql = sql_path.read_text(encoding="utf-8")
-                await self._conn.execute(sql)
-                logger.info("applied migration v%d: %s", version, fname)
-                return
-        raise ValueError(f"No migration found for version {version}")
-
-    async def ensure_schema(self) -> None:
-        current = await self.current_schema_version()
-        latest = len(_MIGRATION_FILES)
-        for version in range(current + 1, latest + 1):
-            await self.apply_migration(version)
-        if current < latest:
-            logger.info("schema migrated from v%d to v%d", current, latest)
+        sql = _MIGRATION_FILE.read_text(encoding="utf-8")
+        await self._conn.execute(sql)
+        logger.info("schema initialized from %s", _MIGRATION_FILE.name)
 
     # -- Helpers --
 

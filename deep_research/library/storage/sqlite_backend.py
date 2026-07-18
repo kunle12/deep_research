@@ -24,23 +24,7 @@ from deep_research.library.storage.rows import (
 
 logger = logging.getLogger(__name__)
 
-_MIGRATION_DIR = Path(__file__).resolve().parent / "migrations" / "sqlite"
-
-# Ordered migration files — each file bumps schema_version by 1
-_MIGRATION_FILES = [
-    "0001_initial.sql",
-    "0002_add_glossary.sql",
-    "0003_add_refresh_foundation.sql",
-]
-
-
-def _parse_migration_version(filename: str) -> int:
-    """Extract version number from filename like '0002_add_glossary.sql'."""
-    parts = filename.split("_", 1)
-    try:
-        return int(parts[0])
-    except ValueError:
-        return 0
+_MIGRATION_FILE = Path(__file__).resolve().parent / "migrations" / "sqlite" / "0001_initial.sql"
 
 
 class SqliteStorageBackend:
@@ -76,51 +60,14 @@ class SqliteStorageBackend:
 
     # -- Schema management --
 
-    async def current_schema_version(self) -> int:
-        """Read the current schema version from schema_meta.
-
-        Returns 0 if schema_meta table doesn't exist yet (fresh database).
-        """
-        if self._conn is None:
-            return 0
-        try:
-            cursor = await self._conn.execute(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-            )
-            row = await cursor.fetchone()
-        except Exception:
-            # Table doesn't exist yet — fresh database
-            return 0
-        if row is None:
-            return 0
-        try:
-            return int(row[0])
-        except (ValueError, TypeError):
-            return 0
-
-    async def apply_migration(self, version: int) -> None:
-        """Apply a specific migration file by version number."""
+    async def ensure_schema(self) -> None:
+        """Create all tables if they don't exist. Single consolidated migration."""
         if self._conn is None:
             raise RuntimeError("SQLite backend not connected")
-        # Find migration file for this version
-        for fname in _MIGRATION_FILES:
-            if _parse_migration_version(fname) == version:
-                sql_path = _MIGRATION_DIR / fname
-                sql = sql_path.read_text(encoding="utf-8")
-                await self._conn.executescript(sql)
-                await self._conn.commit()
-                logger.info("applied migration v%d: %s", version, fname)
-                return
-        raise ValueError(f"No migration found for version {version}")
-
-    async def ensure_schema(self) -> None:
-        """Idempotent: apply any pending migrations up to the latest."""
-        current = await self.current_schema_version()
-        latest = len(_MIGRATION_FILES)
-        for version in range(current + 1, latest + 1):
-            await self.apply_migration(version)
-        if current < latest:
-            logger.info("schema migrated from v%d to v%d", current, latest)
+        sql = _MIGRATION_FILE.read_text(encoding="utf-8")
+        await self._conn.executescript(sql)
+        await self._conn.commit()
+        logger.info("schema initialized from %s", _MIGRATION_FILE.name)
 
     # -- Helpers --
 

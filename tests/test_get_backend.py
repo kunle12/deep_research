@@ -18,8 +18,7 @@ async def test_get_sqlite_backend():
     cfg.pdl.storage.backend = "sqlite"
     backend = await get_backend(cfg)
     assert backend is not None
-    sv = await backend.current_schema_version()
-    assert sv == 3
+    # Schema initialized; no version-based checks needed
     await backend.close()
 
 

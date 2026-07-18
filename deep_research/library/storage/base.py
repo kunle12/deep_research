@@ -28,12 +28,8 @@ class StorageBackend(Protocol):
     async def close(self) -> None: ...
 
     # -- Schema management --
-    async def current_schema_version(self) -> int: ...
-
-    async def apply_migration(self, version: int) -> None: ...
-
     async def ensure_schema(self) -> None:
-        """Idempotent: apply any pending migrations."""
+        """Create all tables if they don't exist."""
         ...
 
     # -- Artifact ops --
