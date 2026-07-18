@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -20,6 +21,7 @@ from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.critic import review as critic_review
 from deep_research.nodes.planner import plan as planner_plan
+from deep_research.nodes.recall import format_recall_context, recall as recall_run
 from deep_research.nodes.researcher import research as researcher_run
 from deep_research.nodes.writer import write as writer_write
 from deep_research.progress import ProgressReporter, ensure_reporter
@@ -75,8 +77,9 @@ async def deep_research(
             "deep iteration %d: %d pending sub-question(s)",
             iteration, len(pending),
         )
-        # Parallel dispatch (no outer semaphore — ToolRegistry handles concurrency)
-        tasks = [_run_one_researcher(sq, client, config, tools) for sq in pending]
+        # P13: recall prior context from library before researcher dispatch
+        storage = writer.storage if writer is not None else None
+        tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
@@ -134,15 +137,24 @@ async def deep_research(
     )
 
 
-async def _run_one_researcher(
+async def _run_one_researcher_with_recall(
     sq: SubQuestion,
     client: AsyncOpenAI,
     config: AgentTopConfig,
     tools: ToolRegistry,
+    storage: Any | None,
 ) -> tuple[str, list]:
-    """Run the researcher for one sub-question. Concurrency is handled by ToolRegistry's semaphore."""
+    """Run the researcher for one sub-question with library recall for prior context."""
+    prior_context = ""
+    try:
+        entries = await recall_run(sq.question, storage)
+        if entries:
+            prior_context = format_recall_context(entries)
+    except Exception as e:
+        logger.debug("recall failed for %s: %s", sq.id, e)
+
     return await researcher_run(
-        sq, client, config.llm.text_model, tools,
+        sq, client, config.llm.text_model, tools, prior_context=prior_context,
     )
 
 

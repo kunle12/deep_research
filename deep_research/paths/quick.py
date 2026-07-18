@@ -21,6 +21,7 @@ from openai import AsyncOpenAI
 from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
+from deep_research.nodes.recall import format_recall_context, recall as recall_run
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import Citation, ClassifiedQuery, Report
 
@@ -78,6 +79,13 @@ async def quick_search(
         .replace("{query}", original_query)
         .replace("{results}", rendered_results)
     )
+
+    # P13: inject prior context from library recall
+    storage = writer.storage if writer is not None else None
+    prior_entries = await recall_run(original_query, storage, max_results=3)
+    if prior_entries:
+        prior_md = format_recall_context(prior_entries)
+        prompt_text += "\n\n" + prior_md
 
     answer_text, llm_citations = await _synthesize(client, config, prompt_text, writer, run_id)
     citations = _merge_citations(citations, llm_citations)

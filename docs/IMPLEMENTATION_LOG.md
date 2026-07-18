@@ -620,6 +620,7 @@ $ uv run pytest tests/ --cov=deep_research --cov-report=term
 
 - **P11**: Reddit integration (`asyncpraw` wiring) — intentionally deferred
 - **P12.x**: Postgres backend, scheduler, applied path, FastAPI microservice, Web UI — deferred
+- **P13**: Library-first recall — prior-knowledge injection before web search
 
 ---
 
@@ -835,4 +836,16 @@ All existing P1-P9 tests pass. New P10.x test files:
 | **Total new tests** | **38** | |
 
 All tests green: `pytest -q` passes with 0 failures.
+
+---
+
+## P13 — Library-first recall (prior knowledge injection)
+
+### Done
+
+- [x] `nodes/recall.py` — new module: `recall()` queries the library's FTS5 index for prior analyses matching a query string. Returns formatted prior-context entries. Gracefully returns empty list when storage is None or no matches found.
+- [x] `paths/deep.py` — before each researcher dispatch, calls `recall(sub_q.question, writer.storage)`. Prior context is injected into the researcher's system prompt as "Prior research from the library:" section. The researcher still decides what to fetch via tool calls.
+- [x] `paths/quick.py` — before LLM synthesis, calls `recall(query, writer.storage)`. Prior context injected into the synthesis prompt.
+- [x] `paths/academic.py` — before synthesis, recalls prior analyses matching each analyzed paper's arxiv_id. Injects additional context.
+- [x] `tests/test_nodes_recall.py` (5 tests): empty storage (PDL disabled), FTS5 match, no match, dedup by artifact_id, formatting of results.
 

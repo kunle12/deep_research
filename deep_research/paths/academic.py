@@ -43,6 +43,7 @@ from deep_research.nodes.analyze_paper import (
 from deep_research.nodes.analyze_paper import (
     extract_key_reference_arxiv_ids,
 )
+from deep_research.nodes.recall import format_recall_context, recall as recall_run
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     Citation,
@@ -457,11 +458,21 @@ async def _synthesize_markdown(
         if glossary_text:
             system_msg += "\n\n" + glossary_text
 
+    # P13: inject prior context from library recall
+    prior_section = ""
+    if writer is not None:
+        try:
+            prior_entries = await recall_run(original_query, writer.storage, max_results=3)
+            if prior_entries:
+                prior_section = "\n\n" + format_recall_context(prior_entries)
+        except Exception:
+            pass
+
     messages = [
         {"role": "system", "content": system_msg},
         {
             "role": "user",
-            "content": f"# Research query\n{original_query}\n\n# Paper analyses digest\n{digest}{blog_section}",
+            "content": f"# Research query\n{original_query}\n\n# Paper analyses digest\n{digest}{blog_section}{prior_section}",
         },
     ]
     try:

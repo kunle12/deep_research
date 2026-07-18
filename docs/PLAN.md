@@ -1,6 +1,6 @@
 # Deep Research Agent — Master Plan
 
-> **Status**: v7 — final, proceeded to implementation (P1–P12 done). P12.5 (Web UI) optional/deferred.  
+> **Status**: v8 — final, proceeded to implementation (P1–P13 done). P12.5 (Web UI) optional/deferred.  
 > **Last update**: All phases P1–P12 implemented.  
 > **Resume guidance**: If a session is interrupted, read this file first; it contains every locked-in decision. Then read `docs/IMPLEMENTATION_LOG.md` for progress state.
 
@@ -227,6 +227,7 @@ deep_research/
 | **P11** | Wire `asyncpraw`. | Reddit access. | done |
 | **P12.0** | (a) **Postgres `StorageBackend` + asyncpg + conformance test suite** parameterized over both SQLite + Postgres. (b) **Long-running refresh scheduler** (`apscheduler` + `croniter`) wrapping `LibraryWriter.run_refresh_job` on a configurable cron; webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) **`applied` path** (blog-first research) — `paths/applied.py` lands here, not in P10.0. (d) **Library CLI completes**: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh`. (e) **FastAPI microservice** + Dockerfile + poppler setup. | Personal library UX; long-running service that auto-refreshes the library; deployable Postgres-backed microservice. | done |
 | **P12.5** | Web UI for browsing the library. | Visual library browser. | optional / deferred |
+| **P13** | Library-first recall — prior-knowledge injection before web search. Uses existing FTS5 index over prior analyses. Every path checks the library before hitting the web; delta-only fetching. | `nodes/recall.py` + integration into deep + academic + quick paths. | done |
 
 > **Rule**: any new phase sub-rows must be added to THIS table. The detailed P10.0 / P10.5a / P10.5b / P10.6 sections later in this document are *expositions* of the rows above — they do not introduce new phases. If the table and the prose disagree, the table wins.
 
@@ -1243,3 +1244,60 @@ tests/library/test_full_text_search.py
 ```
 
 Each test file is `pytest`-parameterized over both fixtures. SQLite runs always; Postgres skips with a clean message when `DEEP_RESEARCH_TEST_PG_DSN` env var is unset (matches the existing `requires_tavily` / `requires_llm_endpoint` fixture pattern in `tests/conftest.py`).
+
+---
+
+## P13 — Library-first recall (prior knowledge injection)
+
+### Motivation
+
+Every deep research run today starts from scratch: the planner decomposes the query, the researcher hits Tavily/arxiv/Reddit, and the critic decides if more is needed. But the Personal Digital Library (P10.5a) already accumulates analyses, summaries, and key findings across runs. The second time you research "transformer attention mechanisms" the library may already contain 3 papers' worth of analyses, but the researcher re-fetches everything from the web.
+
+P13 adds a **recall step** before each researcher dispatch: query the library's FTS5 index for prior analyses matching the sub-question. When matches are found, inject their summaries + key findings as "prior research context" into the researcher's system prompt. The researcher then uses web_search only for the *delta* — what the library doesn't already cover. Same for the academic path: before synthesizing, recall prior analyses of the same papers.
+
+### Design
+
+**New module**: `nodes/recall.py`
+
+```python
+async def recall(
+    query: str,
+    storage: StorageBackend | None,
+    max_results: int = 5,
+) -> list[dict]:
+    """Query the library's FTS5 index for prior analyses matching `query`.
+
+    Returns a list of dicts with keys: artifact_id, title, summary,
+    key_findings, methodology, source_type, url. Empty list when
+    storage is None or no matches found.
+    """
+```
+
+- Uses `storage.full_text_search(query, kind="any", limit=max_results)` — the FTS5 index already exists over `analyses.summary` and `analyses.key_findings`.
+- Results are formatted as a "Prior research context" markdown block and injected into the researcher's system prompt.
+- When storage is None (PDL disabled), returns empty list — no change in behavior.
+
+**Modified paths**:
+
+- `paths/deep.py`: before dispatching each sub-question's researcher, call `recall(sub_q.question, writer.storage)`. If results found, prepend them as context to the researcher's prompt.
+- `paths/academic.py`: before synthesizing, recall prior analyses of the same arxiv_ids. Inject as additional context.
+- `paths/quick.py`: before the LLM synthesis, recall prior knowledge about the query.
+
+**Threading**: the `LibraryWriter` is already available in every path (threaded from `agent.py`). The recall function accesses `writer.storage` — which is the `StorageBackend` Protocol — so it works with both SQLite and Postgres backends.
+
+**Config additions**: none. The feature is always-on when PDL is enabled. Users who want to skip the recall step can disable PDL (`pdl.enabled: false`), which means `storage` is None and recall returns empty.
+
+### Acceptance criteria
+
+- [ ] When PDL is disabled (`pdl.enabled: false`), recall returns empty list — zero behavior change
+- [ ] When PDL is enabled and the library contains analyses matching the sub-question, the researcher's system prompt includes prior context
+- [ ] Prior context does NOT prevent the researcher from calling web_search — it only adds information; the researcher decides what to fetch
+- [ ] Recall results are deduped by artifact_id before injection
+- [ ] All existing tests pass (no regressions)
+
+### Risk register additions
+
+31. Recall returns stale/outdated summaries for papers whose content has changed upstream — mitigated by `refresh_after_at` staleness check; only recall artifacts whose `refresh_after_at` is still valid.
+32. Recall results cause the researcher to skip web_search entirely when prior context is sufficient — this is the desired behavior; the researcher's tool-calling loop still decides what to fetch.
+33. FTS5 keyword matching misses semantically-similar queries — mitigated by embedding-based recall (P13.1, future); FTS5 is the first layer, vector search is the second.
+

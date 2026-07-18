@@ -31,8 +31,13 @@ async def research(
     model: str,
     tools: ToolRegistry,
     max_turns: int = 8,
+    prior_context: str = "",
 ) -> tuple[str, list[Citation]]:
-    """Run the researcher loop for one sub-question. Returns (markdown_answer, citations)."""
+    """Run the researcher loop for one sub-question. Returns (markdown_answer, citations).
+
+    `prior_context`: optional markdown section from library recall injected as
+    additional context so the researcher knows what we already know.
+    """
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
     prompt = (
         prompt_template
@@ -42,6 +47,11 @@ async def research(
     # Surface the planner's tool_hint to the researcher so it prefers the
     # right tool family (e.g. `arxiv_search` for arxiv-flagged sub-questions).
     hint_blurb = _hint_blurb(sub_q.tool_hint, tools.names())
+
+    # Build user message: hint_blurb + prompt + optional prior_context
+    user_content = (hint_blurb + prompt) if hint_blurb else prompt
+    if prior_context:
+        user_content += "\n\n" + prior_context
 
     messages = [
         {
@@ -55,7 +65,7 @@ async def research(
                 '"confidence_score": 0.8}]}.'
             ),
         },
-        {"role": "user", "content": (hint_blurb + prompt) if hint_blurb else prompt},
+        {"role": "user", "content": user_content},
     ]
 
     final_messages, citations = await run_with_tools(
