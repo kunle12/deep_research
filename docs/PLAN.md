@@ -579,7 +579,7 @@ P10.5a also ships the **schema foundation** for refresh (`artifact_versions` + `
 - **URL → artifact** is best-effort; rot is real, we keep the bytes. When upstream content changes, we archive the new version under a new artifact_id and record a parent→child row in `artifact_versions`. The old version stays in the library as historical record.
 - **Reports are themselves archived** — each `run_research()` call commits its final markdown + JSON + weasyprint-PDF dump, so a corpus of "things researched" builds over time.
 - **`pdl.enabled: true` by default** (everybody gets a library from run #1). Disable in yaml for headless microservice deployments.
-- **Schema migration is auto-ALTER on first connect**, not a `library migrate` subcommand. Each backend carries an embedded `schema_version` row; migrations are idempotent and ordered.
+- **Schema is a single file per backend**, applied on first connect. No migration versioning — the database is created fresh from the consolidated `0001_initial.sql`.
 - **Storage backend is swappable** via a single yaml knob (`pdl.storage.backend: "sqlite" | "postgres"`). `LibraryWriter` is backend-agnostic — all SQL lives behind the `StorageBackend` Protocol.
 
 ### Directory layout
@@ -620,9 +620,9 @@ P10.5a also ships the **schema foundation** for refresh (`artifact_versions` + `
 - **Eviction**: no automatic eviction. Grow forever. User can `library prune --older-than 90d` (P12). One-time `INFO` reminder if `index.db` exceeds 1 GB.
 - **Upstream changes**: NEVER overwrite.changed upstream → archive as a new artifact_id + insert `artifact_versions` row. Old bytes remain for historical reference.
 
-### SQLite schema (v1 — ships in P10.5a)
+### SQLite schema (consolidated)
 
-Single `.db` file (`pdl.root_dir/index.db`). Versioned via `schema_meta`. Auto-ALTER migrations run on first connect. The schema below is the **end state of P10.5a**; migrations apply version-by-version from empty.
+Single `.db` file (`pdl.root_dir/index.db`). All tables created at once from a single `0001_initial.sql` on first connect.
 
 ```sql
 CREATE TABLE schema_meta (

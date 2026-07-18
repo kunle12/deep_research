@@ -839,6 +839,12 @@ All tests green: `pytest -q` passes with 0 failures.
 
 ---
 
+## Database schema consolidation
+
+Consolidated the 3 separate migration files per backend (0001_initial + 0002_add_glossary + 0003_add_refresh_foundation) into a single `0001_initial.sql` per backend containing all tables. Removed migration versioning machinery (`current_schema_version`, `apply_migration`, `_parse_migration_version`, `_MIGRATION_FILES` lists) from both SQLite and Postgres backends and the `StorageBackend` Protocol. Each backend now applies a single SQL file on connect. No existing databases to migrate — clean slate.
+
+---
+
 ## P13 — Library-first recall (prior knowledge injection)
 
 ### Done
