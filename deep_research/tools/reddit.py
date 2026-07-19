@@ -47,7 +47,7 @@ SEARCH_SCHEMA = {
     },
 }
 
-_REDDIT_CACHE: dict[str, Any] = {}  # module-level lazy reddit instance cache
+
 
 
 def _build_reddit(config: AgentTopConfig) -> Any:

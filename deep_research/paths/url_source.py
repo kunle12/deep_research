@@ -368,7 +368,7 @@ async def url_source(
         )
     reporter.step("url.fetch", f"{len(content_text)} chars; {len(page_image_data_urls)} vision pages")
 
-    if not content_text or content_text.startswith("HTTP"):
+    if not content_text or content_text.startswith(("HTTP", "(")):
         # If fetch failed, report it but don't try to analyze
         reporter.phase("url.fetch.failed", content_text[:80])
         md = (

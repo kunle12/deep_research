@@ -189,16 +189,12 @@ def _coerce(arxiv_id: str, data: dict[str, Any]) -> PaperAnalysis:
     return PaperAnalysis.model_validate(payload)
 
 
-def extract_key_reference_arxiv_ids(analysis: PaperAnalysis, threshold: float = 0.7) -> list[str]:
+def extract_key_reference_arxiv_ids(analysis: PaperAnalysis) -> list[str]:
     """Return the arxiv_ids of `key_references` worth recursing into.
 
     The LLM flag has already filtered out non-key refs by the time `analyze`
     returns; here we just collect the ids, dropping empty/garbage ones.
-    `threshold` is accepted for API symmetry with config.academic.key_reference_threshold
-    but the binary `is_key_reference` flag makes a continuous threshold
-    degenerate to `>0` = keep, `==0` = drop. We keep `>= threshold`.
     """
-    _ = threshold  # currently unused; see comment above
     out: list[str] = []
     for ref in analysis.key_references:
         aid = (ref.arxiv_id or "").strip()

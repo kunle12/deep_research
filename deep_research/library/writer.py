@@ -276,7 +276,7 @@ class LibraryWriter:
         )
         await self._storage.insert_citation_edge(edge)
 
-    async def tag(self, artifact_id: str, tags: list[str], run_id: str) -> None:
+    async def tag(self, artifact_id: str, tags: list[str], run_id: str | None = None) -> None:
         for t in tags:
             tag_row = TagRow(tag=t, artifact_id=artifact_id, applied_in_run=run_id)
             await self._storage.upsert_tag(tag_row)
@@ -294,6 +294,7 @@ class LibraryWriter:
         return await self._storage.artifacts_needing_refresh(scope_kind, scope_value, limit)
 
     async def probe_upstream(self, artifact_id: str) -> dict[str, Any]:
+        logger.info("probe_upstream not implemented yet (artifact_id=%s); marking unchanged", artifact_id)
         return {"changed": False, "new_sha": "", "error": None}
 
     async def run_refresh_job(
@@ -309,7 +310,7 @@ class LibraryWriter:
         errored = 0
         new_versions = 0
 
-        for art in artifacts[:10]:
+        for art in artifacts:
             if dry_run:
                 continue
             try:

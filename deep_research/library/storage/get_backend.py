@@ -24,7 +24,6 @@ async def get_backend(config: AgentTopConfig) -> StorageBackend:
 
         backend = SqliteStorageBackend(db_path=str(root_dir / "index.db"))
         await backend.connect()
-        await backend.ensure_schema()
         return backend
 
     elif backend_name == "postgres":

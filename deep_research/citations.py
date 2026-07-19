@@ -10,30 +10,8 @@ import re
 
 from deep_research.state import Citation, CitationGraph, PaperNode
 
-# A reasonable arxiv-id regex. Matches:
-#   2401.12345   2401.12345v3   2401.12345v12   1234.56789   cs.LG/0702001
-_ARXIV_RX = re.compile(
-    r"""
-    (?:
-        \b(\d{4}\.\d{4,5}(?:v\d+)?)\b
-        |
-        \b([a-z\-]+/[A-Z]{2}\.\d{7})\b
-    )
-    """,
-    re.VERBOSE,
-)
 
 
-def extract_arxiv_ids(text: str) -> list[str]:
-    """Return all arxiv IDs found in `text`, preserving order, deduped."""
-    out: list[str] = []
-    seen: set[str] = set()
-    for m in _ARXIV_RX.finditer(text):
-        aid = m.group(1) or m.group(2)
-        if aid and aid not in seen:
-            seen.add(aid)
-            out.append(aid)
-    return out
 
 
 # dedup_citations was removed — it duplicated logic in ResearchState.absorb_citations
@@ -141,7 +119,6 @@ def _bibtex_escape(s: str) -> str:
 
 
 __all__ = [
-    "extract_arxiv_ids",
     "render_bibliography_markdown",
     "render_bibtex",
     "render_citation_graph_markdown",

@@ -25,7 +25,7 @@ Design choices:
    click, evaluate. The other 20 (file_upload, drop, fill_form, press_key,
    type, hover, drag, select_option, tabs, take_screenshot, console_messages,
    network_request, etc.) are uninteresting for read-only research and would
-   waste context tokens.indy Expand the subset from config in P9 if it proves
+    waste context tokens. Expand the subset from config in P9 if it proves
    useful.
 
 4. **Teardown.** The MCP subprocess is killed in `_MCPClientCtx.close()`.
@@ -146,7 +146,7 @@ class _MCPClientCtx:
     def __init__(self, command: str, args: list[str]) -> None:
         self._command = command
         self._args = list(args)
-        self._stack: asyncio.TaskGroup | None = None
+
         # We use an ExitStack-style wrapper since stdio_client + ClientSession
         # are both `async with`. We keep them directly so close() can drive
         # teardown without relying on AsyncExitStack's exception trails.
@@ -357,7 +357,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
 
     # Register the close hook on the registry so ToolRegistry.close() tears
     # down the MCP subprocess when the agent finishes.
-    reg._close_hooks.append(_close)
+    reg.add_close_hook(_close)
 
 
 # ---------------------------------------------------------------------------

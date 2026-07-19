@@ -84,10 +84,13 @@ async def applied_research(
     )
 
     reporter.phase("applied.done", f"{len(citations)} blog posts")
+    from datetime import UTC, datetime
     return Report(
         markdown=final_md,
         citations=citations,
         path="applied",
+        created_at=datetime.now(UTC),
+        query=original_query,
     )
 
 

@@ -267,6 +267,18 @@ class SqliteStorageBackend:
             analysis.follow_ups, analysis.key_references,
             analysis.relevance_to_query, analysis.analyzed_at,
         ))
+        # Rebuild FTS5 row for this analysis_id: delete any prior FTS rows
+        # with the same analysis_id (UNINDEXED — full scan but bounded by
+        # how many stale duplicates exist; usually 0), then insert fresh.
+        cursor = await self._execute(
+            "DELETE FROM search_index WHERE analysis_id = ?",
+            (analysis.analysis_id,),
+        )
+        await cursor.close()
+        await self._execute(
+            "INSERT INTO search_index (analysis_id, summary, key_findings) VALUES (?, ?, ?)",
+            (analysis.analysis_id, analysis.summary or "", analysis.key_findings or ""),
+        )
         await self._conn.commit()
         return analysis.analysis_id
 
@@ -507,17 +519,78 @@ class SqliteStorageBackend:
             status=row[7], error=row[8],
         )
 
+    # -- Deletion --
+
+    async def delete_report(self, run_id: str) -> None:
+        """Delete a report and all its dependent rows (analyses, tags,
+        citation_edges, search_index entries) — but NOT artifacts, since
+        artifacts may outlive their originating report (e.g. cited by
+        later reports)."""
+        await self._ensure_conn()
+        # Cascade-delete analyses (and their FTS rows) created by this run;
+        # tags applied_in_run & citation_edges discovered_in_run likewise.
+        # Order matters: analyses → tags → citation_edges → reports itself.
+        fts_cursor = await self._execute(
+            "DELETE FROM search_index WHERE analysis_id IN "
+            "(SELECT analysis_id FROM analyses WHERE run_id = ?)",
+            (run_id,),
+        )
+        await fts_cursor.close()
+        await self._execute("DELETE FROM analyses WHERE run_id = ?", (run_id,))
+        await self._execute("DELETE FROM tags WHERE applied_in_run = ?", (run_id,))
+        await self._execute(
+            "DELETE FROM citation_edges WHERE discovered_in_run = ?", (run_id,)
+        )
+        await self._execute("DELETE FROM reports WHERE run_id = ?", (run_id,))
+        await self._conn.commit()
+
+    async def delete_artifact(self, artifact_id: str) -> None:
+        """Delete an artifact and its dependent rows (analyses + FTS rows,
+        tags, citation_edges, artifact_versions).
+
+        REFUSES (with IntegrityError) if any report still has
+        `reports.artifact_id = ?` — caller must `UPDATE reports SET
+        artifact_id = NULL` (or `delete_report`) first. This strictness
+        protects the implicit "this artifact is the final output of
+        report X" linkage."""
+        await self._ensure_conn()
+        # Delete FTS rows for analyses of this artifact
+        fts_cursor = await self._execute(
+            "DELETE FROM search_index WHERE analysis_id IN "
+            "(SELECT analysis_id FROM analyses WHERE artifact_id = ?)",
+            (artifact_id,),
+        )
+        await fts_cursor.close()
+        await self._execute("DELETE FROM analyses WHERE artifact_id = ?", (artifact_id,))
+        await self._execute("DELETE FROM tags WHERE artifact_id = ?", (artifact_id,))
+        await self._execute(
+            "DELETE FROM citation_edges WHERE source_artifact_id = ? OR target_artifact_id = ?",
+            (artifact_id, artifact_id),
+        )
+        await self._execute(
+            "DELETE FROM artifact_versions WHERE artifact_id_old = ? OR artifact_id_new = ?",
+            (artifact_id, artifact_id),
+        )
+        # If a report still references this artifact via reports.artifact_id,
+        # the DELETE on artifacts will fail with FK violation. That's the
+        # desired behavior — caller should handle that linkage explicitly.
+        await self._execute("DELETE FROM artifacts WHERE artifact_id = ?", (artifact_id,))
+        await self._conn.commit()
+
     # -- FTS --
 
     async def full_text_search(
         self, query: str, *, kind: str, limit: int
     ) -> list[SearchHit]:
         await self._ensure_conn()
-        # Search analyses FTS index for artifacts of given kind
+        # Search analyses FTS index for artifacts of given kind.
+        # Join on analysis_id (UNINDEXED FTS5 column) rather than rowid,
+        # since rowids in the internal-content FTS5 table have no
+        # relationship to the analyses table's rowid.
         sql = """
             SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
             FROM search_index
-            JOIN analyses an ON an.rowid = search_index.rowid
+            JOIN analyses an ON an.analysis_id = search_index.analysis_id
             JOIN artifacts a ON a.artifact_id = an.artifact_id
             WHERE search_index MATCH ? AND a.kind = ?
             LIMIT ?

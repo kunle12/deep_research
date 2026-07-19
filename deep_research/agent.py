@@ -50,6 +50,8 @@ async def run_research(
             writer.set_run_id(run_id)
         except Exception as e:
             logger.warning("PDL backend init failed: %s: %s; proceeding without library", type(e).__name__, e)
+            if 'backend' in locals():
+                await backend.close()
             writer = None
 
     if not query or not query.strip():

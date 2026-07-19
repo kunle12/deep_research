@@ -287,8 +287,8 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     _searxng_sem = asyncio.Semaphore(cfg.concurrency)
     _serper_lock = asyncio.Lock()
     _searxng_lock = asyncio.Lock()
-    _serper_last_call: float = 0.0
-    _searxng_last_call: float = 0.0
+    _serper_last_call: list[float] = [0.0]
+    _searxng_last_call: list[float] = [0.0]
 
     # Proactive Serper quota tracking
     _serper_call_count: int = 0
@@ -397,7 +397,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     continue
                 sem = _serper_sem if name == "serper" else _searxng_sem
                 lock = _serper_lock if name == "serper" else _searxng_lock
-                last_call = [_serper_last_call] if name == "serper" else [_searxng_last_call]
+                last_call = _serper_last_call if name == "serper" else _searxng_last_call
                 citations = await _backoff_retry(sem, lock, last_call, cfg.request_delay_s, factory)
                 if name == "serper":
                     _serper_call_count += 1

@@ -69,7 +69,6 @@ class RichProgressReporter:
         self._transient = transient
         self._state = _State()
         self._live: Live | None = None
-        self._started_real: float = time.time()
 
     # -- Lifecycle ---------------------------------------------------
 

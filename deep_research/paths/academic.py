@@ -115,7 +115,6 @@ async def academic_research(
 
     async def _analyze_and_recurse(node: PaperNode, depth: int, parent: str | None) -> None:
         async with sem:
-            nonlocal queue_white, processed
             base = _strip_version(node.arxiv_id)
             if base in processed:
                 logger.debug("arxiv_id %s already processed; skipping", base)
@@ -221,7 +220,7 @@ async def academic_research(
             # Optionally enqueue children
             if depth < cfg.max_depth and len(processed) < cfg.max_papers:
                 child_ids = extract_key_reference_arxiv_ids(
-                    analysis, threshold=cfg.key_reference_threshold
+                    analysis
                 )[: cfg.max_key_references_to_recurse]
                 # Enqueue newly-discovered child arxiv_ids (visible in next batch)
                 new_kids: list[str] = []

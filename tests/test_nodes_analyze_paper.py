@@ -305,15 +305,14 @@ class TestExtractKeyReferenceArxivIds:
                 PaperNode(arxiv_id="2309.99999v3", title="c"),
             ],
         )
-        ids = extract_key_reference_arxiv_ids(analysis, threshold=0.7)
+        ids = extract_key_reference_arxiv_ids(analysis)
         assert ids == ["2401.11111", "2309.99999v3"]
 
     def test_empty_when_no_key_references(self) -> None:
         analysis = PaperAnalysis(title="T", summary="S")
         assert extract_key_reference_arxiv_ids(analysis) == []
 
-    def test_threshold_param_accepted_for_api_symmetry(self) -> None:
-        # threshold is currently unused; API-symmetry only. Verify it doesn't raise.
+    def test_basic_extraction(self) -> None:
         from deep_research.state import PaperNode
 
         analysis = PaperAnalysis(
@@ -321,8 +320,7 @@ class TestExtractKeyReferenceArxivIds:
             summary="S",
             key_references=[PaperNode(arxiv_id="2401.1", title="x")],
         )
-        assert extract_key_reference_arxiv_ids(analysis, threshold=0.0) == ["2401.1"]
-        assert extract_key_reference_arxiv_ids(analysis, threshold=1.0) == ["2401.1"]
+        assert extract_key_reference_arxiv_ids(analysis) == ["2401.1"]
 
 
 # ---------------------------------------------------------------------------

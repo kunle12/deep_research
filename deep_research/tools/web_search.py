@@ -26,8 +26,7 @@ from deep_research.state import Citation, ToolName
 
 logger = logging.getLogger(__name__)
 
-# Tavily call counter for proactive quota-based fallback
-_tavily_call_count: int = 0
+
 
 SCHEMA = {
     "type": "function",
@@ -181,7 +180,7 @@ def _format_for_llm(citations: list[Citation]) -> str:
 
 async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     cfg = config.search
-    global _tavily_call_count
+    _tavily_call_count: int = 0
 
     # Resolve the ordered list of backends to try (primary + fallback_chain, deduped)
     backends: list[str] = []
@@ -205,7 +204,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     tavily_rate_limit_retries = cfg.tavily.rate_limit_retries
 
     async def _call(query: str, max_results: int = 10, **_: Any) -> ToolResult:
-        global _tavily_call_count
+        nonlocal _tavily_call_count
         if not backends:
             return ToolResult(
                 content="web_search has no usable backend (no tavily key, no searxng).",

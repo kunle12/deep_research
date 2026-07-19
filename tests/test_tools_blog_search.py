@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from deep_research.config import AgentTopConfig
@@ -74,10 +75,19 @@ async def test_blog_search_direct_fallback(registry, config):
 
     with patch("deep_research.tools.blog_search.httpx.AsyncClient") as mock_client:
         instance = mock_client.return_value
-        resp = AsyncMock()
-        resp.text = "<html><title>Test Blog</title><body>test content query terms here</body></html>"
-        resp.status_code = 200
-        instance.get = AsyncMock(return_value=resp)
+        # `async with httpx.AsyncClient(...) as client:` enters the async
+        # context manager; by default MagicMock returns a *different*
+        # AsyncMock from __aenter__ than the constructor's return_value.
+        # Tie them together so `instance.get = ...` actually takes effect.
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=None)
+        req = httpx.Request("GET", "https://test.example.com/")
+        ok_resp = httpx.Response(
+            200,
+            text="<html><title>Test Blog</title><body>test content query terms here</body></html>",
+            request=req,
+        )
+        instance.get = AsyncMock(return_value=ok_resp)
 
         with patch("deep_research.tools.blog_search.trafilatura.extract") as mock_extract:
             mock_extract.return_value = "Test Blog Post\nquery terms found\nmore content"
@@ -108,9 +118,12 @@ async def test_blog_search_direct_429(registry, config):
 
     with patch("deep_research.tools.blog_search.httpx.AsyncClient") as mock_client:
         instance = mock_client.return_value
-        resp = AsyncMock()
-        resp.status_code = 429
-        instance.get = AsyncMock(return_value=resp)
+        # See test_blog_search_direct_fallback for the __aenter__ trick.
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=None)
+        req = httpx.Request("GET", "https://test.example.com/")
+        too_many_resp = httpx.Response(429, text="", request=req)
+        instance.get = AsyncMock(return_value=too_many_resp)
 
         await register(registry, config)
         res = await registry.call("blog_search", {"query": "test"})

@@ -52,8 +52,15 @@ class PostgresStorageBackend:
         if self._conn is None:
             raise RuntimeError("Postgres backend not connected")
         sql = _MIGRATION_FILE.read_text(encoding="utf-8")
-        await self._conn.execute(sql)
-        logger.info("schema initialized from %s", _MIGRATION_FILE.name)
+        # asyncpg's Connection.execute() only runs the first statement of a
+        # multi-statement script, so we split first. This split is safe for
+        # the current 0001_initial.sql (no semicolons inside string literals).
+        # If a future migration ever contains semicolons inside string
+        # literals, use a proper SQL parser instead.
+        statements = [s.strip() for s in sql.split(";") if s.strip()]
+        for stmt in statements:
+            await self._conn.execute(stmt)
+        logger.info("schema initialized from %s (%d statements)", _MIGRATION_FILE.name, len(statements))
 
     # -- Helpers --
 
@@ -476,6 +483,38 @@ class PostgresStorageBackend:
             datetime.now(UTC).isoformat(), considered, refreshed,
             status, error, job_id,
         )
+
+    # -- Deletion --
+
+    async def delete_report(self, run_id: str) -> None:
+        """Delete a report and its dependent rows (analyses, tags,
+        citation_edges). Does NOT delete artifacts. Postgres uses GIN
+        indexes directly on the analyses table — no separate FTS table
+        to clean up."""
+        await self._ensure_conn()
+        await self._execute("DELETE FROM analyses WHERE run_id = $1", run_id)
+        await self._execute("DELETE FROM tags WHERE applied_in_run = $1", run_id)
+        await self._execute(
+            "DELETE FROM citation_edges WHERE discovered_in_run = $1", run_id
+        )
+        await self._execute("DELETE FROM reports WHERE run_id = $1", run_id)
+
+    async def delete_artifact(self, artifact_id: str) -> None:
+        """Delete an artifact and its dependent rows. Refuses (FK violation)
+        if a report still references it via reports.artifact_id — caller
+        should nullify or delete that report first."""
+        await self._ensure_conn()
+        await self._execute("DELETE FROM analyses WHERE artifact_id = $1", artifact_id)
+        await self._execute("DELETE FROM tags WHERE artifact_id = $1", artifact_id)
+        await self._execute(
+            "DELETE FROM citation_edges WHERE source_artifact_id = $1 OR target_artifact_id = $1",
+            artifact_id,
+        )
+        await self._execute(
+            "DELETE FROM artifact_versions WHERE artifact_id_old = $1 OR artifact_id_new = $1",
+            artifact_id,
+        )
+        await self._execute("DELETE FROM artifacts WHERE artifact_id = $1", artifact_id)
 
     # -- FTS --
 

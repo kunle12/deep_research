@@ -39,7 +39,7 @@ async def deep_research(
     progress: ProgressReporter | None = None,
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",
-) -> Report:  # noqa: F821 - forward ref
+) -> Report:
     """Run the deep research loop."""
     # Import here to avoid circulars at module-load time
     from deep_research.state import Report

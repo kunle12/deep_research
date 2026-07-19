@@ -38,10 +38,9 @@ def strip_url_from_query(text: str, url: str) -> str:
     # Strip leading punctuation/dashes/separators left behind.
     # We intentionally match HYPHEN-MINUS, EM DASH, EN DASH, and colon/pipe.
     remainder = re.sub(r"^[\s\-\u2014\u2013:|]+", "", remainder)
-    remainder = re.sub(r"^\s*[\-\u2014\u2013:|]\s*", "", remainder)
     # Collapse whitespace
     remainder = re.sub(r"\s+", " ", remainder).strip()
     return remainder
 
 
-__all__ = ["_URL_RX", "extract_first_url", "strip_url_from_query"]
+__all__ = ["extract_first_url", "strip_url_from_query"]

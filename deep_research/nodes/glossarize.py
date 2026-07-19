@@ -21,8 +21,7 @@ logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
 
 
-# _load_prompt and extract_glossary were removed — they were unused.
-# Glossary extraction is done inline via parse_glossary_from_response.
+
 
 
 async def extract_and_save_glossary(
@@ -38,8 +37,7 @@ async def extract_and_save_glossary(
         await writer.upsert_glossary_entries(glossary_entries, run_id)
 
 
-# _coerce and _dedup_rule_based were removed — they were unused.
-# Glossary normalization happens inline in parse_glossary_from_response.
+
 
 
 def parse_glossary_from_response(
@@ -114,7 +112,6 @@ def _canonicalize(term: str) -> str:
 
 
 __all__ = [
-    "_canonicalize",
     "extract_and_save_glossary",
     "parse_glossary_from_response",
 ]

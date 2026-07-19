@@ -110,7 +110,9 @@ def library_tag(
     """Tag an artifact."""
     async def _run():
         _cfg, backend, writer = await _get_backend_and_writer(config_path)
-        await writer.tag(artifact_id, tag_name)
+        # run_id=None — this tag is being applied directly from the CLI,
+        # not from a research run. tags.applied_in_run is nullable.
+        await writer.tag(artifact_id, [tag_name], run_id=None)
         typer.echo(f"Tagged '{artifact_id}' with '{tag_name}'")
         await backend.close()
 
@@ -135,11 +137,16 @@ def library_stats(
 
 @library_app.command("prune")
 def library_prune(
-    older_than_days: int = typer.Option(90, "--older-than", help="Delete artifacts older than N days"),
+    older_than_days: int = typer.Option(90, "--older-than", help="Delete reports older than N days"),
     dry_run: bool = typer.Option(True, "--dry-run", help="Show what would be pruned"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
-    """Prune old artifacts from the library."""
+    """Prune old reports (and their analyses/tags/citation_edges) from the library.
+
+    Note: artifacts themselves are NOT deleted, since an artifact may have
+    been discovered by multiple independent runs and we can't safely
+    determine that no other report still references it.
+    """
     async def _run():
         _cfg, backend, _writer = await _get_backend_and_writer(config_path)
         # List all reports and filter by age
@@ -152,11 +159,15 @@ def library_prune(
             try:
                 dt = datetime.fromisoformat(completed)
                 if dt < cutoff:
-                    typer.echo(f"  Would prune: {r.run_id[:16]} ({r.original_query[:40]})")
+                    if dry_run:
+                        typer.echo(f"  Would prune: {r.run_id[:16]} ({r.original_query[:40]})")
+                    else:
+                        await backend.delete_report(r.run_id)
+                        typer.echo(f"  Pruned: {r.run_id[:16]} ({r.original_query[:40]})")
                     pruned += 1
             except Exception:
                 pass
-        typer.echo(f"{'Dry run: ' if dry_run else ''}Found {pruned} old artifacts.")
+        typer.echo(f"{'Dry run: ' if dry_run else ''}Found {pruned} old reports.")
         await backend.close()
 
     asyncio.run(_run())

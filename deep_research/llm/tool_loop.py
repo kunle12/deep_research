@@ -66,6 +66,10 @@ class ToolRegistry:
             except Exception as e:
                 logger.debug("tool close hook raised: %s: %s", type(e).__name__, e)
 
+    def add_close_hook(self, hook) -> None:
+        """Register an async callable to run during close()."""
+        self._close_hooks.append(hook)
+
     def register(
         self,
         name: str,

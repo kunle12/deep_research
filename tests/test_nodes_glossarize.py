@@ -7,9 +7,7 @@ import json
 from deep_research.library.storage.rows import GlossaryEntry
 from deep_research.nodes.glossarize import (
     _canonicalize,
-    merge_glossary_entries,
     parse_glossary_from_response,
-    render_glossary_md,
 )
 
 
@@ -68,57 +66,4 @@ def test_parse_glossary_from_response_invalid_kind():
     assert entries[0].kind == "concept"  # defaults to concept
 
 
-def test_merge_glossary_entries_empty():
-    assert merge_glossary_entries([], []) == []
-    new = [GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym", last_updated="now")]
-    assert len(merge_glossary_entries([], new)) == 1
 
-
-def test_merge_glossary_entries_dedup():
-    existing = [
-        GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym",
-                       short_def="old", confidence=0.5, last_updated="old")
-    ]
-    new = [
-        GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym",
-                       short_def="newer", long_def="longer definition",
-                       confidence=0.9, last_updated="new")
-    ]
-    merged = merge_glossary_entries(existing, new)
-    assert len(merged) == 1
-    assert merged[0].confidence == 0.9  # Higher confidence wins
-    assert merged[0].long_def == "longer definition"  # Longer definition wins
-
-
-def test_merge_glossary_entries_conflicting_acronym():
-    existing = [
-        GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym",
-                       acronym_expansion="Reinforcement Learning from Human Feedback",
-                       last_updated="old")
-    ]
-    new = [
-        GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym",
-                       acronym_expansion="Reinforcement Learning from Human Feedback v2",
-                       last_updated="new")
-    ]
-    merged = merge_glossary_entries(existing, new)
-    assert len(merged) == 1
-    # Existing expansion should be kept
-    assert merged[0].acronym_expansion == "Reinforcement Learning from Human Feedback"
-
-
-def test_render_glossary_md_empty():
-    md = render_glossary_md([])
-    assert "No entries yet" in md
-
-
-def test_render_glossary_md_with_entries():
-    entries = [
-        GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym",
-                       short_def="test", acronym_expansion="Reinforcement Learning",
-                       confidence=0.9, last_updated="now"),
-    ]
-    md = render_glossary_md(entries)
-    assert "RLHF" in md
-    assert "Reinforcement Learning" in md
-    assert "acronym" in md

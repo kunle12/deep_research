@@ -46,7 +46,10 @@ async def test_full_text_search(sqlite_backend):
     await sqlite_backend.insert_analysis(analysis)
 
     hits = await sqlite_backend.full_text_search("machine learning", kind="pdf", limit=10)
-    assert len(hits) >= 0
+    assert len(hits) >= 1, f"expected at least 1 hit for 'machine learning', got {len(hits)}"
+    assert hits[0].artifact_id == "fts_art_1"
+    assert "machine learning" in (hits[0].summary or "").lower() or \
+           "machine learning" in (hits[0].extracted_text or "").lower()
 
 
 @pytest.mark.asyncio

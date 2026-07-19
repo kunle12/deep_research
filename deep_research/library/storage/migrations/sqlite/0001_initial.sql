@@ -115,15 +115,13 @@ CREATE TABLE IF NOT EXISTS refresh_jobs (
     error               TEXT
 );
 
--- FTS5 virtual tables
+-- FTS5 virtual tables (internal content — populated via code in insert_analysis)
+-- analysis_id is UNINDEXED so it can be used as a join key without being
+-- tokenized. We delete-by-rowid during upserts to keep the index in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-    artifact_id UNINDEXED,
-    title,
-    authors,
+    analysis_id UNINDEXED,
     summary,
-    extracted_text,
-    content='analyses',
-    content_rowid='rowid',
+    key_findings,
     tokenize='porter unicode61'
 );
 
