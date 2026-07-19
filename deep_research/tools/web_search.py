@@ -1,25 +1,33 @@
 """web_search tool — Tavily (primary) + SearXNG (fallback chain).
 
 Returns a list of normalized `Citation` objects alongside the human-readable
-result text.
-
-P2: implemented — real Tavily API call via `tavily-python` (AsyncTavilyClient).
-P4 will implement the SearXNG fallback path.
+result text. Retries Tavily on rate-limit errors with exponential backoff
+before seamlessly falling back to SearXNG. Supports proactive quota-based
+fallback via ``max_calls_per_session``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 import httpx
 from tavily import AsyncTavilyClient
+from tavily.errors import (
+    UsageLimitExceededError,
+    TavilyKeylessLimitError,
+    TimeoutError,
+)
 
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.state import Citation, ToolName
 
 logger = logging.getLogger(__name__)
+
+# Tavily call counter for proactive quota-based fallback
+_tavily_call_count: int = 0
 
 SCHEMA = {
     "type": "function",
@@ -62,14 +70,71 @@ async def _tavily_search(
         citations.append(
             Citation(
                 url=r.get("url", ""),
-                title=r.get("title", "") or "",
-                snippet=r.get("content", "") or "",
+                title=r.get("title") or "",
+                snippet=r.get("content") or "",
                 source_type="web",
                 confidence_score=float(r.get("score") or 0.5),
                 discovered_by=ToolName.web_search,
             )
         )
     return citations
+
+
+async def _tavily_with_retry(
+    query: str,
+    max_results: int,
+    api_key: str,
+    search_depth: str,
+    retries: int,
+) -> list[Citation]:
+    """Call Tavily with exponential-backoff retry on rate-limit errors.
+    
+    Retries only on ``UsageLimitExceededError`` / ``TavilyKeylessLimitError`` /
+    ``TimeoutError`` — other errors (bad key, forbidden) propagate immediately
+    so the caller can fall through to SearXNG.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return await _tavily_search(query, max_results, api_key, search_depth)
+        except TavilyKeylessLimitError as e:
+            last_exc = e
+            retry_after = e.retry_after_seconds or 2 ** attempt
+            logger.warning(
+                "Tavily keyless limit hit (attempt %d/%d), retrying after %ds",
+                attempt + 1, retries + 1, retry_after,
+            )
+            await asyncio.sleep(retry_after)
+        except UsageLimitExceededError as e:
+            last_exc = e
+            backoff = 2 ** attempt  # 1, 2, 4 sec
+            logger.warning(
+                "Tavily rate limit (attempt %d/%d), backing off %ds",
+                attempt + 1, retries + 1, backoff,
+            )
+            await asyncio.sleep(backoff)
+        except TimeoutError as e:
+            last_exc = e
+            backoff = 2 ** attempt
+            logger.warning(
+                "Tavily timeout (attempt %d/%d), backing off %ds",
+                attempt + 1, retries + 1, backoff,
+            )
+            await asyncio.sleep(backoff)
+        except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
+            last_exc = e
+            # Treat HTTP-level errors as transient; retry once
+            if attempt < retries:
+                await asyncio.sleep(2 ** attempt)
+                continue
+            raise  # Exhausted retries — let caller fall through
+        except Exception:
+            # Non-recoverable Tavily errors (bad key, forbidden, bad request) —
+            # don't retry, let caller fall through to SearXNG.
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Tavily retry loop exited unexpectedly")
 
 
 async def _searxng_search(
@@ -116,6 +181,7 @@ def _format_for_llm(citations: list[Citation]) -> str:
 
 async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     cfg = config.search
+    global _tavily_call_count
 
     # Resolve the ordered list of backends to try (primary + fallback_chain, deduped)
     backends: list[str] = []
@@ -132,10 +198,14 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             "will skip to SearXNG fallback if available.",
             cfg.tavily.api_key_env,
         )
-        # Reorder: drop tavily if no key, since we can't call it.
         backends = [b for b in backends if b != "tavily"]
 
+    # Proactive quota guard: max calls allowed this session
+    tavily_max_calls = cfg.tavily.max_calls_per_session
+    tavily_rate_limit_retries = cfg.tavily.rate_limit_retries
+
     async def _call(query: str, max_results: int = 10, **_: Any) -> ToolResult:
+        global _tavily_call_count
         if not backends:
             return ToolResult(
                 content="web_search has no usable backend (no tavily key, no searxng).",
@@ -147,12 +217,21 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 if backend == "tavily":
                     if not tavily_key:
                         continue
-                    citations = await _tavily_search(
+                    # Proactive quota check — fall back to SearXNG if exhausted
+                    if tavily_max_calls is not None and _tavily_call_count >= tavily_max_calls:
+                        logger.info(
+                            "Tavily call quota exhausted (%d >= %d), falling back",
+                            _tavily_call_count, tavily_max_calls,
+                        )
+                        continue  # skip Tavily, try next backend (SearXNG)
+                    citations = await _tavily_with_retry(
                         query=query,
                         max_results=max_results,
                         api_key=tavily_key,
                         search_depth=cfg.tavily.search_depth,
+                        retries=tavily_rate_limit_retries,
                     )
+                    _tavily_call_count += 1
                 elif backend == "searxng":
                     citations = await _searxng_search(
                         query=query,

@@ -55,9 +55,9 @@ logger = logging.getLogger(__name__)
 NAVIGATE_SCHEMA = {
     "type": "function",
     "description": (
-        "Open a URL in a headless browser (Playwright MCP). Useful for "
-        "JS-heavy pages where fetch_page returns little content. "
-        "Returns the page's accessibility snapshot summary."
+        "Open a URL in a headless browser (Playwright MCP, --headless). "
+        "Useful for JS-heavy pages where fetch_page returns little "
+        "content. Returns the page's accessibility snapshot summary."
     ),
     "parameters": {
         "type": "object",

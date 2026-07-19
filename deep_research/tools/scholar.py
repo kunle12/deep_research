@@ -290,6 +290,10 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     _serper_last_call: float = 0.0
     _searxng_last_call: float = 0.0
 
+    # Proactive Serper quota tracking
+    _serper_call_count: int = 0
+    _serper_max_calls = cfg.serper.max_calls_per_session
+
     async def _rate_limited(sem: asyncio.Semaphore, lock: asyncio.Lock, last_call_ref: list, delay_s: float, coro_factory, *args):
         """Wrap a tool call with concurrency semaphore + spacing delay.
         Releases semaphore during backoff sleep so other callers aren't blocked."""
@@ -329,6 +333,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         raise RuntimeError("scholar search retry loop exited unexpectedly")
 
     async def _search(query: str, max_results: int = 10, **_: Any) -> ToolResult:
+        nonlocal _serper_call_count
         max_results = min(max_results, cfg.max_results_per_query)
         if not query.strip():
             return ToolResult(content="", error="scholar_search requires non-empty query")
@@ -383,10 +388,19 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         last_err: str = ""
         for name, factory in ordered:
             try:
+                # Proactive Serper quota check — skip to SearXNG if exhausted
+                if name == "serper" and _serper_max_calls is not None and _serper_call_count >= _serper_max_calls:
+                    logger.info(
+                        "Serper call quota exhausted (%d >= %d), falling back to SearXNG",
+                        _serper_call_count, _serper_max_calls,
+                    )
+                    continue
                 sem = _serper_sem if name == "serper" else _searxng_sem
                 lock = _serper_lock if name == "serper" else _searxng_lock
                 last_call = [_serper_last_call] if name == "serper" else [_searxng_last_call]
                 citations = await _backoff_retry(sem, lock, last_call, cfg.request_delay_s, factory)
+                if name == "serper":
+                    _serper_call_count += 1
                 if citations:
                     logger.info("scholar_search %s -> %d results (via %s)",
                                 repr(query), len(citations), name)

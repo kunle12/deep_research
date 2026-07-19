@@ -334,6 +334,36 @@ async def test_concurrency_semaphore(monkeypatch) -> None:
     assert results.error is None
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_serper_proactive_quota_fallback(monkeypatch) -> None:
+    """When Serper max_calls_per_session is exceeded, proactively fall back to SearXNG."""
+    cfg = _cfg(request_delay=0.0)
+    cfg.scholar.serper.max_calls_per_session = 1
+    cfg.scholar.fallback_chain = ["searxng"]
+    reg = await _register(monkeypatch, cfg)
+
+    endpoint = cfg.scholar.serper.endpoint
+    serper_resp = _serper_response([_serper_hit(title="Serper paper")])
+    respx.post(endpoint).mock(return_value=httpx.Response(200, json=serper_resp))
+
+    searxng_url = cfg.scholar.searxng.url
+    searxng_resp = {"results": [{"title": "SearXNG paper", "url": "https://example.com/sx", "content": "ok"}]}
+    respx.get(searxng_url).mock(return_value=httpx.Response(200, json=searxng_resp))
+
+    # First call uses Serper
+    r1 = await reg.call("scholar_search", {"query": "first", "max_results": 5})
+    assert r1.error is None
+    assert len(r1.citations) == 1
+    assert r1.citations[0].title == "Serper paper"
+
+    # Second call exceeds quota → SearXNG
+    r2 = await reg.call("scholar_search", {"query": "second", "max_results": 5})
+    assert r2.error is None
+    assert len(r2.citations) == 1
+    assert r2.citations[0].title == "SearXNG paper"
+
+
 # ---------------------------------------------------------------------------
 # Scholar search — _infer_arxiv_id unit tests
 # ---------------------------------------------------------------------------

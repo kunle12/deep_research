@@ -82,6 +82,8 @@ class TavilyConfig(BaseModel):
     api_key_env: str = "TAVILY_API_KEY"
     search_depth: Literal["basic", "advanced"] = "basic"
     max_results: int = 10
+    rate_limit_retries: int = 2  # retries on 429 before falling back
+    max_calls_per_session: int | None = None  # None = unlimited; set to switch to SearXNG proactively
 
 
 class SearXNGConfig(BaseModel):
@@ -111,7 +113,7 @@ class BrowserConfig(BaseModel):
 
     enabled: bool = True
     mcp_command: str = "npx"
-    mcp_args: list[str] = Field(default_factory=lambda: ["-y", "@playwright/mcp@latest"])
+    mcp_args: list[str] = Field(default_factory=lambda: ["-y", "@playwright/mcp@latest", "--headless"])
     transport: Literal["stdio", "http"] = "stdio"
     mcp_url: str | None = None  # only when transport == "http"
 
@@ -145,6 +147,7 @@ class ScholarSerperConfig(BaseModel):
     api_key_env: str = "SERPER_API_KEY"
     endpoint: str = "https://google.serper.dev/scholar"
     timeout_s: int = 30
+    max_calls_per_session: int | None = None  # None = unlimited; set to switch to SearXNG proactively
 
 
 class ScholarSearXNGConfig(BaseModel):

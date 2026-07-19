@@ -25,6 +25,8 @@ search:
     api_key_env: "TAVILY_API_KEY"
     search_depth: "basic"        # "basic" = 1 credit; "advanced" = 2 credits
     max_results: 10
+    rate_limit_retries: 2        # retries on 429 before falling back to SearXNG
+    max_calls_per_session: null  # null = unlimited; set to switch to SearXNG proactively
   searxng:
     url: "http://localhost:8080/search"
     fetch_format: "json"
@@ -33,7 +35,7 @@ search:
 browser:
   enabled: true
   mcp_command: "npx"
-  mcp_args: ["-y", "@playwright/mcp@latest"]
+  mcp_args: ["-y", "@playwright/mcp@latest", "--headless"]
   transport: "stdio"
   mcp_url: null                   # only when transport == "http"
 
@@ -58,6 +60,7 @@ scholar:
   fallback_chain: ["searxng"]
   serper:
     api_key_env: "SERPER_API_KEY"
+    max_calls_per_session: null  # null = unlimited; set to switch to SearXNG proactively
   searxng:
     url: "http://localhost:8080/search"
   max_results_per_query: 10
