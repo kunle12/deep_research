@@ -192,10 +192,10 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 elapsed = now - _last_call_time
                 if elapsed < cfg.request_delay_s:
                     await asyncio.sleep(cfg.request_delay_s - elapsed)
-                # Run the blocking lib call in a worker thread.
-                result = await asyncio.to_thread(fn, *args)
                 _last_call_time = time.monotonic()
-                return result
+            # Lock released — allow concurrent calls to proceed while blocking
+            result = await asyncio.to_thread(fn, *args)
+            return result
 
     async def _search(query: str, max_results: int = 10, **_: Any) -> ToolResult:
         max_results = min(max_results, cfg.max_results_per_query)

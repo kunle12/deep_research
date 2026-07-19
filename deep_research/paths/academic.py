@@ -28,6 +28,7 @@ The crawler obeys:
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import logging
 from pathlib import Path
 from typing import Any, Literal
@@ -105,10 +106,9 @@ async def academic_research(
             logger.info("blog_search in academic path failed; skipping")
 
     # Enqueue seed nodes at depth 0 (parent_arxiv_id=None, rationale="")
-    queue_white: list[tuple[PaperNode, int, str | None]] = [
+    queue_white: deque = deque(
         (node, 0, None) for node in seeds
-    ]
-    # Use a deque via list for FIFO; pop(0) is O(n) but n<=15 so fine.
+    )
 
     # ---- per-paper concurrency ---------------------------------------------
     sem = asyncio.Semaphore(cfg.concurrency)
@@ -250,7 +250,7 @@ async def academic_research(
         batch: list[tuple[PaperNode, int, str | None]] = []
         for _ in range(batch_size):
             if queue_white:
-                batch.append(queue_white.pop(0))
+                batch.append(queue_white.popleft())
         if not batch:
             break
         reporter.phase(
@@ -360,100 +360,88 @@ async def _gather_seeds(
     nodes: list[PaperNode] = []
     seeds_citations.clear()
 
-    # Dispatch parallel seed gathering
-    async def _arxiv():
-        if "arxiv" not in backends or not has_arxiv:
-            return ([], [])
-        results = await tools.call(
-            "arxiv_search", {"query": search_query, "max_results": seed_count}
-        )
-        if results.error is not None:
-            logger.warning("arxiv_search failed: %s", results.error)
-            return ([], [])
-        out_nodes: list[PaperNode] = []
-        out_cits: list[Citation] = []
-        for c in results.citations:
-            if not c.arxiv_id:
-                continue
-            out_nodes.append(PaperNode(
-                arxiv_id=c.arxiv_id,
-                title=c.title or c.arxiv_id,
-                authors=list(c.authors),
-                abstract=c.snippet or "",
-                depth=0,
-                rationale="arxiv search hit",
-            ))
-            out_cits.append(c)
-        return (out_nodes, out_cits)
-
     import hashlib
 
-    async def _scholar():
-        if "scholar" not in backends or not has_scholar:
-            return ([], [])
-        # Cost guardrail: skip Scholar when arxiv seeds already >= threshold
-        if config.scholar.skip_if_arxiv_hits_ge is not None:
-            arxiv_count = len(arxiv_cits) if arxiv_cits else 0
-            if arxiv_count >= config.scholar.skip_if_arxiv_hits_ge:
-                logger.info(
-                    "scholar skip: arxiv seeds=%d >= skip_if_arxiv_hits_ge=%d",
-                    arxiv_count, config.scholar.skip_if_arxiv_hits_ge,
-                )
-                return ([], [])
-        results = await tools.call(
-            "scholar_search", {"query": search_query, "max_results": seed_count}
-        )
+    async def _run_scholar(q: str, n: int, t: ToolRegistry, c: AgentTopConfig) -> tuple[list[PaperNode], list[Citation]]:
+        """Run scholar search and return (nodes, citations)."""
+        results = await t.call("scholar_search", {"query": q, "max_results": n})
         if results.error is not None:
             logger.warning("scholar_search failed: %s", results.error)
             return ([], [])
         out_nodes: list[PaperNode] = []
         out_cits: list[Citation] = []
-        for c in results.citations:
-            if c.arxiv_id:
-                # Will be deduped later against arxiv nodes — still track
-                # the citation so it appears in the bibliography.
-                out_cits.append(c)
+        for cit in results.citations:
+            if cit.arxiv_id:
+                out_cits.append(cit)
                 out_nodes.append(PaperNode(
-                    arxiv_id=c.arxiv_id,
-                    title=c.title or c.arxiv_id,
-                    authors=list(c.authors),
-                    abstract=c.snippet or "",
+                    arxiv_id=cit.arxiv_id,
+                    title=cit.title or cit.arxiv_id,
+                    authors=list(cit.authors),
+                    abstract=cit.snippet or "",
                     depth=0,
-                    url=c.url,
-                    doi=c.doi,
-                    pdf_url=c.pdf_url,
-                    venue=c.venue,
-                    year=c.year,
+                    url=cit.url,
+                    doi=cit.doi,
+                    pdf_url=cit.pdf_url,
+                    venue=cit.venue,
+                    year=cit.year,
                     rationale="scholar search hit (arxiv overlap)",
                 ))
             else:
-                # Scholar-only hit — synthetic id
-                synthetic = "scholar:" + hashlib.sha256(c.url.encode()).hexdigest()[:12]
+                synthetic = "scholar:" + hashlib.sha256(cit.url.encode()).hexdigest()[:12]
                 out_nodes.append(PaperNode(
                     arxiv_id=synthetic,
-                    title=c.title or synthetic,
-                    authors=list(c.authors),
-                    abstract=c.snippet or "",
+                    title=cit.title or synthetic,
+                    authors=list(cit.authors),
+                    abstract=cit.snippet or "",
                     depth=0,
-                    url=c.url,
-                    doi=c.doi,
-                    pdf_url=c.pdf_url,
-                    venue=c.venue,
-                    year=c.year,
+                    url=cit.url,
+                    doi=cit.doi,
+                    pdf_url=cit.pdf_url,
+                    venue=cit.venue,
+                    year=cit.year,
                     rationale="scholar search hit",
                 ))
-                out_cits.append(c)
+                out_cits.append(cit)
         return (out_nodes, out_cits)
 
-    # Run backends: parallel when cost guardrail is off, sequential when on
-    # (sequential needed because _scholar reads arxiv_cits for guardrail check)
-    if config.scholar.skip_if_arxiv_hits_ge is not None:
-        arxiv_nodes, arxiv_cits = await _arxiv()
-        scholar_nodes, scholar_cits = await _scholar()
-    else:
-        (arxiv_nodes, arxiv_cits), (scholar_nodes, scholar_cits) = await asyncio.gather(
-            _arxiv(), _scholar()
+    # Run arxiv first (always) so scholar guardrail can check its result
+    arxiv_nodes: list[PaperNode] = []
+    arxiv_cits: list[Citation] = []
+    if "arxiv" in backends and has_arxiv:
+        results = await tools.call(
+            "arxiv_search", {"query": search_query, "max_results": seed_count}
         )
+        if results.error is None:
+            for c in results.citations:
+                if c.arxiv_id:
+                    arxiv_nodes.append(PaperNode(
+                        arxiv_id=c.arxiv_id,
+                        title=c.title or c.arxiv_id,
+                        authors=list(c.authors),
+                        abstract=c.snippet or "",
+                        depth=0,
+                        rationale="arxiv search hit",
+                    ))
+                    arxiv_cits.append(c)
+        else:
+            logger.warning("arxiv_search failed: %s", results.error)
+
+    scholar_nodes: list[PaperNode] = []
+    scholar_cits: list[Citation] = []
+    if "scholar" in backends and has_scholar:
+        # Cost guardrail: skip Scholar when arxiv seeds already >= threshold
+        if config.scholar.skip_if_arxiv_hits_ge is not None:
+            if len(arxiv_cits) >= config.scholar.skip_if_arxiv_hits_ge:
+                logger.info(
+                    "scholar skip: arxiv seeds=%d >= skip_if_arxiv_hits_ge=%d",
+                    len(arxiv_cits), config.scholar.skip_if_arxiv_hits_ge,
+                )
+                # skip scholar
+                pass
+            else:
+                scholar_nodes, scholar_cits = await _run_scholar(search_query, seed_count, tools, config)
+        else:
+            scholar_nodes, scholar_cits = await _run_scholar(search_query, seed_count, tools, config)
     nodes = list(arxiv_nodes)
     seeds_citations.extend(arxiv_cits)
 
@@ -592,7 +580,7 @@ async def _synthesize_markdown(
 
     # P13: inject prior context from library recall
     prior_section = ""
-    if writer is not None:
+    if isinstance(writer, LibraryWriter):
         try:
             prior_entries = await recall_run(original_query, writer.storage, max_results=3)
             if prior_entries:

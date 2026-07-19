@@ -158,6 +158,7 @@ async def run_with_tools(
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
+                logger.warning("tool %s: malformed JSON arguments: %r", name, tc.function.arguments)
                 args = {}
             tasks.append((tc, args, tools.call(name, args)))
 

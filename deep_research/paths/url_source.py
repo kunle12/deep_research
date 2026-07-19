@@ -126,13 +126,16 @@ async def _fetch_arxiv_source(
                 page_urls = parse_rendered_pages(render)
     if not text:
         text = meta_res.content  # at least show meta as fallback content
-    citations = [cit] if cit else [meta_res.citations[0]] if meta_res.citations else []
+    if cit is not None:
+        citations = [cit]
+    elif meta_res.citations:
+        citations = [meta_res.citations[0]]
+    else:
+        citations = []
 
     # Archive PDF in library if writer is configured
     if isinstance(writer, LibraryWriter) and pdf_path and run_id:
-        import uuid
         from pathlib import Path
-        _ = run_id
         await writer.archive_pdf(
             Path(pdf_path),
             arxiv_id=arxiv_id,
@@ -188,9 +191,7 @@ async def _fetch_pdf_source(
 
     # Archive PDF in library if writer is configured
     if isinstance(writer, LibraryWriter) and run_id:
-        import uuid
         from pathlib import Path
-        _ = run_id
         await writer.archive_pdf(
             Path(pdf_path),
             source_url=url,
@@ -214,7 +215,8 @@ async def _download_pdf_to_cache(url: str, cache_dir: str | None = None) -> str 
     import httpx
 
     digest = hashlib.sha256(url.encode()).hexdigest()[:16]
-    tmp_dir = Path(cache_dir) if cache_dir else Path(os.path.expanduser("~/.cache/deep_research/pdfs"))
+    default_cache = Path(os.path.expanduser("~/.cache/deep_research/pdfs"))
+    tmp_dir = Path(cache_dir).resolve() if cache_dir else default_cache
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_pdf = tmp_dir / f"{digest}.pdf"
     if tmp_pdf.exists() and tmp_pdf.stat().st_size > 1024:
@@ -248,13 +250,9 @@ async def _fetch_html_source(
 
     # Archive HTML in library if writer is configured
     if isinstance(writer, LibraryWriter) and res.content and run_id:
-        import uuid
-        _ = run_id
         await writer.archive_html(url, res.content)
 
     return (res.content, list(res.citations))
-
-
 
 
 

@@ -31,6 +31,7 @@ class RefreshScheduler:
 
     async def _run_refresh_cycle(self) -> None:
         """Run one full refresh cycle across all source types."""
+        backend = None
         try:
             backend = await get_backend(self._config)
             writer = LibraryWriter(backend, self._config.pdl.root_dir)
@@ -43,9 +44,11 @@ class RefreshScheduler:
                     result["refreshed"],
                     result["errored"],
                 )
-            await backend.close()
         except Exception as e:
             logger.error("refresh cycle failed: %s: %s", type(e).__name__, e)
+        finally:
+            if backend is not None:
+                await backend.close()
 
     async def run(self) -> None:
         """Run the scheduler loop until shutdown is requested."""

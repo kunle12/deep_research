@@ -300,11 +300,8 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 if elapsed < delay_s:
                     await asyncio.sleep(delay_s - elapsed)
                 last_call_ref[0] = time.monotonic()
-            # Semaphore released after spacing — backoff holds no slot
-            try:
-                result = await coro_factory(*args)
-            finally:
-                pass
+            # Lock released — allow concurrent calls to proceed
+            result = await coro_factory(*args)
             return result
 
     async def _backoff_retry(sem, lock, last_call_ref, delay_s, coro_factory, *args, retries: int = 1):

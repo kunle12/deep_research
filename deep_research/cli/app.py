@@ -222,14 +222,14 @@ def main(
         console.print(rendered)
     else:
         Path(out).write_text(rendered, encoding="utf-8")
-        console.print(f"[green]Wrote[/green] {out}")
+        err_console.print(f"[green]Wrote[/green] {out}")
 
     # BibTeX graph dump (academic mode)
     if dump_graph is not None:
         bib = render_report_bibtex(report)
         if bib:
             Path(dump_graph).write_text(bib, encoding="utf-8")
-            console.print(f"[green]Wrote citation graph[/green] {dump_graph}")
+            err_console.print(f"[green]Wrote citation graph[/green] {dump_graph}")
         else:
             err_console.print(f"[yellow]No citation graph found in report; nothing to dump to {dump_graph}[/yellow]")
 
@@ -238,7 +238,7 @@ def main(
         cits_json = render_report_citations_json(report)
         if cits_json.strip() != "[]":
             Path(cite_path).write_text(cits_json, encoding="utf-8")
-            console.print(f"[green]Wrote citations[/green] {cite_path}")
+            err_console.print(f"[green]Wrote citations[/green] {cite_path}")
         else:
             err_console.print(
                 f"[yellow]No citations in report; wrote empty JSON array to {cite_path}[/yellow]"

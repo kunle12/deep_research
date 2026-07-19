@@ -81,7 +81,7 @@ async def quick_search(
     )
 
     # P13: inject prior context from library recall
-    storage = writer.storage if writer is not None else None
+    storage = writer.storage if isinstance(writer, LibraryWriter) else None
     prior_entries = await recall_run(original_query, storage, max_results=3)
     if prior_entries:
         prior_md = format_recall_context(prior_entries)

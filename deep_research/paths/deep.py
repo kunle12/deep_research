@@ -47,7 +47,7 @@ async def deep_research(
     reporter: ProgressReporter = ensure_reporter(progress)
     breadth = (
         classified.breadth_hint
-        if classified.breadth_hint
+        if classified.breadth_hint > 0
         else config.agent.max_subquestions
     )
     iterations_cap = config.agent.max_iterations
@@ -78,7 +78,7 @@ async def deep_research(
             iteration, len(pending),
         )
         # P13: recall prior context from library before researcher dispatch
-        storage = writer.storage if writer is not None else None
+        storage = writer.storage if isinstance(writer, LibraryWriter) else None
         tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for sq, r in zip(pending, results):
