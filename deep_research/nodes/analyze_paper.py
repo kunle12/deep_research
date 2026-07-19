@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from openai import AsyncOpenAI
 
@@ -73,12 +73,23 @@ async def analyze(
     client: AsyncOpenAI,
     model: str,
     page_image_data_urls: list[str] | None = None,
+    text_source: Literal["pdf", "abstract", "html"] = "pdf",
 ) -> PaperAnalysis:
     """Make the LLM call and parse the JSON into a `PaperAnalysis`.
+
+    `text_source` controls how the paper_text is consumed:
+      - "pdf" — full PDF text, standard prompt.
+      - "abstract" — abstract-only text (paywalled / unavailable). The prompt
+        is prefixed with `[ABSTRACT-ONLY]` so the LLM knows to limit claims to
+        visible content. `key_references` are forced empty — abstract-only
+        papers are leaf nodes and never enqueued for recursion.
+      - "html" — HTML page text, same treatment as abstract for now.
 
     Degrades cleanly on invalid JSON / LLM exceptions by returning a
     `PaperAnalysis` with a marker title so the academic loop keeps running.
     """
+    if text_source in ("abstract", "html"):
+        paper_text = "[ABSTRACT-ONLY]\n" + paper_text
     messages = _build_messages(arxiv_id, paper_text, query, page_image_data_urls)
     try:
         resp = await client.chat.completions.create(
@@ -95,9 +106,12 @@ async def analyze(
                 title=f"[unparseable] {arxiv_id}",
                 summary=raw[:3000],
             )
-        # Coerce into PaperAnalysis. Filter out references with no arxiv_id
-        # (the schema requires one) so downstream recursion is sound.
-        return _coerce(arxiv_id, data)
+        # Coerce into PaperAnalysis. Filter out references with no arxiv_id.
+        analysis = _coerce(arxiv_id, data)
+        # Abstract-only / HTML nodes are leaf nodes — force no recursion.
+        if text_source in ("abstract", "html"):
+            analysis.key_references = []
+        return analysis
     except Exception as e:
         logger.warning("analyze_paper LLM call failed for %s: %s: %s", arxiv_id, type(e).__name__, e)
         return PaperAnalysis(

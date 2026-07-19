@@ -62,6 +62,13 @@ async def build_tool_registry(config: AgentTopConfig) -> ToolRegistry:
     else:
         logger.debug("reddit disabled — registering NO stub")
 
+    if config.scholar.enabled:
+        from deep_research.tools import scholar
+
+        await scholar.register(reg, config)
+    else:
+        logger.debug("scholar disabled — registering NO stub")
+
     if config.blog_search.enabled:
         from deep_research.tools import blog_search
 

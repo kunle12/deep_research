@@ -137,6 +137,60 @@ class RedditConfig(BaseModel):
     max_results_per_query: int = 25
 
 
+class ScholarSerperConfig(BaseModel):
+    """Serper API (https://serper.dev) — paid Scholar backend, primary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key_env: str = "SERPER_API_KEY"
+    endpoint: str = "https://google.serper.dev/scholar"
+    timeout_s: int = 30
+
+
+class ScholarSearXNGConfig(BaseModel):
+    """SearXNG fallback: requires the `scholar` engine enabled on the instance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = "http://localhost:8080/search"
+    timeout_s: int = 30
+
+
+class ScholarConfig(BaseModel):
+    """Google Scholar discovery backend for the academic path.
+
+    Disabled by default. To enable: set `scholar.enabled: true` and either
+    `export SERPER_API_KEY=...` (primary) or point `scholar.searxng.url` at a
+    SearXNG instance with the `scholar` engine enabled (fallback), and add
+    `"scholar"` to `academic.seed_backends`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    primary: Literal["serper", "searxng"] = "serper"
+    fallback_chain: list[Literal["serper", "searxng"]] = Field(
+        default_factory=lambda: ["searxng"]
+    )
+    serper: ScholarSerperConfig = Field(default_factory=ScholarSerperConfig)
+    searxng: ScholarSearXNGConfig = Field(default_factory=ScholarSearXNGConfig)
+
+    max_results_per_query: int = 10
+    concurrency: int = 2  # global rate-limit semaphore
+    request_delay_s: float = 1.0  # spacing between calls (Serper ~1 rps)
+    # When True, parse the free-PDF side link from each hit and store on Citation.pdf_url
+    include_pdf_links: bool = True
+    # Optional year window — Serper `tbs=qdr:yYYYY..yYYYY`; SearXNG `time_range` heuristic
+    year_from: int | None = None
+    year_to: int | None = None
+    # Cost guardrail: skip Scholar when arxiv seeds already returned >= this many hits.
+    # None = always call Scholar regardless of arxiv hit count (default).
+    skip_if_arxiv_hits_ge: int | None = None
+
+    def resolve_serper_key(self) -> str | None:
+        return _env(self.serper.api_key_env)
+
+
 class PdfVisionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -193,6 +247,12 @@ class AcademicConfig(BaseModel):
     )
     # Per-paper cap on how many of its references get recursed into
     max_key_references_to_recurse: int = 5
+    # Which discovery backends engage in the academic path's seed phase.
+    # Default ["arxiv"] preserves backward-compat; add "scholar" to also draw
+    # seeds from Google Scholar (requires `scholar.enabled: true`).
+    seed_backends: list[Literal["arxiv", "scholar"]] = Field(
+        default_factory=lambda: ["arxiv"]
+    )
 
 
 class BlogSearchConfig(BaseModel):
@@ -251,6 +311,7 @@ class PDLRefreshConfig(BaseModel):
             "blog": 30,
             "html": 14,
             "research_report": 0,
+            "scholar": 365,
         }
     )
     refresh_concurrency: int = 4
@@ -278,6 +339,7 @@ class AgentTopConfig(BaseModel):
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     arxiv: ArxivConfig = Field(default_factory=ArxivConfig)
     reddit: RedditConfig = Field(default_factory=RedditConfig)
+    scholar: ScholarConfig = Field(default_factory=ScholarConfig)
     pdf_vision: PdfVisionConfig = Field(default_factory=PdfVisionConfig)
     fetch_page: FetchPageConfig = Field(default_factory=FetchPageConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
@@ -328,6 +390,9 @@ __all__ = [
     "PDLConfig",
     "PdfVisionConfig",
     "RedditConfig",
+    "ScholarConfig",
+    "ScholarSearXNGConfig",
+    "ScholarSerperConfig",
     "SearXNGConfig",
     "SearchConfig",
     "TavilyConfig",

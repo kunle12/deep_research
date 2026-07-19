@@ -20,6 +20,7 @@ class ToolName(str, Enum):
     arxiv = "arxiv"
     pdf = "pdf"
     reddit = "reddit"
+    scholar = "scholar"
 
 
 class Citation(BaseModel):
@@ -30,7 +31,7 @@ class Citation(BaseModel):
     url: str
     title: str = ""
     snippet: str = ""
-    source_type: Literal["web", "arxiv", "reddit", "html", "pdf", "blog"] = "web"
+    source_type: Literal["web", "arxiv", "reddit", "html", "pdf", "blog", "scholar"] = "web"
     accessed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
     # Optional provenance: which tool surfaced this citation?
@@ -38,6 +39,16 @@ class Citation(BaseModel):
     # Optional: for arxiv, the paper metadata block
     arxiv_id: str | None = None
     authors: list[str] = Field(default_factory=list)
+    # Optional: free-PDF side link surfaced by Google Scholar (may differ from `url`)
+    pdf_url: str | None = None
+    # Optional: DOI when known (e.g., from Scholar or Crossref)
+    doi: str | None = None
+    # Optional: publication year (Scholar / Crossref)
+    year: int | None = None
+    # Optional: venue / publication name (e.g., "Nature Materials", "ICML 2024")
+    venue: str | None = None
+    # Optional: Google Scholar citation count
+    cited_by_count: int | None = None
 
 
 class SubQuestion(BaseModel):
@@ -123,6 +134,12 @@ class PaperNode(BaseModel):
     depth: int = 0
     parent_arxiv_id: str | None = None
     rationale: str = ""  # why this paper was enqueued
+    # For scholar-only nodes: the URL and DOI from the Scholar hit
+    url: str = ""
+    doi: str | None = None
+    pdf_url: str | None = None
+    venue: str | None = None
+    year: int | None = None
 
 
 class PaperAnalysis(BaseModel):

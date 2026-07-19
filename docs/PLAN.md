@@ -74,7 +74,7 @@ deep_research/
 ├── config.example.yaml
 ├── README.md
 ├── docs/
-│   ├── PLAN.md                   # this file
+│   ├── PLAN.md                   # this file (single source of truth; Scholar section consolidated here)
 │   └── IMPLEMENTATION_LOG.md     # progress tracker
 ├── deep_research/
 │   ├── __init__.py               # exports: run_research, AgentTopConfig, Report
@@ -209,7 +209,7 @@ deep_research/
 ## Phase plan (canonical — single source of truth)
 
 | Phase | Scope | Deliverable | Status |
-|---|---|---|---|
+|---|---|---|---|---|
 | **P1** | Scaffold + README + config + state + path stubs returning placeholder Reports. Mock-LLM dry run of all routing paths. | All paths reachable end-to-end with fakes. | done |
 | **P2** | paths.quick + tools/web_search (Tavily) + tools/fetch_page + citations. | Real quick results. | done |
 | **P2.5** | paths.url_source ANALYZE mode (no follow-up). | URL analysis for arxiv + blogs. | done |
@@ -228,6 +228,7 @@ deep_research/
 | **P12.0** | (a) **Postgres `StorageBackend` + asyncpg + conformance test suite** parameterized over both SQLite + Postgres. (b) **Long-running refresh scheduler** (`apscheduler` + `croniter`) wrapping `LibraryWriter.run_refresh_job` on a configurable cron; webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) **`applied` path** (blog-first research) — `paths/applied.py` lands here, not in P10.0. (d) **Library CLI completes**: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh`. (e) **FastAPI microservice** + Dockerfile + poppler setup. | Personal library UX; long-running service that auto-refreshes the library; deployable Postgres-backed microservice. | done |
 | **P12.5** | Web UI for browsing the library. | Visual library browser. | optional / deferred |
 | **P13** | Library-first recall — prior-knowledge injection before web search. Uses existing FTS5 index over prior analyses. Every path checks the library before hitting the web; delta-only fetching. | `nodes/recall.py` + integration into deep + academic + quick paths. | done |
+| **Scholar** | Google Scholar discovery backend (Serper primary, SearXNG fallback). Parallel arxiv+scholar seed gathering in academic path. Abstract-only analysis for paywalled hits. | `scholar_search` tool + academic-path integration + abstract-only leaf-node handling. | done |
 
 > **Rule**: any new phase sub-rows must be added to THIS table. The detailed P10.0 / P10.5a / P10.5b / P10.6 sections later in this document are *expositions* of the rows above — they do not introduce new phases. If the table and the prose disagree, the table wins.
 
@@ -427,7 +428,7 @@ User can extend via `config.url_source.follow_up_trigger_phrases: []`.
 
 If implementation gets disrupted mid-session, do the following in the new session:
 
-1. Read this file (`docs/PLAN.md`) to refresh full plan.
+1. Read this file (`docs/PLAN.md`) — single source of truth.
 2. Read `docs/IMPLEMENTATION_LOG.md` to see what's done.
 3. Check tracked files (`git ls-files`) to verify project structure.
 4. Run `cd /Users/xun/dev/deep_research && uv sync` to verify deps still resolve.
@@ -1300,4 +1301,115 @@ async def recall(
 31. Recall returns stale/outdated summaries for papers whose content has changed upstream — mitigated by `refresh_after_at` staleness check; only recall artifacts whose `refresh_after_at` is still valid.
 32. Recall results cause the researcher to skip web_search entirely when prior context is sufficient — this is the desired behavior; the researcher's tool-calling loop still decides what to fetch.
 33. FTS5 keyword matching misses semantically-similar queries — mitigated by embedding-based recall (P13.1, future); FTS5 is the first layer, vector search is the second.
+
+---
+
+## Scholar integration — Google Scholar discovery backend
+
+### Motivation
+
+The `academic` path seeds exclusively from `arxiv_search`. This misses non-arxiv venues (Nature, NEJM, ACM, IEEE, ACL/EMNLP non-arxiv preprints, conference proceedings). Google Scholar's index spans all of these and its snippet already contains abstract-grade text — usable for synthesis even when the underlying paper is paywalled. Many Scholar hits also expose a free-PDF side link (author homepage / institutional repo / ResearchGate) that the existing PDF pipeline can consume.
+
+**TL;DR tradeoff**: Tavily/SearXNG (general web) stays for everything non-academic. Scholar joins arxiv as a *parallel academic discovery* backend. No replacement.
+
+### Locked-in decisions
+
+1. **Primary backend: Serper API** (`https://google.serper.dev/scholar`). Returns structured JSON: `title`, `authors`, `year`, `cited_by`, `url`, `pdf` (side-link), `publication`. Paid but cheap (~$1/1k scholarly queries). No scraping risk.
+2. **Fallback backend: SearXNG with the `scholar` engine enabled**. Free, already in the stack. Document enabling `scholar` in the SearXNG `settings.yml` `engines:` block. Maintain the existing fallback *pattern* but in a separate `ScholarConfig` (not under `search:`).
+3. **`scholarly` Python lib is NOT used** — ban rate too high in production.
+4. **Scope**: Scholar is a **discovery layer**. Resulting `PaperNode`s flow through the existing analyze → synthesis pipeline.
+5. **Moderation ethics**: only fetch PDFs explicitly linked by Scholar as the `[PDF]` side-link. Do not bypass paywalls. Paywalled papers contribute abstract-only "leaf" nodes to the citation graph.
+6. **Dedup rule**: Scholar hits that resolve to an arxiv ID (via `10.48550/arXiv.<id>` DOI prefix or matching arxiv URL) are deduped against arxiv-seed results by version-stripped `arxiv_id`.
+7. **Config naming**: live under a new top-level `scholar:` block, not under `search:` or `academic:`. Mirrors the existing `reddit:`/`arxiv:` block pattern.
+8. **Tool name**: `scholar_search` (single tool; no separate resolve/download — Scholar itself doesn't expose resolve-by-id).
+
+### Architecture
+
+```
+query
+  └── academic path
+        └── _gather_seeds
+              ├── arxiv_search(query)       ── existing
+              └── scholar_search(query)     ── asyncio.gather
+                    │
+                    ├── hit has arxiv_id → fold into arxiv seed pool
+                    ├── hit has free pdf_url → PaperNode via fetch_page
+                    └── hit has only abstract (paywall) → "leaf" PaperNode
+```
+
+**All Scholar-surfaced papers go through `analyze_paper` with `text_source` varying:**
+- `text_source="pdf"` — full PDF analysis (existing path).
+- `text_source="abstract"` — abstract-only leaf node, no recursive mining.
+- `text_source="html"` — when the URL is a free HTML page (rare for papers, but possible for arxiv-listed HTML versions).
+
+### Tool shape
+
+One tool `scholar_search(query, max_results=10) -> ToolResult[citations]` registered when `config.scholar.enabled`.
+
+**Serper primary**: POST to `https://google.serper.dev/scholar` with `X-API-KEY` header, JSON body `{"q": query, "num": max_results}`. Optional `tbs` year-window parameter. Each hit normalized to a `Citation` with `source_type="scholar"`, `discovered_by=ToolName.scholar`, `confidence_score = min(0.6 + cited_by_count/1000, 0.95)`.
+
+**SearXNG fallback**: GET `<url>?q=<query>&categories=scholar&format=json`. Maps `results` to citations with heuristics for `authors`/`year`/`pdf_url`.
+
+### Config
+
+```yaml
+scholar:
+  enabled: false
+  primary: "serper"                        # "serper" | "searxng"
+  fallback_chain: ["searxng"]
+  serper:
+    api_key_env: "SERPER_API_KEY"
+    endpoint: "https://google.serper.dev/scholar"
+    timeout_s: 30
+  searxng:
+    url: "http://localhost:8080/search"
+    timeout_s: 30
+  max_results_per_query: 10
+  concurrency: 2                           # Serper ~1 rps
+  request_delay_s: 1.0
+  include_pdf_links: true
+  year_from: null
+  year_to: null
+  skip_if_arxiv_hits_ge: null              # cost guardrail
+
+academic:
+  seed_backends: ["arxiv"]                 # add "scholar" to engage
+```
+
+### Path integration
+
+In `paths/academic.py::_gather_seeds`: when `seed_backends` includes `"scholar"`, both backends fire (parallel via `asyncio.gather` when cost guardrail is off). Scholar hits with `arxiv_id` are deduped against arxiv seeds (keep arxiv's confidence). Scholar-only hits get a synthetic id `scholar:<url-hash>` and carry `url`, `doi`, `pdf_url`, `venue`, `year` on the `PaperNode` for BibTeX rendering.
+
+Scholar nodes with `pdf_url` route through `fetch_page` for full-text PDF analysis. Paywalled hits (no pdf_url) use `text_source="abstract"` with `[ABSTRACT-ONLY]` prefix and forced `key_references=[]` (leaf nodes).
+
+### BibTeX handling
+
+Scholar-only nodes are emitted as `@misc` entries in BibTeX using URL/DOI (not malformed arxiv.org URLs). The citation graph markdown renderer uses proper URLs for scholar nodes.
+
+### File-by-file change surface
+
+| File | Change |
+|---|---|
+| `deep_research/state.py` | `ToolName.scholar`, extend `Citation.source_type` Literal, add `pdf_url`/`doi`/`year`/`venue`/`cited_by_count` fields; `PaperNode` extended with `url`/`doi`/`pdf_url`/`venue`/`year` |
+| `deep_research/config.py` | New `ScholarConfig`, `ScholarSerperConfig`, `ScholarSearXNGConfig`; `scholar` field on `AgentTopConfig`; `seed_backends` on `AcademicConfig`; exports |
+| `deep_research/tools/scholar.py` | **New file** — Serper + SearXNG fallback + arxiv-dedup logic |
+| `deep_research/tools/registry.py` | Wire scholar tool in if `config.scholar.enabled` |
+| `deep_research/paths/academic.py` | Parallel seed gathering in `_gather_seeds`; scholar→arxiv fold; paywall leaf-node handling; PDF pipeline for free-PDF hits |
+| `deep_research/nodes/analyze_paper.py` | `text_source` param + abstract-only branch |
+| `deep_research/prompts/analyze_paper.txt` | `[ABSTRACT-ONLY]` semantics documented |
+| `deep_research/prompts/classifier.txt` | Mention non-arxiv academic coverage |
+| `deep_research/citations.py` | `render_bibtex` emits `@misc` for scholar nodes; `render_citation_graph_markdown` uses proper URLs |
+| `config.example.yaml` | `scholar:` block + `academic.seed_backends` |
+| `README.md` | How-it-works diagram; routing table; Scholar setup section; env vars |
+| `docs/SEARXNG_SETUP.md` | Enabling scholar engine |
+| `tests/tools/test_scholar.py` | **New file** — 34 unit tests |
+| `tests/paths/test_academic_scholar_seeds.py` | **New file** — 8 integration tests |
+
+### Risk register additions
+
+34. **Serper ToS / key acquisition**: user must obtain key at serper.dev. Failures degrade gracefully (tool returns empty ToolResult).
+35. **SearXNG `scholar` engine missing**: not all instances enable it. Document as opt-in. Graceful failure: return empty.
+36. **Paywall ethics**: only follow Scholar's explicit `[PDF]` side link. **Never** spin up the Playwright/browser tool to circumvent paywalls.
+37. **LLM hallucination on abstract-only nodes**: `[ABSTRACT-ONLY]` tag in prompt + forced `key_references = []`.
+38. **Arxiv rate limit interaction**: scholar calls are independent of the arxiv Semaphore. Per-backend rate-limit semaphores keep Serper and SearXNG independent.
 

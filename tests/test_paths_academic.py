@@ -525,6 +525,7 @@ def _patch_analyze(monkeypatch, analyses_by_id: dict[str, PaperAnalysis]) -> dic
         client: Any,
         model: str,
         page_image_data_urls: list[str] | None = None,
+        text_source: str = "pdf",
     ) -> PaperAnalysis:
         calls["n"] += 1
         if arxiv_id in analyses_by_id:

@@ -52,6 +52,24 @@ reddit:
   user_agent: "deep_research_bot/0.1"
   max_results_per_query: 25
 
+scholar:
+  enabled: false                  # disabled by default; enable to seed academic path from Google Scholar
+  primary: "serper"               # "serper" | "searxng"
+  fallback_chain: ["searxng"]
+  serper:
+    api_key_env: "SERPER_API_KEY"
+  searxng:
+    url: "http://localhost:8080/search"
+  max_results_per_query: 10
+  concurrency: 2                  # Serper ~1 rps on cheapest tier
+  request_delay_s: 1.0
+  include_pdf_links: true         # parse the free-PDF side link from each hit
+  # Optional year window: year_from: 2022, year_to: 2024
+  year_from: null
+  year_to: null
+  # Cost guardrail: skip Scholar when arxiv seeds already return >= this many hits
+  skip_if_arxiv_hits_ge: null     # null = always call Scholar
+
 pdf_vision:
   enabled: true
   renderer: "pdf2image"
@@ -87,6 +105,7 @@ academic:
   key_reference_threshold: 0.7
   always_extract_text: true
   seed_count: 5
+  seed_backends: ["arxiv"]        # ["arxiv"] | ["arxiv", "scholar"] — add "scholar" to also seed from Google Scholar (requires `scholar.enabled: true`)
   output_citation_graph: true
   citation_graph_formats: ["bibtex", "json"]
   max_key_references_to_recurse: 5  # per-paper cap
@@ -129,6 +148,7 @@ pdl:
       blog: 30
       html: 14
       research_report: 0
+      scholar: 365               # Scholar results are stable; refresh yearly
     refresh_concurrency: 4
     re_analyze_on_change: true
     notify_on_change: ["log"]

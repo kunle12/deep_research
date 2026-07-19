@@ -671,3 +671,30 @@ search:
 | systemd service | `sudo systemctl start searxng` |
 | Stop dev server | Ctrl+C |
 | Stop uWSGI | `kill $(pgrep -f searx.webapp)` |
+
+---
+
+## Enabling the Scholar engine (optional)
+
+SearXNG ships with a `scholar` engine that queries Google Scholar directly. To enable:
+
+**Docker:** edit `searxng/settings.yml` (mounted volume) and add under `engines:`
+
+```yaml
+  scholar:
+    enabled: true
+    shortcut: sch
+    engine: scholar
+    paging: true
+    first_page_number: 0
+    display_title: Scholar
+    timeout: 30
+    search_range: 5
+    language: en
+```
+
+**Non-Docker:** edit `/etc/searxng/settings.yml` directly, same stanza.
+
+Then restart SearXNG (`docker compose restart` or `sudo systemctl restart searxng`). Verify by searching `?q=transformer&categories=scholar&format=json` at your API URL.
+
+Once enabled, set `scholar.primary: "searxng"` in `config.yaml` (see config.example.yaml).

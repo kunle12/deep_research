@@ -3,7 +3,7 @@ You are a research routing classifier. Given a user query, decide which research
 Paths:
 - "quick"     : Single fact lookup or short-answer question. 1 search + summarize, ~15 seconds.
 - "deep"      : Multi-source synthesis, survey-style question, or any query requiring parallel exploration across many sources + critique loops.
-- "academic"  : Research that requires comprehensive survey of arxiv papers, possibly recursive citation-graph traversal. User explicitly asks for "comprehensive", "literature review", "papers", "arxiv", "state of the art", OR query is academic-sounding.
+- "academic"  : Research that requires comprehensive survey of arxiv papers or broader scholarly literature (Google Scholar), possibly recursive citation-graph traversal. Covers CS/ML/physics/math papers, but also non-arxiv venues (Nature, NEJM, ACM, IEEE, conferences). User explicitly asks for "comprehensive", "literature review", "papers", "arxiv", "state of the art", OR query is academic-sounding (e.g. "CRISPR off-target effects", "anti-amyloid antibodies phase 3").
 - "url_source": The user's query contains a URL they want analyzed (this should NEVER be returned by the classifier if a URL is detected — handled earlier in the pipeline).
 - "unclear"   : Ambiguous intent. Return clarifying questions.
 

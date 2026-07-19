@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from openai import AsyncOpenAI
 
@@ -43,7 +43,8 @@ from deep_research.nodes.analyze_paper import (
 from deep_research.nodes.analyze_paper import (
     extract_key_reference_arxiv_ids,
 )
-from deep_research.nodes.recall import format_recall_context, recall as recall_run
+from deep_research.nodes.recall import format_recall_context
+from deep_research.nodes.recall import recall as recall_run
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     Citation,
@@ -133,11 +134,35 @@ async def academic_research(
             reporter.step(
                 "academic.analyze", f"depth={depth} arxiv={base} parent={parent or '-'}"
             )
-            # fetch + analyze
-            paper_text, pdf_path = await _fetch_paper_text(node.arxiv_id, tools)
-            page_urls: list[str] = []
-            if config.pdf_vision.enabled and "pdf_render_pages" in tools.names():
-                page_urls = await _render_paper_pages(node.arxiv_id, tools, max_pages=10)
+
+            # Detect scholar-only synthetic nodes — abstract-only path
+            is_scholar_only = node.arxiv_id.startswith("scholar:")
+
+            if is_scholar_only:
+                # If scholar hit has a free PDF side-link, fetch it like a PDF
+                if node.pdf_url and "fetch_page" in tools.names():
+                    fetch_result = await tools.call("fetch_page", {"url": node.pdf_url})
+                    if fetch_result.error is None:
+                        paper_text = fetch_result.content or node.abstract or ""
+                        pdf_path: str | None = None
+                        page_urls: list[str] = []
+                        text_source: Literal["pdf", "abstract", "html"] = "html"
+                    else:
+                        paper_text = node.abstract or ""
+                        pdf_path = None
+                        page_urls = []
+                        text_source = "abstract"
+                else:
+                    paper_text = node.abstract or ""
+                    pdf_path = None
+                    page_urls = []
+                    text_source = "abstract"
+            else:
+                paper_text, pdf_path = await _fetch_paper_text(node.arxiv_id, tools)
+                page_urls = []
+                if config.pdf_vision.enabled and "pdf_render_pages" in tools.names():
+                    page_urls = await _render_paper_pages(node.arxiv_id, tools, max_pages=10)
+                text_source = "pdf"
 
             # Skip LLM analysis if paper_text is empty (e.g., download failed)
             if not paper_text.strip():
@@ -153,15 +178,14 @@ async def academic_research(
                 client=client,
                 model=config.llm.text_model,
                 page_image_data_urls=page_urls or None,
+                text_source=text_source,
             )
             graph.analyses[base] = analysis
             analyses[base] = analysis
 
             # P10.5a: archive PDF + record analysis + citation edges in library
             if isinstance(writer, LibraryWriter) and run_id:
-                # Archive PDF first so artifact exists for analysis recording
-                if pdf_path:
-                    from pathlib import Path
+                if pdf_path and not is_scholar_only:
                     await writer.archive_pdf(
                         Path(pdf_path),
                         arxiv_id=base,
@@ -169,7 +193,13 @@ async def academic_research(
                         title=node.title or analysis.title or None,
                         source_type="arxiv",
                     )
-                artifact = await writer.storage.find_artifact_by_arxiv_id(base)
+                # Find artifact — skip for scholar synthetic IDs (no upstream to refresh).
+                artifact = None
+                if not is_scholar_only:
+                    try:
+                        artifact = await writer.storage.find_artifact_by_arxiv_id(base)
+                    except Exception:
+                        artifact = None
                 if artifact:
                     await writer.record_analysis(artifact.artifact_id, analysis, run_id, "analyze_paper")
                     for ref in analysis.key_references:
@@ -249,13 +279,15 @@ async def academic_research(
     citations: list[Citation] = []
     for aid, node in graph.nodes.items():
         a = analyses.get(aid)
+        node_url = node.url or (f"https://arxiv.org/abs/{aid}" if not aid.startswith("scholar:") else aid)
+        source_type: Literal["arxiv", "scholar"] = "scholar" if aid.startswith("scholar:") else "arxiv"
         if a is not None:
             citations.append(
                 Citation(
-                    url=f"https://arxiv.org/abs/{aid}",
+                    url=node_url,
                     title=a.title or node.title,
                     snippet=(a.summary or "")[:300],
-                    source_type="arxiv",
+                    source_type=source_type,
                     arxiv_id=aid,
                     authors=node.authors,
                     confidence_score=0.8,
@@ -265,10 +297,10 @@ async def academic_research(
         else:
             citations.append(
                 Citation(
-                    url=f"https://arxiv.org/abs/{aid}",
+                    url=node_url,
                     title=node.title,
                     snippet=node.rationale,
-                    source_type="arxiv",
+                    source_type=source_type,
                     arxiv_id=aid,
                     authors=node.authors,
                     confidence_score=0.5,
@@ -308,39 +340,139 @@ async def _gather_seeds(
     config: AgentTopConfig,
     seeds_citations: list[Citation],  # mutated, fills bibliography-style citations
 ) -> list[PaperNode]:
-    """Run an arxiv_search and convert the top results into `PaperNode`s."""
+    """Run arxiv_search and optionally scholar_search in parallel.
+
+    When `cfg.seed_backends` includes `"scholar"` and the scholar tool is
+    registered, both backends fire concurrently. Scholar hits that carry an
+    arxiv_id (detected via DOI or URL) are deduped against arxiv seeds.
+    Scholar-only hits get a synthetic id `scholar:<url-hash>`.
+    """
     cfg = config.academic
     seed_count = cfg.seed_count
-    # Prefer classifier-supplied search_hint; fall back to original_query
     search_query = classified.search_hint or original_query
     if not search_query.strip():
         return []
 
+    backends = cfg.seed_backends  # e.g. ["arxiv"] or ["arxiv", "scholar"]
+    has_arxiv = "arxiv_search" in tools.names()
+    has_scholar = "scholar_search" in tools.names() and config.scholar.enabled
+
     nodes: list[PaperNode] = []
-    if "arxiv_search" not in tools.names():
-        logger.warning("arxiv_search tool not registered; no academic seeds")
-        return nodes
+    seeds_citations.clear()
 
-    results = await tools.call(
-        "arxiv_search", {"query": search_query, "max_results": seed_count}
-    )
-    if results.error is not None:
-        logger.warning("arxiv_search failed: %s", results.error)
-        return nodes
-
-    for c in results.citations:
-        if not c.arxiv_id:
-            continue
-        node = PaperNode(
-            arxiv_id=c.arxiv_id,
-            title=c.title or c.arxiv_id,
-            authors=list(c.authors),
-            abstract=c.snippet or "",
-            depth=0,
-            rationale="arxiv search hit",
+    # Dispatch parallel seed gathering
+    async def _arxiv():
+        if "arxiv" not in backends or not has_arxiv:
+            return ([], [])
+        results = await tools.call(
+            "arxiv_search", {"query": search_query, "max_results": seed_count}
         )
-        nodes.append(node)
-        seeds_citations.append(c)
+        if results.error is not None:
+            logger.warning("arxiv_search failed: %s", results.error)
+            return ([], [])
+        out_nodes: list[PaperNode] = []
+        out_cits: list[Citation] = []
+        for c in results.citations:
+            if not c.arxiv_id:
+                continue
+            out_nodes.append(PaperNode(
+                arxiv_id=c.arxiv_id,
+                title=c.title or c.arxiv_id,
+                authors=list(c.authors),
+                abstract=c.snippet or "",
+                depth=0,
+                rationale="arxiv search hit",
+            ))
+            out_cits.append(c)
+        return (out_nodes, out_cits)
+
+    import hashlib
+
+    async def _scholar():
+        if "scholar" not in backends or not has_scholar:
+            return ([], [])
+        # Cost guardrail: skip Scholar when arxiv seeds already >= threshold
+        if config.scholar.skip_if_arxiv_hits_ge is not None:
+            arxiv_count = len(arxiv_cits) if arxiv_cits else 0
+            if arxiv_count >= config.scholar.skip_if_arxiv_hits_ge:
+                logger.info(
+                    "scholar skip: arxiv seeds=%d >= skip_if_arxiv_hits_ge=%d",
+                    arxiv_count, config.scholar.skip_if_arxiv_hits_ge,
+                )
+                return ([], [])
+        results = await tools.call(
+            "scholar_search", {"query": search_query, "max_results": seed_count}
+        )
+        if results.error is not None:
+            logger.warning("scholar_search failed: %s", results.error)
+            return ([], [])
+        out_nodes: list[PaperNode] = []
+        out_cits: list[Citation] = []
+        for c in results.citations:
+            if c.arxiv_id:
+                # Will be deduped later against arxiv nodes — still track
+                # the citation so it appears in the bibliography.
+                out_cits.append(c)
+                out_nodes.append(PaperNode(
+                    arxiv_id=c.arxiv_id,
+                    title=c.title or c.arxiv_id,
+                    authors=list(c.authors),
+                    abstract=c.snippet or "",
+                    depth=0,
+                    url=c.url,
+                    doi=c.doi,
+                    pdf_url=c.pdf_url,
+                    venue=c.venue,
+                    year=c.year,
+                    rationale="scholar search hit (arxiv overlap)",
+                ))
+            else:
+                # Scholar-only hit — synthetic id
+                synthetic = "scholar:" + hashlib.sha256(c.url.encode()).hexdigest()[:12]
+                out_nodes.append(PaperNode(
+                    arxiv_id=synthetic,
+                    title=c.title or synthetic,
+                    authors=list(c.authors),
+                    abstract=c.snippet or "",
+                    depth=0,
+                    url=c.url,
+                    doi=c.doi,
+                    pdf_url=c.pdf_url,
+                    venue=c.venue,
+                    year=c.year,
+                    rationale="scholar search hit",
+                ))
+                out_cits.append(c)
+        return (out_nodes, out_cits)
+
+    # Run backends: parallel when cost guardrail is off, sequential when on
+    # (sequential needed because _scholar reads arxiv_cits for guardrail check)
+    if config.scholar.skip_if_arxiv_hits_ge is not None:
+        arxiv_nodes, arxiv_cits = await _arxiv()
+        scholar_nodes, scholar_cits = await _scholar()
+    else:
+        (arxiv_nodes, arxiv_cits), (scholar_nodes, scholar_cits) = await asyncio.gather(
+            _arxiv(), _scholar()
+        )
+    nodes = list(arxiv_nodes)
+    seeds_citations.extend(arxiv_cits)
+
+    # Dedup scholar nodes that overlap arxiv by version-stripped arxiv_id
+    arxiv_ids = {_strip_version(n.arxiv_id) for n in arxiv_nodes}
+    for sn in scholar_nodes:
+        base = _strip_version(sn.arxiv_id)
+        if base not in arxiv_ids:
+            nodes.append(sn)
+            arxiv_ids.add(base)  # prevent further duplicates within scholar batch
+    # Dedup scholar citations against existing seeds by URL
+    seen_urls = {sc.url for sc in seeds_citations}
+    for c in scholar_cits:
+        if c.url not in seen_urls:
+            seeds_citations.append(c)
+            seen_urls.add(c.url)
+
+    logger.info("_gather_seeds: %d arxiv + %d scholar → %d deduped seeds",
+                len(arxiv_nodes), len(scholar_nodes), len(nodes))
     return nodes
 
 

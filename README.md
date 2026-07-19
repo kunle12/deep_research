@@ -83,12 +83,50 @@ search:
     url: "http://localhost:8080/search"
 ```
 
+### With Google Scholar (academic mode only, optional)
+
+Enable Scholar seeding to cover non-arxiv venues (Nature, ACM, IEEE, conferences):
+
+**Option 1 — Serper API** (recommended, cloud):
+
+Get a free API key at [serper.dev](https://serper.dev), then:
+
+```yaml
+scholar:
+  enabled: true
+  primary: "serper"
+```
+
+```bash
+export SERPER_API_KEY=your_key
+```
+
+**Option 2 — SearXNG with the `scholar` engine** (self-hosted, free):
+
+Enable the `scholar` engine in your SearXNG `settings.yml` `engines:` block, then:
+
+```yaml
+scholar:
+  enabled: true
+  primary: "searxng"
+  searxng:
+    url: "http://localhost:8080/search"
+```
+
+And add `"scholar"` to `academic.seed_backends`:
+
+```yaml
+academic:
+  seed_backends: ["arxiv", "scholar"]
+```
+
 ### Environment variables
 
 | Variable | Purpose |
-|---|---|
+|---|---|---|
 | `OPENAI_API_KEY` / `DEEP_RESEARCH_LLM_API_KEY` | LLM auth |
 | `TAVILY_API_KEY` | Tavily search |
+| `SERPER_API_KEY` | Google Scholar search (Serper backend) |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | Reddit search (optional) |
 | `DEEP_RESEARCH_PG_DSN` | Postgres connection string (optional) |
 
@@ -187,7 +225,7 @@ query → URL detected? → url_source path (analyze single URL + optional follo
        → no URL        → classifier (one LLM call) decides:
                           ├─ quick   → 1 search + summarize (~5-15s)
                           ├─ deep    → planner → researcher → critic → writer loop
-                          ├─ academic→ recursive citation graph mining (depth ≤ 2, papers ≤ 15)
+                          ├─ academic→ arxiv + optional Google Scholar seed → recursive citation graph mining (depth ≤ 2, papers ≤ 15)
                           └─ applied → blog-first research
 ```
 
@@ -205,7 +243,7 @@ equation comprehension. No external agent frameworks.
 |---|---|---|
 | **quick** | Single web search + summarize top 3 results. ~5–15s. | Factual questions, "what is X" |
 | **deep** | Planner decomposes query → parallel researcher tools → critic loop → final writer. | Multi-faceted questions, survey requests |
-| **academic** | arxiv seed → recursive citation graph (depth ≤ 2, ≤ 15 papers) → synthesis + BibTeX. | Literature review, "what does the literature say" |
+| **academic** | arxiv (+ optional Google Scholar) seed → recursive citation graph (depth ≤ 2, ≤ 15 papers) → synthesis + BibTeX. Non-arxiv venues (Nature, ACM, IEEE, conferences) covered when Scholar is enabled. | Literature review, "what does the literature say" |
 | **url_source** | Classify URL → fetch (arxiv/pdf/html) → analyze_source LLM → optional follow-up deep research. | "Summarize this paper", "verify this blog" |
 | **applied** | blog_search first → fetch top blog posts → synthesize practical report. | Implementation questions, "how do I build X" |
 
@@ -259,6 +297,7 @@ Or disable browser: `browser.enabled: false` in config.yaml.
 ### Empty academic citation graph
 
 - Confirm `arxiv.enabled: true` in config
+- If using Scholar seeds (`seed_backends: ["arxiv", "scholar"]`), confirm `scholar.enabled: true` and either `SERPER_API_KEY` is set or SearXNG has the `scholar` engine enabled
 - Confirm LLM endpoint is reachable
 - Re-run with `--verbose` to see per-paper analysis logs
 

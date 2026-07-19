@@ -839,13 +839,61 @@ All tests green: `pytest -q` passes with 0 failures.
 
 ---
 
-## Database schema consolidation
+## Scholar integration — Google Scholar discovery backend
 
-Consolidated the 3 separate migration files per backend (0001_initial + 0002_add_glossary + 0003_add_refresh_foundation) into a single `0001_initial.sql` per backend containing all tables. Removed migration versioning machinery (`current_schema_version`, `apply_migration`, `_parse_migration_version`, `_MIGRATION_FILES` lists) from both SQLite and Postgres backends and the `StorageBackend` Protocol. Each backend now applies a single SQL file on connect. No existing databases to migrate — clean slate.
+### Done
 
----
+- [x] **Phase 1 — Config + state plumbing**
+  - `ToolName.scholar = "scholar"` added to `state.py`
+  - `Citation.source_type` Literal extended to include `"scholar"`
+  - New `Citation` fields: `pdf_url`, `doi`, `year`, `venue`, `cited_by_count`
+  - `ScholarConfig`, `ScholarSerperConfig`, `ScholarSearXNGConfig` added to `config.py`
+  - `scholar:` field on `AgentTopConfig`, exported in `__all__`
+  - `seed_backends: list[Literal["arxiv", "scholar"]]` added to `AcademicConfig` (default `["arxiv"]`, backward-compat)
+  - `PDLRefreshConfig.stale_after_days_by_source_type` includes `"scholar": 365`
 
-## P13 — Library-first recall (prior knowledge injection)
+- [x] **Phase 2 — New tool `deep_research/tools/scholar.py`**
+  - `scholar_search(query, max_results)` — Serper primary (`/scholar` POST) + SearXNG fallback (`GET` with `categories=scholar`)
+  - Arxiv ID inference from DOI (`10.48550/arXiv.<id>`) or URL (`arxiv.org/abs/<id>`)
+  - Rate-limit semaphore + spacing delay (mirrors arxiv.py)
+  - Retry-on-429/5xx with exponential backoff (1 retry)
+  - Registration gated on `config.scholar.enabled`
+
+- [x] **Phase 3 — Wire into academic path**
+  - `tools/registry.py`: scholar registered when `config.scholar.enabled`
+  - `paths/academic.py::_gather_seeds`: parallel arxiv+scholar dispatch via `asyncio.gather` when cost guardrail is off; sequential fallback when `skip_if_arxiv_hits_ge` set
+  - Scholar hits with arxiv_id deduped against arxiv seeds; scholar-only hits get synthetic id `scholar:<url-hash>`
+  - Cost guardrail `skip_if_arxiv_hits_ge` implemented
+  - Scholar-only `PaperNode` carries `url`, `doi`, `pdf_url`, `venue`, `year` for BibTeX rendering
+  - Scholar hits with `pdf_url` route through `fetch_page` for PDF analysis (not forced abstract-only)
+
+- [x] **Phase 4 — Abstract-only analysis**
+  - `nodes/analyze_paper.py::analyze()` accepts `text_source: Literal["pdf", "abstract", "html"]`
+  - Abstract-only nodes get `[ABSTRACT-ONLY]` prompt prefix and force `key_references = []` (leaf nodes)
+  - `paths/academic.py::_analyze_and_recurse` detects scholar synthetic IDs; routes to abstract-only when paywalled, or `fetch_page` PDF pipeline when `pdf_url` present
+
+- [x] **Phase 6 — Config example, docs, tests, BibTeX**
+  - `config.example.yaml`: `scholar:` block with all knobs; `academic.seed_backends` documented
+  - `README.md`: "How it works" diagram updated; routing table academic row expanded; Scholar setup section; env vars table includes `SERPER_API_KEY`
+  - `docs/SEARXNG_SETUP.md`: section "Enabling the Scholar engine" with engine config YAML
+  - `tests/tools/test_scholar.py` (34 tests): Serper happy path, empty results, HTTP errors/retry, arxiv ID inference, disabled config, SearXNG fallback, concurrency semaphore, unit tests for `_infer_arxiv_id` and `_parse_year`
+  - `tests/paths/test_academic_scholar_seeds.py` (8 tests): backward-compat (arxiv only), parallel dispatch, dedup, scholar-only hits, abstract-only/paywall handling, cost guardrail
+  - `citations.py::render_bibtex`: emits `@misc` entries for scholar synthetic IDs (not malformed arxiv.org URLs)
+  - `citations.py::render_citation_graph_markdown`: uses proper URLs for scholar nodes
+
+- [x] **Phase 7 — Classifier prompt**
+  - `prompts/classifier.txt`: academic path description expanded to mention non-arxiv venues and broader literature coverage
+
+### Acceptance criteria met
+
+- [x] Default `seed_backends: ["arxiv"]` preserves backward-compat (existing tests pass)
+- [x] With `scholar.enabled: true` + `seed_backends: ["arxiv", "scholar"]`, academic path seeds from both backends in parallel (`asyncio.gather`) and dedups arxiv overlaps
+- [x] Scholar hits with `pdf_url` route through `fetch_page` PDF pipeline (not forced abstract-only)
+- [x] Scholar-only BibTeX entries are valid `@misc` (not malformed arxiv.org URLs)
+- [x] Paywalled scholar hits (abstract only) become leaf nodes without crashing
+- [x] `config.example.yaml` documents all new knobs
+- [x] `ruff`, `mypy`, `pytest` all green (changed files)
+- [x] README updated
 
 ### Done
 
@@ -854,4 +902,6 @@ Consolidated the 3 separate migration files per backend (0001_initial + 0002_add
 - [x] `paths/quick.py` — before LLM synthesis, calls `recall(query, writer.storage)`. Prior context injected into the synthesis prompt.
 - [x] `paths/academic.py` — before synthesis, recalls prior analyses matching each analyzed paper's arxiv_id. Injects additional context.
 - [x] `tests/test_nodes_recall.py` (5 tests): empty storage (PDL disabled), FTS5 match, no match, dedup by artifact_id, formatting of results.
+
+
 

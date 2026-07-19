@@ -70,7 +70,11 @@ def render_citation_graph_markdown(graph: CitationGraph) -> str:
         indent = "  " * depth
         bullet = "-" if depth == 0 else "└─"
         title = node.title or node.arxiv_id
-        line = f"{indent}{bullet} [{title} (arxiv:{node.arxiv_id})](https://arxiv.org/abs/{node.arxiv_id})"
+        if node.arxiv_id.startswith("scholar:"):
+            url = node.url or node.arxiv_id
+            line = f"{indent}{bullet} [{title}]({url})"
+        else:
+            line = f"{indent}{bullet} [{title} (arxiv:{node.arxiv_id})](https://arxiv.org/abs/{node.arxiv_id})"
         if node.rationale:
             line += f" — _{node.rationale}_"
         lines.append(line)
@@ -94,15 +98,29 @@ def render_bibtex(graph: CitationGraph) -> str:
         key = _bibtex_key(node)
         authors = " and ".join(node.authors) if node.authors else "Anonymous"
         title = _bibtex_escape(node.title or "Untitled")
-        entries.append(
-            "@article{" + key + ",\n"
-            "  title = {" + title + "},\n"
-            "  author = {" + authors + "},\n"
-            "  eprint = {" + node.arxiv_id + "},\n"
-            "  archivePrefix = {arXiv},\n"
-            "  url = {https://arxiv.org/abs/" + node.arxiv_id + "}\n"
-            "}\n"
-        )
+        if node.arxiv_id.startswith("scholar:"):
+            # Scholar-only synthetic node — emit @misc entry with URL/DOI
+            url = _bibtex_escape(node.url or "")
+            doi = node.doi or ""
+            entries.append(
+                "@misc{" + key + ",\n"
+                "  title = {" + title + "},\n"
+                "  author = {" + authors + "},\n"
+                "  howpublished = {\\href{" + url + "}{" + url + "}},\n"
+                + (f"  doi = {{{doi}}},\n" if doi else "")
+                + "  year = {" + (str(node.year) if node.year else "unknown") + "}\n"
+                "}\n"
+            )
+        else:
+            entries.append(
+                "@article{" + key + ",\n"
+                "  title = {" + title + "},\n"
+                "  author = {" + authors + "},\n"
+                "  eprint = {" + node.arxiv_id + "},\n"
+                "  archivePrefix = {arXiv},\n"
+                "  url = {https://arxiv.org/abs/" + node.arxiv_id + "}\n"
+                "}\n"
+            )
     return "\n".join(entries)
 
 
