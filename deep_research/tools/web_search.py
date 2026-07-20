@@ -182,6 +182,7 @@ def _format_for_llm(citations: list[Citation]) -> str:
 async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     cfg = config.search
     _tavily_call_count: int = 0
+    _tavily_call_lock = asyncio.Lock()
 
     # Resolve the ordered list of backends to try (primary + fallback_chain, deduped)
     backends: list[str] = []
@@ -218,12 +219,15 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     if not tavily_key:
                         continue
                     # Proactive quota check — fall back to SearXNG if exhausted
-                    if tavily_max_calls is not None and _tavily_call_count >= tavily_max_calls:
-                        logger.info(
-                            "Tavily call quota exhausted (%d >= %d), falling back",
-                            _tavily_call_count, tavily_max_calls,
-                        )
-                        continue  # skip Tavily, try next backend (SearXNG)
+                    # Lock ensures read + increment are atomic under concurrent calls
+                    async with _tavily_call_lock:
+                        if tavily_max_calls is not None and _tavily_call_count >= tavily_max_calls:
+                            logger.info(
+                                "Tavily call quota exhausted (%d >= %d), falling back",
+                                _tavily_call_count, tavily_max_calls,
+                            )
+                            continue  # skip Tavily, try next backend (SearXNG)
+                        _tavily_call_count += 1
                     citations = await _tavily_with_retry(
                         query=query,
                         max_results=max_results,
@@ -231,7 +235,6 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         search_depth=cfg.tavily.search_depth,
                         retries=tavily_rate_limit_retries,
                     )
-                    _tavily_call_count += 1
                 elif backend == "searxng":
                     citations = await _searxng_search(
                         query=query,

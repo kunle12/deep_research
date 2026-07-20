@@ -126,3 +126,66 @@ All use `asyncio.Semaphore(concurrency)` + spacing delay between calls.
    `os.environ` directly in tool code
 4. **MCP transport**: stdio by default; HTTP transport exists but is unused.
    If adding new MCP tools, keep the lazy-init pattern
+
+---
+
+## Concurrency Safety Patterns
+
+### Call-count quota checks (web_search.py, scholar.py)
+Quota read + increment must be atomic under concurrent calls. Use `asyncio.Lock`:
+```python
+_tavily_call_lock = asyncio.Lock()
+async with _tavily_call_lock:
+    if _tavily_call_count >= max_calls:
+        continue  # skip backend
+    _tavily_call_count += 1
+```
+
+### Atomic max-papers cap (academic.py)
+Use a plain `int` counter with `nonlocal` in closures. Python GIL makes `+= 1` atomic:
+```python
+processed_count: int = 0
+# inner function:
+    nonlocal processed_count
+    if processed_count >= max_papers:
+        return
+    processed_count += 1
+```
+
+### Timeout with task cancellation (deep.py, academic.py)
+Wrap coroutines in `asyncio.create_task` before passing to `wait_for` so the
+underlying coroutine can be cancelled on timeout:
+```python
+raw = [asyncio.create_task(c) for c in coros]
+timed = [asyncio.wait_for(t, timeout=120) for t in raw]
+await asyncio.gather(*timed, return_exceptions=True)
+```
+
+---
+
+## Security Patterns
+
+### Path traversal sanitization (library/writer.py)
+Always sanitize user-controllable strings before using them as file paths:
+```python
+slug_base = (arxiv_id or sha) + "-" + title[:32]
+slug = re.sub(r"[^A-Za-z0-9._-]", "_", slug_base).strip() or "unknown"
+```
+
+### Citation URL validation (researcher.py)
+Reject non-HTTP URLs and non-dict citation entries from LLM output:
+```python
+if not isinstance(c, dict):
+    continue
+url = c.get("url")
+if not url or not url.startswith(("http://", "https://", "ftp://")):
+    continue
+```
+
+---
+
+## Cache TTL Clock
+
+Always use `time.monotonic()` for cache expiry checks, never `time.time()`, to
+avoid spurious expiry or indefinite retention on NTP/system-time jumps
+(fetch_page.py:75).

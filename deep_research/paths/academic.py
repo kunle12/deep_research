@@ -84,6 +84,7 @@ async def academic_research(
     graph = CitationGraph()
     analyses: dict[str, Any] = {}  # arxiv_id -> PaperAnalysis
     processed: set[str] = set()  # version-stripped ids we've already analyzed
+    processed_count: int = 0  # atomic counter for max_papers cap
     seeds_citations: list[Citation] = []
 
     # ---- SEED: arxiv_search ------------------------------------------------
@@ -114,18 +115,19 @@ async def academic_research(
     sem = asyncio.Semaphore(cfg.concurrency)
 
     async def _analyze_and_recurse(node: PaperNode, depth: int, parent: str | None) -> None:
+        nonlocal processed_count
         async with sem:
             base = _strip_version(node.arxiv_id)
             if base in processed:
                 logger.debug("arxiv_id %s already processed; skipping", base)
                 return
 
-            # Claim slot BEFORE analysis to avoid TOCTOU race on max_papers.
-            # Under semaphore, the check+add is atomic (GIL protects dict ops).
-            if len(processed) >= cfg.max_papers:
+            # Claim slot BEFORE analysis using atomic counter to avoid TOCTOU race.
+            if processed_count >= cfg.max_papers:
                 logger.info("max_papers=%d reached; skipping enqueued %s", cfg.max_papers, base)
                 return
             processed.add(base)
+            processed_count += 1
 
             # node already added to graph by _gather_seeds OR by the enqueuer
             graph.add_node(node)
@@ -218,15 +220,16 @@ async def academic_research(
             )
 
             # Optionally enqueue children
-            if depth < cfg.max_depth and len(processed) < cfg.max_papers:
+            if depth < cfg.max_depth and processed_count < cfg.max_papers:
                 child_ids = extract_key_reference_arxiv_ids(
                     analysis
                 )[: cfg.max_key_references_to_recurse]
                 # Enqueue newly-discovered child arxiv_ids (visible in next batch)
                 new_kids: list[str] = []
+                existing_ids = {n.arxiv_id for n in graph.nodes.values()}  # cache O(1) lookups
                 for child_id in child_ids:
                     child_base = _strip_version(child_id)
-                    if child_base in processed or child_base in {n.arxiv_id for n in graph.nodes.values()}:
+                    if child_base in processed or child_base in existing_ids:
                         continue
                     child_node = PaperNode(
                         arxiv_id=child_id,
@@ -239,13 +242,14 @@ async def academic_research(
                     graph.add_edge(base, child_id)
                     queue_white.append((child_node, depth + 1, base))
                     new_kids.append(child_base)
+                    existing_ids.add(child_base)
                 if new_kids:
                     reporter.step("academic.enqueue", f"+{len(new_kids)} kids (depth {depth + 1})")
 
     # ---- LOOP --------------------------------------------------------------
     iterations = 0
-    while queue_white and len(processed) < cfg.max_papers:
-        batch_size = min(cfg.concurrency, len(queue_white), cfg.max_papers - len(processed))
+    while queue_white and processed_count < cfg.max_papers:
+        batch_size = min(cfg.concurrency, len(queue_white), cfg.max_papers - processed_count)
         batch: list[tuple[PaperNode, int, str | None]] = []
         for _ in range(batch_size):
             if queue_white:
@@ -257,17 +261,13 @@ async def academic_research(
             f"batch {iterations + 1}: {len(batch)} paper(s); "
             f"processed={len(processed)}/{cfg.max_papers}",
         )
-        timed_tasks = [
-            asyncio.wait_for(_analyze_and_recurse(node, depth, parent), timeout=180)
-            for (node, depth, parent) in batch
-        ]
-        await asyncio.gather(
-            *timed_tasks,
-            return_exceptions=True,
-        )
+        raw_coros = [_analyze_and_recurse(node, depth, parent) for (node, depth, parent) in batch]
+        tasks = [asyncio.create_task(c) for c in raw_coros]
+        timed_tasks = [asyncio.wait_for(t, timeout=180) for t in tasks]
+        await asyncio.gather(*timed_tasks, return_exceptions=True)
         iterations += 1
         # Don't grow past max_papers even if children were enqueued during the batch
-        if len(processed) >= cfg.max_papers:
+        if processed_count >= cfg.max_papers:
             logger.info("max_papers cap reached after iteration %d", iterations)
             break
 

@@ -73,11 +73,23 @@ async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Criti
         )
     except Exception as e:
         logger.warning("critic LLM call failed: %s: %s", type(e).__name__, e)
-        # Conservative fallback: declare sufficient if we got any drafts at all
+        # Conservative fallback: if any drafts exist, treat as sufficient.
+        # If no drafts, add a synthetic gap so the loop doesn't silently stop.
+        if state.drafts:
+            return Critique(
+                sufficient=True,
+                gaps=[],
+                rationale=f"critic LLM call failed ({type(e).__name__}); treating as sufficient",
+            )
         return Critique(
-            sufficient=bool(state.drafts),
-            gaps=[],
-            rationale=f"critic LLM call failed ({type(e).__name__}); not appending gaps",
+            sufficient=False,
+            gaps=[SubQuestion(
+                id="critic_fallback_gap",
+                question=f"Re-analyze the research; critic LLM failed ({type(e).__name__})",
+                tool_hint="general-web",
+                rationale="critic failure forced a synthetic gap",
+            )],
+            rationale=f"critic LLM call failed ({type(e).__name__}); synthetic gap added",
         )
 
 

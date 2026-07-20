@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -91,7 +92,8 @@ class LibraryWriter:
         sha = _content_sha256(pdf_bytes)
         rel_dir = self._root / "artifacts" / "pdf"
         rel_dir.mkdir(parents=True, exist_ok=True)
-        slug = (arxiv_id or sha) + "-" + (title or "untitled").replace("/", "_")[:32]
+        slug_base = (arxiv_id or sha) + "-" + (title or "untitled").replace("/", "_")[:32]
+        slug = re.sub(r"[^A-Za-z0-9._-]", "_", slug_base).strip() or "unknown"
         dest = rel_dir / f"{slug}.pdf"
         if not dest.exists():
             import shutil

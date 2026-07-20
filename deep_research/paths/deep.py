@@ -12,10 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from deep_research.state import Report
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -29,7 +26,7 @@ from deep_research.nodes.recall import recall as recall_run
 from deep_research.nodes.researcher import research as researcher_run
 from deep_research.nodes.writer import write as writer_write
 from deep_research.progress import ProgressReporter, ensure_reporter
-from deep_research.state import ClassifiedQuery, ResearchState, SubQuestion
+from deep_research.state import ClassifiedQuery, Report, ResearchState, SubQuestion
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +42,6 @@ async def deep_research(
     run_id: str = "",
 ) -> Report:
     """Run the deep research loop."""
-    # Import here to avoid circulars at module-load time
-    from deep_research.state import Report
 
     reporter: ProgressReporter = ensure_reporter(progress)
     breadth = (
@@ -83,10 +78,14 @@ async def deep_research(
         )
         # P13: recall prior context from library before researcher dispatch
         storage = writer.storage if isinstance(writer, LibraryWriter) else None
-        tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
-        # Timeout each researcher to prevent hangs (LLM calls, HTTP fetches)
-        timed_tasks = [asyncio.wait_for(t, timeout=120) for t in tasks]
-        results = await asyncio.gather(*timed_tasks, return_exceptions=True)
+        # Wrap each researcher in a Task so we can explicitly cancel on timeout.
+        # wait_for cancels the task on timeout, but sync operations (e.g. PDF
+        # extraction via run_in_executor) may not honour cancellation mid-execution.
+        raw_tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
+        tasks = [asyncio.create_task(t) for t in raw_tasks]
+        results = await asyncio.gather(*[
+            asyncio.wait_for(t, timeout=120) for t in tasks
+        ], return_exceptions=True)
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
                 logger.warning("researcher for %s raised: %s", sq.id, r)

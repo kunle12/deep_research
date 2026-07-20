@@ -44,6 +44,7 @@ async def run_research(
     writer: LibraryWriter | NullLibraryWriter | None = None
     run_id: str = ""
     if config.pdl.enabled:
+        backend = None
         try:
             from deep_research.library.storage import get_backend
             backend = await get_backend(config)
@@ -52,7 +53,7 @@ async def run_research(
             writer.set_run_id(run_id)
         except Exception as e:
             logger.warning("PDL backend init failed: %s: %s; proceeding without library", type(e).__name__, e)
-            if 'backend' in locals():
+            if backend is not None:
                 await backend.close()
             writer = None
 

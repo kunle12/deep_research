@@ -164,6 +164,9 @@ async def run_with_tools(
             except json.JSONDecodeError:
                 logger.warning("tool %s: malformed JSON arguments: %r", name, tc.function.arguments)
                 args = {}
+            if not isinstance(args, dict):
+                logger.warning("tool %s: arguments are not a dict: %r", name, type(args).__name__)
+                args = {}
             tasks.append((tc, args, tools.call(name, args)))
 
         results = await asyncio.gather(*[t[2] for t in tasks])

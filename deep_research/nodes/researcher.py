@@ -122,8 +122,10 @@ def _parse_final_assistant(messages: list[dict]) -> tuple[str, list[Citation]]:
         answer = str(data.get("answer", last_assistant))
         cites: list[Citation] = []
         for c in data.get("citations", []) or []:
+            if not isinstance(c, dict):
+                continue
             url = c.get("url")
-            if not url:
+            if not url or not url.startswith(("http://", "https://", "ftp://")):
                 continue
             cites.append(
                 Citation(

@@ -196,8 +196,9 @@ class TestReviewFallback:
         client = _FakeAsyncOpenAI("not valid json {{{")
         state = _state()  # no drafts
         out = await review(state, client, "m")
-        assert out.sufficient is False  # no drafts means not sufficient
-        assert out.gaps == []
+        assert out.sufficient is False
+        assert len(out.gaps) == 1
+        assert out.gaps[0].id == "critic_fallback_gap"
 
     @pytest.mark.asyncio
     async def test_llm_exception_declares_sufficient_when_drafts_exist(self) -> None:
@@ -213,7 +214,8 @@ class TestReviewFallback:
         state = _state()  # no drafts
         out = await review(state, client, "m")
         assert out.sufficient is False
-        assert out.gaps == []
+        assert len(out.gaps) == 1
+        assert out.gaps[0].id == "critic_fallback_gap"
 
 
 __all__ = ["TestRenderSectionsForPrompt", "TestReviewFallback", "TestReviewHappyPath"]

@@ -18,7 +18,7 @@ Flow:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from openai import AsyncOpenAI
 
@@ -34,9 +34,6 @@ from deep_research.tools.url_classifier import (
     classify_url,
     extract_arxiv_id,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

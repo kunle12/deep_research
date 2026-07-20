@@ -72,7 +72,8 @@ class _PageCache:
         if not row:
             return None
         html, text, fetched_at = row
-        if (time.time() - fetched_at) > self._ttl:
+        # Use monotonic clock to avoid spurious expiry on NTP/system-time jumps
+        if (time.monotonic() - fetched_at) > self._ttl:
             return None
         return html, text
 
@@ -80,7 +81,7 @@ class _PageCache:
         if self._cache is None:
             return
         with contextlib.suppress(Exception):
-            self._cache.set(url, (html, text, time.time()))
+            self._cache.set(url, (html, text, time.monotonic()))
 
 
 async def _fetch_html(
