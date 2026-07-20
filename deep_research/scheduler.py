@@ -9,8 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import signal
-from typing import Any
 
 from deep_research.config import AgentTopConfig
 from deep_research.library.storage import get_backend
@@ -81,10 +79,8 @@ def _run_scheduler(config_path: str = "config.yaml") -> None:
     scheduler = RefreshScheduler(cfg)
 
     # Use asyncio.run() — signal handling is built-in via KeyboardInterrupt
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(scheduler.run())
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":

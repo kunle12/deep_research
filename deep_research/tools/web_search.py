@@ -15,9 +15,9 @@ from typing import Any
 import httpx
 from tavily import AsyncTavilyClient
 from tavily.errors import (
-    UsageLimitExceededError,
     TavilyKeylessLimitError,
     TimeoutError,
+    UsageLimitExceededError,
 )
 
 from deep_research.config import AgentTopConfig
@@ -61,6 +61,7 @@ async def _tavily_search(
         max_results=max_results,
         search_depth=search_depth,
         include_answer=False,  # we want raw results; our LLM synthesizes the answer
+        timeout=30.0,
     )
     # Response shape: {"results": [{"url","title","content","score"}], "answer": "..."}
     results = response.get("results") or []
@@ -87,7 +88,7 @@ async def _tavily_with_retry(
     retries: int,
 ) -> list[Citation]:
     """Call Tavily with exponential-backoff retry on rate-limit errors.
-    
+
     Retries only on ``UsageLimitExceededError`` / ``TavilyKeylessLimitError`` /
     ``TimeoutError`` — other errors (bad key, forbidden) propagate immediately
     so the caller can fall through to SearXNG.

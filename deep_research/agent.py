@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.client import LLMClient
 from deep_research.llm.tool_loop import ToolRegistry
-from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     ClassifiedQuery,
@@ -204,25 +206,14 @@ async def _dispatch_url_source(
     return await url_source(url, remainder, client, tools, config, reporter, writer=writer, run_id=run_id)
 
 
-class _ToolsCtx:
-    """Async context manager wrapper around build_tool_registry()."""
-
-    def __init__(self, config: AgentTopConfig) -> None:
-        self._config = config
-        self._tools: ToolRegistry | None = None
-
-    async def __aenter__(self) -> ToolRegistry:
-        self._tools = await build_tool_registry(self._config)
-        return self._tools
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        if self._tools is not None:
-            await self._tools.close()
-        self._tools = None
-
-
-def _build_tools(config: AgentTopConfig) -> _ToolsCtx:
-    return _ToolsCtx(config)
+@asynccontextmanager
+async def _build_tools(config: AgentTopConfig) -> AsyncIterator[ToolRegistry]:
+    """Async context manager wrapping build_tool_registry()."""
+    tools = await build_tool_registry(config)
+    try:
+        yield tools
+    finally:
+        await tools.close()
 
 
 async def _archive_report(report: Report, writer: LibraryWriter | None, run_id: str) -> None:

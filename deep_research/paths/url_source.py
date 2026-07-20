@@ -451,7 +451,7 @@ async def _maybe_run_follow_up(
     """Run deep-path follow-up research seeded from the analysis's gaps/follow_ups.
     Returns (markdown_section, follow_up_citations).
     """
-    from deep_research.state import ClassifiedQuery, QueryPlan, Report
+    from deep_research.state import ClassifiedQuery, QueryPlan
 
     reporter: ProgressReporter = ensure_reporter(progress)
     sub_qs: list[dict] = []

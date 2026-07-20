@@ -28,8 +28,8 @@ The crawler obeys:
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 import logging
+from collections import deque
 from pathlib import Path
 from typing import Any, Literal
 
@@ -122,10 +122,10 @@ async def academic_research(
 
             # Claim slot BEFORE analysis to avoid TOCTOU race on max_papers.
             # Under semaphore, the check+add is atomic (GIL protects dict ops).
-            processed.add(base)
-            if len(processed) > cfg.max_papers:
+            if len(processed) >= cfg.max_papers:
                 logger.info("max_papers=%d reached; skipping enqueued %s", cfg.max_papers, base)
                 return
+            processed.add(base)
 
             # node already added to graph by _gather_seeds OR by the enqueuer
             graph.add_node(node)
@@ -257,8 +257,12 @@ async def academic_research(
             f"batch {iterations + 1}: {len(batch)} paper(s); "
             f"processed={len(processed)}/{cfg.max_papers}",
         )
+        timed_tasks = [
+            asyncio.wait_for(_analyze_and_recurse(node, depth, parent), timeout=180)
+            for (node, depth, parent) in batch
+        ]
         await asyncio.gather(
-            *[_analyze_and_recurse(node, depth, parent) for (node, depth, parent) in batch],
+            *timed_tasks,
             return_exceptions=True,
         )
         iterations += 1

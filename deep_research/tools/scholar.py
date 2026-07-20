@@ -296,15 +296,23 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
 
     async def _rate_limited(sem: asyncio.Semaphore, lock: asyncio.Lock, last_call_ref: list, delay_s: float, coro_factory, *args):
         """Wrap a tool call with concurrency semaphore + spacing delay.
-        Releases semaphore during backoff sleep so other callers aren't blocked."""
+
+        Lock is held only to atomically read-and-project the last-call
+        timestamp; the actual sleep happens outside the lock so concurrent
+        callers under the semaphore can queue up with their own delay.
+        """
         async with sem:
+            delay = 0.0
             async with lock:
                 now = time.monotonic()
                 elapsed = now - last_call_ref[0]
                 if elapsed < delay_s:
-                    await asyncio.sleep(delay_s - elapsed)
-                last_call_ref[0] = time.monotonic()
-            # Lock released — allow concurrent calls to proceed
+                    delay = delay_s - elapsed
+                # Project timestamp forward so concurrent callers
+                # see the occupied slot and compute their own delay.
+                last_call_ref[0] = time.monotonic() + delay
+            if delay > 0:
+                await asyncio.sleep(delay)
             result = await coro_factory(*args)
             return result
 

@@ -27,11 +27,4 @@ class Tool(Protocol):
     async def __call__(self, **kwargs: Any) -> ToolResult: ...
 
 
-# A module-level sentinel for "this tool is not implemented yet" — used by
-# stubs (e.g. reddit) so the ToolRegistry still knows the tool exists but will
-# return a clear error if called.
-class NotImplementedError_(RuntimeError):
-    """Raised by stub tools."""
-
-
-__all__ = ["NotImplementedError_", "Tool", "ToolCallable"]
+__all__ = ["Tool", "ToolCallable"]

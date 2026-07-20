@@ -11,13 +11,6 @@ import re
 from deep_research.state import Citation, CitationGraph, PaperNode
 
 
-
-
-
-# dedup_citations was removed — it duplicated logic in ResearchState.absorb_citations
-# and path-local merge helpers. Use those instead.
-
-
 def render_bibliography_markdown(citations: list[Citation]) -> str:
     """Render a bibliography section."""
     if not citations:

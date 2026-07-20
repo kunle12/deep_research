@@ -21,7 +21,8 @@ from openai import AsyncOpenAI
 from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
-from deep_research.nodes.recall import format_recall_context, recall as recall_run
+from deep_research.nodes.recall import format_recall_context
+from deep_research.nodes.recall import recall as recall_run
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import Citation, ClassifiedQuery, Report
 

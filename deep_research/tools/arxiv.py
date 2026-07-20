@@ -182,18 +182,28 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     async def _rate_limited(fn: Any, *args: Any) -> Any:
         """Wrap a sync arxiv-library call with concurrency semaphore and
         a global spacing delay of `request_delay_s` seconds between calls.
+
+        Lock is held only to atomically read-and-project _last_call_time;
+        the actual sleep happens outside the lock so concurrent callers under
+        the semaphore can queue up and get their own projected delay.
         """
         nonlocal _last_call_time
         async with api_sem:
-            async with _global_lock:
-                import time
+            import time
 
+            delay = 0.0
+            async with _global_lock:
                 now = time.monotonic()
                 elapsed = now - _last_call_time
                 if elapsed < cfg.request_delay_s:
-                    await asyncio.sleep(cfg.request_delay_s - elapsed)
-                _last_call_time = time.monotonic()
-            # Lock released — allow concurrent calls to proceed while blocking
+                    delay = cfg.request_delay_s - elapsed
+                # Project _last_call_time forward so concurrent callers
+                # see the occupied slot and compute their own delay.
+                _last_call_time = time.monotonic() + delay
+            # Lock released — allow other semaphore-acquired callers to
+            # enter the timing check while this one sleeps.
+            if delay > 0:
+                await asyncio.sleep(delay)
             result = await asyncio.to_thread(fn, *args)
             return result
 

@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from deep_research.state import Report
 
 from openai import AsyncOpenAI
 
@@ -21,7 +24,8 @@ from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.critic import review as critic_review
 from deep_research.nodes.planner import plan as planner_plan
-from deep_research.nodes.recall import format_recall_context, recall as recall_run
+from deep_research.nodes.recall import format_recall_context
+from deep_research.nodes.recall import recall as recall_run
 from deep_research.nodes.researcher import research as researcher_run
 from deep_research.nodes.writer import write as writer_write
 from deep_research.progress import ProgressReporter, ensure_reporter
@@ -80,11 +84,16 @@ async def deep_research(
         # P13: recall prior context from library before researcher dispatch
         storage = writer.storage if isinstance(writer, LibraryWriter) else None
         tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Timeout each researcher to prevent hangs (LLM calls, HTTP fetches)
+        timed_tasks = [asyncio.wait_for(t, timeout=120) for t in tasks]
+        results = await asyncio.gather(*timed_tasks, return_exceptions=True)
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
                 logger.warning("researcher for %s raised: %s", sq.id, r)
-                # Don't mark as covered — critic can re-request this sub-question
+                reporter.step("deep.research.fail", sq.id)
+                continue
+            if not isinstance(r, tuple) or len(r) != 2:
+                logger.warning("researcher for %s returned unexpected type %r", sq.id, type(r).__name__)
                 reporter.step("deep.research.fail", sq.id)
                 continue
             answer_md, citations = r
