@@ -123,7 +123,7 @@ academic:
 ### Environment variables
 
 | Variable | Purpose |
-|---|---|---|
+|---|---|
 | `OPENAI_API_KEY` / `DEEP_RESEARCH_LLM_API_KEY` | LLM auth |
 | `TAVILY_API_KEY` | Tavily search |
 | `SERPER_API_KEY` | Google Scholar search (Serper backend) |

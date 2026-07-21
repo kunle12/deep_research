@@ -52,15 +52,6 @@ def build_image_content_block(jpeg_bytes: bytes, *, detail: str = "auto") -> dic
     }
 
 
-def batch_pages_for_vlm(
-    page_jpegs: Iterable[bytes],
-    batch_size: int,
-) -> list[list[bytes]]:
-    """Split a sequence of pre-resized page jpegs into batches."""
-    pages = list(page_jpegs)
-    return [pages[i : i + batch_size] for i in range(0, len(pages), batch_size)]
-
-
 def render_and_resize(
     pil_images: Iterable[Image.Image],
     cfg: PdfVisionConfig,
@@ -73,7 +64,6 @@ def render_and_resize(
 
 
 __all__ = [
-    "batch_pages_for_vlm",
     "build_image_content_block",
     "jpeg_bytes_to_data_url",
     "render_and_resize",

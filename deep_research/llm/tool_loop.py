@@ -78,9 +78,18 @@ class ToolRegistry:
     ) -> None:
         if name in self._tools:
             raise ValueError(f"tool already registered: {name}")
-        schema = {**schema, "name": name}
+        # OpenAI API expects `type` at top level and `function` wrapper
+        # containing `name`, `description`, `parameters`.
+        wrapped = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": schema.get("description", ""),
+                "parameters": schema.get("parameters", {}),
+            },
+        }
         self._tools[name] = func
-        self._schemas.append(schema)
+        self._schemas.append(wrapped)
 
     def names(self) -> list[str]:
         return list(self._tools.keys())

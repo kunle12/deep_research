@@ -73,6 +73,8 @@ class AgentConfig(BaseModel):
     max_iterations: int = 3
     max_subquestions: int = 6
     max_concurrent_tools: int = 8
+    researcher_timeout_s: int = 3600
+    researcher_max_turns: int = 16
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
 
 
@@ -203,7 +205,6 @@ class PdfVisionConfig(BaseModel):
     render_dpi: int = 150
     max_dim: int = 1024  # longest side in px after downscale
     jpeg_quality: int = 80
-    batch_size: int = 4  # pages per VLM call
     text_extract_first: bool = True  # also run text extraction alongside vision
 
 

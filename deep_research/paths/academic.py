@@ -263,7 +263,7 @@ async def academic_research(
         )
         raw_coros = [_analyze_and_recurse(node, depth, parent) for (node, depth, parent) in batch]
         tasks = [asyncio.create_task(c) for c in raw_coros]
-        timed_tasks = [asyncio.wait_for(t, timeout=180) for t in tasks]
+        timed_tasks = [asyncio.wait_for(t, timeout=config.agent.researcher_timeout_s) for t in tasks]
         await asyncio.gather(*timed_tasks, return_exceptions=True)
         iterations += 1
         # Don't grow past max_papers even if children were enqueued during the batch

@@ -83,12 +83,14 @@ async def deep_research(
         # extraction via run_in_executor) may not honour cancellation mid-execution.
         raw_tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
         tasks = [asyncio.create_task(t) for t in raw_tasks]
+        timeout = config.agent.researcher_timeout_s
         results = await asyncio.gather(*[
-            asyncio.wait_for(t, timeout=120) for t in tasks
+            asyncio.wait_for(t, timeout=timeout) for t in tasks
         ], return_exceptions=True)
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
-                logger.warning("researcher for %s raised: %s", sq.id, r)
+                msg = str(r) or type(r).__name__
+                logger.warning("researcher for %s raised: %s", sq.id, msg)
                 reporter.step("deep.research.fail", sq.id)
                 continue
             if not isinstance(r, tuple) or len(r) != 2:
@@ -162,7 +164,9 @@ async def _run_one_researcher_with_recall(
         logger.debug("recall failed for %s: %s", sq.id, e)
 
     return await researcher_run(
-        sq, client, config.llm.text_model, tools, prior_context=prior_context,
+        sq, client, config.llm.text_model, tools,
+        max_turns=config.agent.researcher_max_turns,
+        prior_context=prior_context,
     )
 
 

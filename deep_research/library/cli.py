@@ -78,25 +78,27 @@ def library_show(
     """Show details of a specific artifact."""
     async def _run():
         _cfg, backend, _writer = await _get_backend_and_writer(config_path)
-        art = await backend.get_artifact(artifact_id)
-        if art is None:
-            typer.echo(f"Artifact '{artifact_id}' not found.")
-            return
-        typer.echo(f"ID:        {art.artifact_id}")
-        typer.echo(f"Kind:      {art.kind}")
-        typer.echo(f"Title:     {art.title or '(no title)'}")
-        typer.echo(f"Source:    {art.source_url or '(no URL)'}")
-        typer.echo(f"Type:      {art.source_type or '(unknown)'}")
-        typer.echo(f"Path:      {art.bytes_path}")
-        typer.echo(f"Size:      {art.bytes_size or 0} bytes")
-        typer.echo(f"Seen:      {art.first_seen_at}")
-        # Show analyses
-        analyses = await backend.get_analyses_for_artifact(artifact_id)
-        if analyses:
-            typer.echo(f"\nAnalyses ({len(analyses)}):")
-            for a in analyses:
-                typer.echo(f"  {a.analyzer}: {a.summary[:80] if a.summary else '(no summary)'}")
-        await backend.close()
+        try:
+            art = await backend.get_artifact(artifact_id)
+            if art is None:
+                typer.echo(f"Artifact '{artifact_id}' not found.")
+                return
+            typer.echo(f"ID:        {art.artifact_id}")
+            typer.echo(f"Kind:      {art.kind}")
+            typer.echo(f"Title:     {art.title or '(no title)'}")
+            typer.echo(f"Source:    {art.source_url or '(no URL)'}")
+            typer.echo(f"Type:      {art.source_type or '(unknown)'}")
+            typer.echo(f"Path:      {art.bytes_path}")
+            typer.echo(f"Size:      {art.bytes_size or 0} bytes")
+            typer.echo(f"Seen:      {art.first_seen_at}")
+            # Show analyses
+            analyses = await backend.get_analyses_for_artifact(artifact_id)
+            if analyses:
+                typer.echo(f"\nAnalyses ({len(analyses)}):")
+                for a in analyses:
+                    typer.echo(f"  {a.analyzer}: {a.summary[:80] if a.summary else '(no summary)'}")
+        finally:
+            await backend.close()
 
     asyncio.run(_run())
 

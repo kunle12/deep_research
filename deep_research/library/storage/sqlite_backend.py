@@ -579,6 +579,19 @@ class SqliteStorageBackend:
 
     # -- FTS --
 
+    @staticmethod
+    def _sanitize_fts_query(raw: str) -> str:
+        """Strip FTS5 special characters so arbitrary user queries don't cause syntax errors.
+
+        FTS5 treats punctuation like , ( ) " * : . - ? as operators.
+        We keep only alphanumeric and whitespace, then join as an implicit AND.
+        """
+        import re
+        cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", raw)
+        tokens = cleaned.split()
+        tokens = [t for t in tokens if t]
+        return " ".join(tokens) if tokens else raw
+
     async def full_text_search(
         self, query: str, *, kind: str, limit: int
     ) -> list[SearchHit]:
@@ -587,6 +600,7 @@ class SqliteStorageBackend:
         # Join on analysis_id (UNINDEXED FTS5 column) rather than rowid,
         # since rowids in the internal-content FTS5 table have no
         # relationship to the analyses table's rowid.
+        safe_query = self._sanitize_fts_query(query)
         sql = """
             SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
             FROM search_index
@@ -595,7 +609,7 @@ class SqliteStorageBackend:
             WHERE search_index MATCH ? AND a.kind = ?
             LIMIT ?
         """
-        rows = await self._fetchall(sql, (query, kind, limit))
+        rows = await self._fetchall(sql, (safe_query, kind, limit))
         results: list[SearchHit] = []
         for r in rows:
             results.append(SearchHit(
@@ -609,13 +623,14 @@ class SqliteStorageBackend:
         self, query: str, limit: int
     ) -> list[GlossaryEntry]:
         await self._ensure_conn()
+        safe_query = self._sanitize_fts_query(query)
         sql = """
             SELECT g.* FROM glossary_fts
             JOIN glossary g ON g.term_id = glossary_fts.rowid
             WHERE glossary_fts MATCH ?
             LIMIT ?
         """
-        rows = await self._fetchall(sql, (query, limit))
+        rows = await self._fetchall(sql, (safe_query, limit))
         results: list[GlossaryEntry] = []
         for r in rows:
             results.append(GlossaryEntry(
