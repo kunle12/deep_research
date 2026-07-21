@@ -169,7 +169,7 @@ def _sync_resolve(arxiv_id: str) -> Citation | None:
 
 async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     cfg = config.arxiv
-    cache_dir = Path(cfg.pdf_cache_dir)
+    cache_dir = Path(cfg.pdf_cache_dir).resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Global semaphore so the agent never exceeds `concurrency` simultaneous

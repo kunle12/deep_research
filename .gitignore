@@ -6,3 +6,4 @@ __pycache__
 .playwright*
 .DS_Store
 .deep_research_library
+config.yaml
