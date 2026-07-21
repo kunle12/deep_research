@@ -25,6 +25,8 @@ async def build_tool_registry(config: AgentTopConfig) -> ToolRegistry:
     """
     reg = ToolRegistry()
     reg.set_concurrency(config.agent.max_concurrent_tools)
+    if config.agent.tool_timeout_s and config.agent.tool_timeout_s > 0:
+        reg.set_tool_timeout(config.agent.tool_timeout_s)
 
     # Order matters only for log readability. Each tool registers its own schema.
 

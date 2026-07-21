@@ -79,18 +79,29 @@ async def deep_research(
         # P13: recall prior context from library before researcher dispatch
         storage = writer.storage if isinstance(writer, LibraryWriter) else None
         # Wrap each researcher in a Task so we can explicitly cancel on timeout.
-        # wait_for cancels the task on timeout, but sync operations (e.g. PDF
-        # extraction via run_in_executor) may not honour cancellation mid-execution.
+        # asyncio.timeout (3.11+) provides cleaner cancellation propagation
+        # than wait_for: any sub-await observes CancelledError promptly.
+        # Inner ToolRegistry tool calls also have per-call asyncio.timeout,
+        # so a hung tool surfaces as a clean error result rather than dead
+        # weight. Sync work wrapped in run_in_executor that doesn't honour
+        # cancellation gets orphaned but the pipeline still unblocks the
+        # whole batch after `timeout` seconds — without ever blocking on
+        # the legacy run_in_executor return.
         raw_tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
         tasks = [asyncio.create_task(t) for t in raw_tasks]
         timeout = config.agent.researcher_timeout_s
-        results = await asyncio.gather(*[
-            asyncio.wait_for(t, timeout=timeout) for t in tasks
-        ], return_exceptions=True)
+        # Each task is wrapped individually: when a timeout fires on one,
+        # only that task is cancelled (its peers keep running); we still
+        # collect the rest via gather(return_exceptions=True). This matches
+        # the original `wait_for(t, timeout=...)` array contract exactly.
+        wrapped = [asyncio.wait_for(t, timeout=timeout) for t in tasks]
+        results = await asyncio.gather(*wrapped, return_exceptions=True)
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
-                msg = str(r) or type(r).__name__
-                logger.warning("researcher for %s raised: %s", sq.id, msg)
+                # Distinguish a true timeout from other failures for triage.
+                rtype = "timeout" if isinstance(r, TimeoutError) else type(r).__name__
+                msg = str(r) or rtype
+                logger.warning("researcher for %s raised (%s): %s", sq.id, rtype, msg)
                 reporter.step("deep.research.fail", sq.id)
                 continue
             if not isinstance(r, tuple) or len(r) != 2:

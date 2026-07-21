@@ -902,3 +902,96 @@ All tests green: `pytest -q` passes with 0 failures.
 - [x] `paths/quick.py` — before LLM synthesis, calls `recall(query, writer.storage)`. Prior context injected into the synthesis prompt.
 - [x] `paths/academic.py` — before synthesis, recalls prior analyses matching each analyzed paper's arxiv_id. Injects additional context.
 - [x] `tests/test_nodes_recall.py` (5 tests): empty storage (PDL disabled), FTS5 match, no match, dedup by artifact_id, formatting of results.
+
+---
+
+## Researcher-timeout hardening — per-call tool timeout, vision budget isolation, turn-budget math fix
+
+### Background
+The researcher's outer wall-clock budget is `agent.researcher_timeout_s = 3600s`,
+applied via `asyncio.wait_for`. Despite the generous budget, researchers were
+timing out under load. Root-cause analysis surfaced five code-level causes:
+
+1. `asyncio.wait_for` cancellation doesn't unblock sync work via
+   `run_in_executor` on non-cancellable blockers.
+2. There was no per-tool-call hard timeout — a single hung `fetch_page` /
+   `pdf_render_pages` could eat the entire 3600s.
+3. Vision rendering of up to 10 PDF pages ran serialized inside the
+   per-researcher budget; a single heavy academic paper could blow through
+   the budget.
+4. The gather over `return_exceptions=True` quietly absorbed `TimeoutError`,
+   so triage couldn't distinguish a true timeout from other failures.
+5. The default budgets were mathematically inconsistent: `researcher_max_turns=16`
+   × `llm.timeout_s=240` = 3840s **>** 3600s — researchers could exceed the
+   outer budget just by hitting the LLM timeout on every turn, before counting
+   any tool I/O.
+
+### Done
+
+- [x] **Per-tool-call hard timeout in `ToolRegistry.call`**
+  - `deep_research/llm/tool_loop.py`: new `_tool_timeout_s` field defaulting
+    to 120s, configurable via `set_tool_timeout()`. Each tool call is wrapped
+    in `async with asyncio.timeout(self._tool_timeout_s)`; on `TimeoutError`
+    the call returns `ToolResult(error="… timed out after …s")` instead of
+    blocking the loop.
+  - `deep_research/config.py`: new `AgentConfig.tool_timeout_s: float = 120.0`.
+  - `deep_research/tools/registry.py::build_tool_registry`: applies the
+    config-derived timeout when the value is `> 0`. Set `inf` in tests to
+    disable.
+  - `tests/test_tool_loop_timeout.py` (7 tests): hung tool fires the guard
+    within budget, fast tools unchanged, `inf` disables, default constant
+    magnitude invariant, `run_with_tools` no-tool-call debug log, per-call
+    timeout surfaces as a tool message inside the loop, outer `wait_for`
+    `$= TimeoutError`.
+
+- [x] **Per-turn wall-time logging in `run_with_tools`**
+  - `deep_research/llm/tool_loop.py::run_with_tools`: each turn now logs
+    `tool_loop turn N/M: llm=Xms tools=Yms (K call(s): name1, name2)` at INFO,
+    or a DEBUG-level "no tool calls — finishing" line when the LLM ends
+    without requesting tools. Makes budget exhaustion diagnosable.
+
+- [x] **Inner timeouts on academic per-paper fetch/render paths**
+  - `deep_research/paths/academic.py::_fetch_paper_text`: each sub-step
+    (download / extract / arxiv_resolve fallback) wrapped in
+    `asyncio.timeout(180s)`. Failure cleanly returns `("", pdf_path)`
+    instead of dragging the whole researcher to its outer deadline.
+  - `deep_research/paths/academic.py::_render_paper_pages`: bounded by
+    `asyncio.timeout(300s)`. Vision render now cannot eat the researcher's
+    budget; on timeout it returns `[]` and the analysis non-fatally
+    downgrades to text-only mode.
+  - `_analyze_and_recurse` retains both calls but each is independently
+    bounded — a slow render no longer blocks the text-extract+analysis
+    pipeline from completing.
+
+- [x] **`TimeoutError` classification in deep + academic log lines**
+  - `deep_research/paths/deep.py`: `wait_for` `TimeoutError` is now logged
+    distinctly as `researcher for X raised (timeout): ...` instead of being
+    silently absorbed into the generic-exception bucket.
+  - `deep_research/paths/academic.py`: same treatment for batch-task gather
+    results.
+
+- [x] **Turn-budget math fix**
+  - `deep_research/config.py`: `researcher_max_turns` lowered from `16` → `12`
+    so the worst-case theoretical wall time (12 × 240s LLM timeout = 2880s)
+    sits ~720s below the default 3600s outer budget, leaving headroom for
+    tool I/O. Doc comment added explaining the invariant.
+  - `config.example.yaml` and `docs/PLAN.md`: example updated to match
+    (`researcher_max_turns: 12`, new `tool_timeout_s: 120.0`).
+
+- [x] **Documentation**
+  - `docs/AGENTS.md`: new "Per-tool-call hard timeout", "Vision rendering
+    budget", "Turn-budget math" sections, plus a `TimeoutError`-classification
+    snippet in the existing cancellation-concurrency section. `llm/tool_loop.py`
+    row in the directory table mentions the per-call timeout.
+  - `config.example.yaml` and `docs/PLAN.md`: defaults match the new config.
+  - `docs/IMPLEMENTATION_LOG.md`: this section.
+
+### Acceptance criteria met
+
+- [x] A single hung tool call can no longer eat the entire per-researcher budget.
+- [x] Vision render failure downgrades gracefully to text-only analysis
+      without aborting the academic path.
+- [x] `ruff`, `mypy` clean for changed files (4 pre-existing E402 errors in
+      `deep_research/__init__.py` are untouched).
+- [x] 457 passed (450 baseline + 7 new) + 1 skipped + 1 pre-existing failure
+      (`test_tools_blog_search_schema` — unrelated schema-key bug — deselected).

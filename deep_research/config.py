@@ -74,7 +74,17 @@ class AgentConfig(BaseModel):
     max_subquestions: int = 6
     max_concurrent_tools: int = 8
     researcher_timeout_s: int = 3600
-    researcher_max_turns: int = 16
+    # The tool-loop turn budget must fit the wall-clock budget:
+    #   researcher_max_turns * config.llm.timeout_s
+    #   must stay comfortably below researcher_timeout_s, leaving headroom
+    #   for tool I/O (per-call `tool_timeout_s`) per turn. With defaults
+    #   12 * 240s = 2880s < 3600s, leaving ~720s of headroom for tool calls.
+    researcher_max_turns: int = 12
+    # Hard per-tool-call timeout applied by ToolRegistry.call. Prevents a
+    # single slow tool (hung fetch_page, browser_navigate on a JS-heavy page)
+    # from monopolising the researcher's overall time budget. Set to 0 to
+    # disable (fall back to no per-call guard).
+    tool_timeout_s: float = 120.0
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
 
 

@@ -88,7 +88,7 @@ deep_research/
 │   ├── llm/
 │   │   ├── client.py             # AsyncOpenAI factory
 │   │   ├── vision.py             # resize_for_vlm() → JPEG bytes
-│   │   └── tool_loop.py          # async tool-calling loop w/ parallel dispatch
+│   │   └── tool_loop.py          # async tool-calling loop w/ parallel dispatch + per-call timeout
 │   │
 │   ├── paths/                    # one runner per routing target
 │   │   ├── __init__.py
@@ -249,8 +249,9 @@ agent:
   max_iterations: 3
   max_subquestions: 6
   max_concurrent_tools: 8
-  researcher_timeout_s: 3600
-  researcher_max_turns: 16
+  researcher_timeout_s: 3600      # per-researcher wall-clock cap (PDF fetch + LLM turns)
+  researcher_max_turns: 12        # turn budget; must satisfy max_turns × llm.timeout_s ≪ researcher_timeout_s
+  tool_timeout_s: 120.0          # per-tool-call hard-kill timeout; 0 disables
   classifier:
     enabled: true
     force_path: null  # null | "quick" | "deep" | "academic" | "url_source"

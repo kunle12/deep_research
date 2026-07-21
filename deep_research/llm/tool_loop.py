@@ -11,12 +11,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable
 from typing import Any, Protocol
 
 from deep_research.state import Citation
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_TOOL_TIMEOUT_S: float = 120.0
 
 
 class ToolResult:
@@ -57,6 +60,15 @@ class ToolRegistry:
         self._semaphore: asyncio.Semaphore | None = None  # set by agent
         self.writer: Any | None = None  # optional LibraryWriter for tool-side archival
         self._close_hooks: list = []  # async callables to run during close()
+        # Per-tool-call hard-kill timeout. Prevents a single slow tool
+        # (e.g. fetch_page on a hung server, browser_navigate on a JS-heavy
+        # page) from monopolising the researcher's overall time budget.
+        # Override via `set_tool_timeout()`; default is conservative.
+        self._tool_timeout_s: float = _DEFAULT_TOOL_TIMEOUT_S
+
+    def set_tool_timeout(self, seconds: float) -> None:
+        """Override the per-tool-call hard timeout. Use `float("inf")` to disable."""
+        self._tool_timeout_s = seconds
 
     async def close(self) -> None:
         """Close any async resources held by tools (e.g., browser MCP)."""
@@ -112,10 +124,32 @@ class ToolRegistry:
                 logger.exception("tool %s raised", name)
                 return ToolResult(content="", error=f"{type(e).__name__}: {e}")
 
+        async def _guarded() -> ToolResult:
+            # Inner timeout protects a single tool call from infinite hangs.
+            # We do not shield the coroutine: the goal is to propagate
+            # CancelledError into the tool so it can abort pending I/O
+            # promptly, even if the tool wraps sync work in run_in_executor
+            # (the executor task won't be cancelled, but the awaiting
+            # coroutine unblocks immediately and the timeout is reported).
+            if self._tool_timeout_s == float("inf"):
+                return await _run()
+            try:
+                async with asyncio.timeout(self._tool_timeout_s):
+                    return await _run()
+            except TimeoutError:
+                logger.warning(
+                    "tool %s exceeded per-call timeout %.1fs",
+                    name, self._tool_timeout_s,
+                )
+                return ToolResult(
+                    content="",
+                    error=f"tool {name} timed out after {self._tool_timeout_s:.1f}s",
+                )
+
         if self._semaphore is not None:
             async with self._semaphore:
-                return await _run()
-        return await _run()
+                return await _guarded()
+        return await _guarded()
 
 
 async def run_with_tools(
@@ -136,6 +170,7 @@ async def run_with_tools(
     extra = extra or {}
 
     for _turn in range(max_turns):
+        turn_t0 = time.monotonic()
         resp = await client.chat.completions.create(
             model=model,
             messages=messages,
@@ -143,6 +178,7 @@ async def run_with_tools(
             **extra,
         )
         msg = resp.choices[0].message
+        llm_ms = (time.monotonic() - turn_t0) * 1000.0
 
         # Append assistant message — must be reconstructed as a dict
         # to preserve tool_calls for subsequent rounds.
@@ -162,6 +198,10 @@ async def run_with_tools(
         messages.append(assistant_record)
 
         if not msg.tool_calls:
+            logger.debug(
+                "tool_loop turn %d/%d: llm=%.0fms; no tool calls — finishing",
+                _turn + 1, max_turns, llm_ms,
+            )
             return messages, citations
 
         # Dispatch all tool_calls concurrently via asyncio.gather.
@@ -178,7 +218,19 @@ async def run_with_tools(
                 args = {}
             tasks.append((tc, args, tools.call(name, args)))
 
-        results = await asyncio.gather(*[t[2] for t in tasks])
+        if tasks:
+            tool_t0 = time.monotonic()
+            results = await asyncio.gather(*[t[2] for t in tasks])
+            tool_ms = (time.monotonic() - tool_t0) * 1000.0
+            tool_names = ", ".join(t[0].function.name for t in tasks)
+            logger.info(
+                "tool_loop turn %d/%d: llm=%.0fms tools=%.0fms "
+                "(%d call(s): %s)",
+                _turn + 1, max_turns, llm_ms, tool_ms,
+                len(tasks), tool_names,
+            )
+        else:
+            results = []
 
         for (tc, _args, _), result in zip(tasks, results):
             citations.extend(result.citations)

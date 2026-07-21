@@ -29,7 +29,7 @@ changes.
 | `tools/fetch_page.py` | httpx + trafilatura page fetch |
 | `paths/deep.py` | Deep research path (planner→researcher→critic→writer) |
 | `paths/academic.py` | Academic citation-graph path |
-| `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()` |
+| `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call` |
 
 ---
 
@@ -162,6 +162,49 @@ raw = [asyncio.create_task(c) for c in coros]
 timed = [asyncio.wait_for(t, timeout=config.agent.researcher_timeout_s) for t in raw]
 await asyncio.gather(*timed, return_exceptions=True)
 ```
+Both `paths/deep.py` and `paths/academic.py` classify a `TimeoutError`
+distinctly from other failures in their `/researcher raised/` log lines so
+triage can tell a true outer-timeout (likely a hung tool or a slow model)
+from a generic tool exception:
+```python
+rtype = "timeout" if isinstance(r, TimeoutError) else type(r).__name__
+logger.warning("researcher for %s raised (%s): %s", sq.id, rtype, msg)
+```
+
+### Per-tool-call hard timeout (ToolRegistry)
+`ToolRegistry.call` wraps each tool invocation in `asyncio.timeout(config.agent.tool_timeout_s)`
+(default 120s). This is the *inner* guarantee: a single hung tool (e.g.
+`fetch_page` on a non-responding server, or `pdf_render_pages` stuck in
+`pdf2image`) cannot eat the researcher's whole budget — it surfaces as a
+clean `ToolResult.error` instead. Disable via `reg.set_tool_timeout(float("inf"))`
+in tests, or set `agent.tool_timeout_s` to a large value in config to widen
+the budget for a particular deployment — `build_tool_registry()` only applies
+the override when the value is `> 0`, so `0` is treated as "use the registry's
+built-in 120s default" (set an explicit large value to actually widen it).
+Inner timeouts are what make the outer `wait_for` cancellation actually
+unblock: without them, sync work via `run_in_executor` on a non-cancellable
+blocker would outlive the `wait_for` deadline. In this codebase, the heavy
+sync blockers (`_sync_extract` in `tools/pdf.py`) use `asyncio.to_thread`,
+which honours cancellation; the inner `asyncio.timeout` is belt-and-braces.
+
+### Vision rendering budget (academic path)
+`_analyze_and_recurse` in `paths/academic.py` passes PDF pages to vision
+rendering (`pdf_render_pages`) inside the same per-paper wall-clock budget
+as the text fetch + LLM analysis. Both `_fetch_paper_text` (180s per
+sub-step) and `_render_paper_pages` (300s total) have their own inner
+`asyncio.timeout` boundaries so a slow render cannot eat the researcher's
+overall budget. Vision failure is non-fatal: a `TimeoutError` from the
+render path returns `[]` and the analysis downgrades to text-only mode.
+
+### Turn-budget math
+The tool loop's wall-clock demand is roughly
+`researcher_max_turns × config.llm.timeout_s` (worst case, if every turn hits
+the LLM timeout) **plus** tool I/O (bounded per call by `tool_timeout_s`).
+Keep the LLM-only product comfortably below `researcher_timeout_s` or
+researchers will hit the outer timeout even when nothing is broken.
+Defaults: 12 × 240s = 2880s, ~720s of tool-I/O headroom under 3600s.
+`run_with_tools` logs per-turn LLM ms + tool ms to make budget exhaustion
+diagnosable.
 
 ---
 

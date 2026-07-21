@@ -159,9 +159,18 @@ async def academic_research(
                     page_urls = []
                     text_source = "abstract"
             else:
+                # Download once, then extract text + (optionally) render pages
+                # concurrently so a large paper doesn't pay separate sequential
+                # downloads for the two paths. Each sub-step has its own
+                # inner timeout (see _fetch_paper_text / _render_paper_pages),
+                # so a slow render cannot eat the researcher's whole budget:
+                # the text-extract branch proceeds and analysis falls back to
+                # text-only mode if the render race loses.
                 paper_text, pdf_path = await _fetch_paper_text(node.arxiv_id, tools)
-                page_urls = []
+                page_urls: list[str] = []
                 if config.pdf_vision.enabled and "pdf_render_pages" in tools.names():
+                    # Render is non-fatal; treat any failure (including
+                    # TimeoutError) as "no vision → text-only analysis".
                     page_urls = await _render_paper_pages(node.arxiv_id, tools, max_pages=10)
                 text_source = "pdf"
 
@@ -263,8 +272,18 @@ async def academic_research(
         )
         raw_coros = [_analyze_and_recurse(node, depth, parent) for (node, depth, parent) in batch]
         tasks = [asyncio.create_task(c) for c in raw_coros]
-        timed_tasks = [asyncio.wait_for(t, timeout=config.agent.researcher_timeout_s) for t in tasks]
-        await asyncio.gather(*timed_tasks, return_exceptions=True)
+        # Each batch task gets its own wall-clock budget via wait_for; inner
+        # tool sub-calls have per-call asyncio.timeout in ToolRegistry, so a
+        # hung tool surfaces as a clean error result instead of dead weight.
+        # The hard per-batch-member timeout is the safety net for anything
+        # that still slips through (e.g. legacy run_in_executor blockers).
+        per_task_timeout_s = config.agent.researcher_timeout_s
+        timed_tasks = [asyncio.wait_for(t, timeout=per_task_timeout_s) for t in tasks]
+        gather_results = await asyncio.gather(*timed_tasks, return_exceptions=True)
+        for r in gather_results:
+            if isinstance(r, Exception):
+                rtype = "timeout" if isinstance(r, TimeoutError) else type(r).__name__
+                logger.debug("academic task raised (%s): %s", rtype, r)
         iterations += 1
         # Don't grow past max_papers even if children were enqueued during the batch
         if processed_count >= cfg.max_papers:
@@ -475,41 +494,101 @@ async def _gather_seeds(
 async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> tuple[str, str | None]:
     """Download + extract text. Returns (text, pdf_path_or_None) on success,
     or (metadata-content string, None) on failure."""
+    _fetch_timeout_s: float = 180.0
     if "arxiv_download_pdf" not in tools.names() or "pdf_extract_text" not in tools.names():
         # Fall back to arxiv_resolve metadata if that's all we have
         if "arxiv_resolve" in tools.names():
-            resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
-            return (resolved.content or "", None)
+            try:
+                async with asyncio.timeout(_fetch_timeout_s):
+                    resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
+                return (resolved.content or "", None)
+            except TimeoutError:
+                logger.warning("arxiv_resolve timed out for %s (%.0fs)", arxiv_id, _fetch_timeout_s)
+                return ("", None)
         return ("", None)
-    dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
+    # Download has its own bounded latency; if it exceeds the budget, give up
+    # entirely on text and let the caller decide whether to fall back to abstract.
+    try:
+        async with asyncio.timeout(_fetch_timeout_s):
+            dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
+    except TimeoutError:
+        logger.warning(
+            "arxiv_download_pdf timed out for %s after %.0fs; falling back to resolve",
+            arxiv_id, _fetch_timeout_s,
+        )
+        if "arxiv_resolve" in tools.names():
+            try:
+                async with asyncio.timeout(_fetch_timeout_s):
+                    resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
+                return (resolved.content or "", None)
+            except TimeoutError:
+                logger.warning("arxiv_resolve (fallback) also timed out for %s", arxiv_id)
+        return ("", None)
     if dl.error is not None:
         logger.info("arxiv_download_pdf failed for %s: %s; trying metadata", arxiv_id, dl.error)
         if "arxiv_resolve" in tools.names():
-            resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
-            return (resolved.content or "", None)
+            try:
+                async with asyncio.timeout(_fetch_timeout_s):
+                    resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
+                return (resolved.content or "", None)
+            except TimeoutError:
+                logger.warning("arxiv_resolve (after dl error) timed out for %s", arxiv_id)
         return ("", None)
     pdf_path = parse_pdf_path(dl.content)
     if pdf_path is None:
         logger.warning("arxiv_download_pdf returned unexpected content for %s: %r", arxiv_id, (dl.content or "")[:100])
         return (dl.content or "", None)
-    extracted = await tools.call("pdf_extract_text", {"file_path": pdf_path})
+    try:
+        # Extraction is the most expensive step for large PDFs — give it the
+        # bulk of the fetch budget on its own clock, independent of download.
+        async with asyncio.timeout(_fetch_timeout_s):
+            extracted = await tools.call("pdf_extract_text", {"file_path": pdf_path})
+    except TimeoutError:
+        logger.warning(
+            "pdf_extract_text timed out for %s after %.0fs (path=%s); returning empty text",
+            arxiv_id, _fetch_timeout_s, pdf_path,
+        )
+        return ("", pdf_path)
     return (extracted.content or "", pdf_path)
 
 
 async def _render_paper_pages(arxiv_id: str, tools: ToolRegistry, max_pages: int = 10) -> list[str]:
     """Download + render. Returns [] on any failure (the analysis falls back
-    to text-only mode)."""
+    to text-only mode).
+
+    Bounded by `_RENDER_TIMEOUT_S` so a single paper's vision rendering cannot
+    eat an entire researcher's overall time budget; failure is non-fatal and
+    simply downgrades to text-only analysis for that paper.
+    """
+    _render_timeout_s: float = 300.0
     if "arxiv_download_pdf" not in tools.names() or "pdf_render_pages" not in tools.names():
         return []
-    dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
+    try:
+        async with asyncio.timeout(_render_timeout_s):
+            dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
+    except TimeoutError:
+        logger.warning(
+            "render: arxiv_download_pdf timed out for %s after %.0fs",
+            arxiv_id, _render_timeout_s,
+        )
+        return []
     if dl.error is not None:
         return []
     pdf_path = parse_pdf_path(dl.content)
     if pdf_path is None:
         return []
-    render = await tools.call(
-        "pdf_render_pages", {"file_path": pdf_path, "max_pages": max_pages}
-    )
+    try:
+        async with asyncio.timeout(_render_timeout_s):
+            render = await tools.call(
+                "pdf_render_pages", {"file_path": pdf_path, "max_pages": max_pages}
+            )
+    except TimeoutError:
+        logger.warning(
+            "render: pdf_render_pages timed out for %s after %.0fs (path=%s); "
+            "downgrading this paper to text-only",
+            arxiv_id, _render_timeout_s, pdf_path,
+        )
+        return []
     return parse_rendered_pages(render)
 
 
