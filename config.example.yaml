@@ -13,6 +13,8 @@ agent:
   max_iterations: 3               # critic-loop depth cap
   max_subquestions: 6            # planner breadth cap
   max_concurrent_tools: 8        # asyncio.Semaphore bound on parallel tool dispatch
+  researcher_timeout_s: 3600     # per-researcher wall-clock cap (PDF fetch + LLM turns)
+  researcher_max_turns: 16       # per-researcher tool-loop turn budget
   classifier:
     enabled: true
     force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"
@@ -80,7 +82,6 @@ pdf_vision:
   render_dpi: 150
   max_dim: 1024                   # longest side in px after downscale
   jpeg_quality: 80
-  batch_size: 4                   # pages per VLM call
   text_extract_first: true        # also run text extraction alongside vision
 
 fetch_page:

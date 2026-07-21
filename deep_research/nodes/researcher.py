@@ -39,10 +39,7 @@ async def research(
     additional context so the researcher knows what we already know.
     """
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
-    prompt = (
-        prompt_template
-        .replace("{question}", sub_q.question)
-    )
+    prompt = prompt_template.replace("{question}", sub_q.question)
 
     # Surface the planner's tool_hint to the researcher so it prefers the
     # right tool family (e.g. `arxiv_search` for arxiv-flagged sub-questions).
@@ -58,8 +55,12 @@ async def research(
             "role": "system",
             "content": (
                 "You are a research sub-agent. Use only the tools provided. "
-                "After all tool calls complete, end with a single JSON object "
-                '(no markdown fences, no surrounding text) with schema '
+                "You have a hard turn budget — be economical. "
+                "BATCH independent tool calls into a single response (e.g. fetch "
+                "multiple URLs together, not one per turn). Stop calling tools as "
+                "soon as you have enough evidence. "
+                "After all tool calls conclude, end with a single JSON object "
+                "(no markdown fences, no surrounding text) with schema "
                 '{"answer": "<markdown synthesis>", '
                 '"citations": [{"url": "...", "title": "...", "snippet": "...", '
                 '"confidence_score": 0.8}]}.'

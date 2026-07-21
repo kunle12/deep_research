@@ -154,10 +154,12 @@ processed_count: int = 0
 
 ### Timeout with task cancellation (deep.py, academic.py)
 Wrap coroutines in `asyncio.create_task` before passing to `wait_for` so the
-underlying coroutine can be cancelled on timeout:
+underlying coroutine can be cancelled on timeout. The timeout value comes from
+`config.agent.researcher_timeout_s` (default 3600s) — not `config.llm.timeout_s`,
+which is the per-LLM-call timeout, not the per-researcher wall-clock budget:
 ```python
 raw = [asyncio.create_task(c) for c in coros]
-timed = [asyncio.wait_for(t, timeout=120) for t in raw]
+timed = [asyncio.wait_for(t, timeout=config.agent.researcher_timeout_s) for t in raw]
 await asyncio.gather(*timed, return_exceptions=True)
 ```
 

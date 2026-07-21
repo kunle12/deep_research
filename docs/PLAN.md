@@ -1,7 +1,7 @@
 # Deep Research Agent — Master Plan
 
-> **Status**: v8 — final, proceeded to implementation (P1–P13 done). P12.5 (Web UI) optional/deferred.  
-> **Last update**: All phases P1–P12 implemented.  
+> **Status**: v8 — final, proceeded to implementation (P1–P13 done). P12.5 (Web UI) optional/deferred.
+> **Last update**: All phases P1–P12 implemented.
 > **Resume guidance**: If a session is interrupted, read this file first; it contains every locked-in decision. Then read `docs/IMPLEMENTATION_LOG.md` for progress state.
 
 ---
@@ -29,7 +29,7 @@ A standalone Python agent that performs web/deep/academic research with the assi
 2. **Orchestration**: raw `asyncio` — no LangGraph, no LangChain, no AutoGen.
 3. **Architecture**: modular — CLI is a thin shell; `await run_research(query, config)` is the importable public entrypoint.
 4. **PDF stack**: full MIT — `pypdf` + `pdfplumber` + `pdf2image` (subprocess to poppler binary). PIL for image resize. NO PyMuPDF (AGPL).
-5. **PDF vision**: every page downscaled to `max_dim=1024` JPEG quality 80, batch_size=4, sent through Qwen3.5-VLM. No LLM-arbitrated pruning.
+5. **PDF vision**: every page downscaled to `max_dim=1024` JPEG quality 80, all pages sent in a single VLM call. No LLM-arbitrated pruning.
 6. **Reddit**: stubbed — interface present, raises `NotImplementedError` at runtime, lazy `asyncpraw` import.
 7. **Twitter/X**: out of scope.
 8. **Web search**: Tavily (primary) → SearXNG (fallback) → direct fetch via `httpx + trafilatura`. Multi-backend chain.
@@ -249,6 +249,8 @@ agent:
   max_iterations: 3
   max_subquestions: 6
   max_concurrent_tools: 8
+  researcher_timeout_s: 3600
+  researcher_max_turns: 16
   classifier:
     enabled: true
     force_path: null  # null | "quick" | "deep" | "academic" | "url_source"
@@ -286,7 +288,6 @@ pdf_vision:
   render_dpi: 150
   max_dim: 1024
   jpeg_quality: 80
-  batch_size: 4
   text_extract_first: true
 
 fetch_page:
@@ -1412,4 +1413,3 @@ Scholar-only nodes are emitted as `@misc` entries in BibTeX using URL/DOI (not m
 36. **Paywall ethics**: only follow Scholar's explicit `[PDF]` side link. **Never** spin up the Playwright/browser tool to circumvent paywalls.
 37. **LLM hallucination on abstract-only nodes**: `[ABSTRACT-ONLY]` tag in prompt + forced `key_references = []`.
 38. **Arxiv rate limit interaction**: scholar calls are independent of the arxiv Semaphore. Per-backend rate-limit semaphores keep Serper and SearXNG independent.
-

@@ -176,7 +176,7 @@ $ uv run ruff check tests/ deep_research/      # all checks passed
 
 - [x] Deep path produces multi-section Markdown synthesizing drafts across sub-questions
 - [x] Critic iterates when gaps reported; appends new SubQuestions (dedup by question text)
-- [x] Respects `agent.max_iterations`, `agent.max_subquestions`, `agent.max_concurrent_tools` semaphores
+- [x] Respects `agent.max_iterations`, `agent.max_subquestions`, `agent.max_concurrent_tools`, `agent.researcher_timeout_s`, `agent.researcher_max_turns` semaphores
 - [x] Degrades cleanly when LLM raises: planner/critic/writer all fall back to deterministic output; per-researcher failures recorded as `(researcher failed: ...)` draft sections without aborting the gather
 
 > NOTE: dedicated unit tests for each node (mocked AsyncOpenAI + ToolRegistry) are still TODO. The deep path's behavior is currently exercised only indirectly via the existing `tests/test_agent.py` routing tests. P9 (CLI polish) is a good home for closing this coverage gap.
@@ -902,6 +902,3 @@ All tests green: `pytest -q` passes with 0 failures.
 - [x] `paths/quick.py` — before LLM synthesis, calls `recall(query, writer.storage)`. Prior context injected into the synthesis prompt.
 - [x] `paths/academic.py` — before synthesis, recalls prior analyses matching each analyzed paper's arxiv_id. Injects additional context.
 - [x] `tests/test_nodes_recall.py` (5 tests): empty storage (PDL disabled), FTS5 match, no match, dedup by artifact_id, formatting of results.
-
-
-

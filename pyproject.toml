@@ -78,6 +78,7 @@ dev = [
     "mypy>=1.10,<2.0",
     "python-dotenv>=1.0,<2.0",
     "respx>=0.21,<1.0",  # httpx mock for tests
+    "pre-commit>=4.0,<5.0",
 ]
 
 [project.scripts]
@@ -122,5 +123,3 @@ disallow_untyped_defs = false
 # Off until P3 — OpenAI SDK has very strict Literal types that fight with
 # our "use whatever endpoint" config-agnostic design. Re-enable selectively later.
 ignore_errors = true
-
-
