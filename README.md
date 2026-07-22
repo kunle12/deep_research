@@ -242,7 +242,7 @@ equation comprehension. No external agent frameworks.
 | Path | What it does | Best for |
 |---|---|---|
 | **quick** | Single web search + summarize top 3 results. ~5–15s. | Factual questions, "what is X" |
-| **deep** | Planner decomposes query → parallel researcher tools → critic loop → final writer. | Multi-faceted questions, survey requests |
+| **deep** | Planner decomposes query → parallel researcher tools → critic loop → final writer. Researchers can dynamically refine the plan mid-loop (chase references, drill into subtopics). | Multi-faceted questions, survey requests |
 | **academic** | arxiv (+ optional Google Scholar) seed → recursive citation graph (depth ≤ 2, ≤ 15 papers) → synthesis + BibTeX. Non-arxiv venues (Nature, ACM, IEEE, conferences) covered when Scholar is enabled. | Literature review, "what does the literature say" |
 | **url_source** | Classify URL → fetch (arxiv/pdf/html) → analyze_source LLM → optional follow-up deep research. | "Summarize this paper", "verify this blog" |
 | **applied** | blog_search first → fetch top blog posts → synthesize practical report. | Implementation questions, "how do I build X" |

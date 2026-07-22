@@ -6,9 +6,12 @@ is caught at load time rather than mid-run.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -65,6 +68,7 @@ class SubQuestion(BaseModel):
     rationale: str = ""  # why this sub-question matters
     # For academic-mode sub-questions spawned by recursive ref mining:
     parent_arxiv_id: str | None = None
+    refinement_depth: int = 0
 
 
 class ResearchPlan(BaseModel):
@@ -104,6 +108,7 @@ class ResearchState(BaseModel):
     # Global citation dedup table
     citations: dict[str, Citation] = Field(default_factory=dict)
     iteration: int = 0
+    pending_refinements: list[SubQuestion] = Field(default_factory=list)
 
     def is_covered(self, sub_q: SubQuestion) -> bool:
         """A sub-question is 'covered' if it has >=1 cited source AND a draft."""
@@ -120,6 +125,26 @@ class ResearchState(BaseModel):
         self.sections[sq_id] = citations
         self.drafts[sq_id] = draft
         self.absorb_citations(citations)
+
+    def absorb_refinements(self, refinements: list[SubQuestion]) -> None:
+        """Deduplicate and absorb refinements emitted by a researcher."""
+        existing_qs = {sq.question.strip().lower() for sq in self.plan.sub_questions}
+        existing_qs.update(sq.question.strip().lower() for sq in self.pending_refinements)
+        for r in refinements:
+            key = r.question.strip().lower()
+            if r.question and key not in existing_qs:
+                self.pending_refinements.append(r)
+                existing_qs.add(key)
+
+    def flush_refinements(self, max_total: int | None = None) -> list[SubQuestion]:
+        """Move pending refinements into the plan and return them."""
+        flushed = list(self.pending_refinements)
+        if max_total is not None and len(flushed) > max_total:
+            logger.info("flush_refinements: capping %d → %d", len(flushed), max_total)
+            flushed = flushed[:max_total]
+        self.plan.sub_questions.extend(flushed)
+        self.pending_refinements.clear()
+        return flushed
 
 
 class PaperNode(BaseModel):

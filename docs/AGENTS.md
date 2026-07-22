@@ -29,7 +29,7 @@ changes.
 | `tools/fetch_page.py` | httpx + trafilatura page fetch |
 | `paths/deep.py` | Deep research path (planner→researcher→critic→writer) |
 | `paths/academic.py` | Academic citation-graph path |
-| `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call` |
+| `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call`; `ScopedToolRegistry` for per-researcher tool isolation |
 
 ---
 
@@ -44,6 +44,30 @@ conditionally based on config flags.
 - The schema is a dict constant (`SCHEMA` / `SEARCH_SCHEMA`) at module level
 - Errors return `ToolResult(error=...)` — never raise to the LLM caller
 - Citations are `Citation(...)` objects attached to `ToolResult.citations`
+
+---
+
+## Dynamic Refinement Pattern (deep path)
+
+Researchers can emit refinement requests mid-loop via a `refine` tool. Three
+actions: `drill_deeper` (new sub-question), `chase_reference` (follow a URL),
+`revise_strategy` (best-effort self-correction hint — no enforcement).
+
+**Key architecture decisions:**
+
+- **`ScopedToolRegistry`** (`llm/tool_loop.py`): wraps the shared `ToolRegistry`
+  so each parallel researcher gets its own `refine` tool + collector without
+  mutating the shared registry (which raises on duplicate registration).
+  `run_with_tools` accepts any object with `.schemas()` and `.call()`.
+- **`SubQuestion.refinement_depth`**: separate from `depth` (academic-mode
+  recursion). Prevents semantic overload between the two paths.
+- **Three-level cap hierarchy**: `max_refinement_per_researcher` (per call),
+  `max_total_refinements_per_iteration` (per iteration, in `flush_refinements`),
+  `max_refinement_depth` (recursive nesting).
+- **Normalized dedup**: `absorb_refinements` compares `.strip().lower()` question
+  text to catch case/whitespace variants.
+- **`research()` returns a 3-tuple**: `(answer_md, citations, refinements)`.
+  `paths/deep.py` accepts both 2-tuples (backward compat) and 3-tuples.
 
 ---
 
@@ -92,6 +116,10 @@ All use `asyncio.Semaphore(concurrency)` + spacing delay between calls.
   - `TavilyConfig.rate_limit_retries: int = 2`
   - `TavilyConfig.max_calls_per_session: int | None = None`
   - `ScholarSerperConfig.max_calls_per_session: int | None = None`
+- Refinement knobs live on `AgentConfig`:
+  - `max_refinement_depth: int = 2`
+  - `max_refinement_per_researcher: int = 3`
+  - `max_total_refinements_per_iteration: int = 6`
 
 ---
 
@@ -126,6 +154,9 @@ All use `asyncio.Semaphore(concurrency)` + spacing delay between calls.
    `os.environ` directly in tool code
 4. **MCP transport**: stdio by default; HTTP transport exists but is unused.
    If adding new MCP tools, keep the lazy-init pattern
+5. **Shared ToolRegistry is immutable at runtime**: `ToolRegistry.register()`
+   raises on duplicate names. Never register per-researcher tools on the shared
+   registry — use `ScopedToolRegistry` to wrap it (see Dynamic Refinement Pattern)
 
 ---
 

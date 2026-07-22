@@ -152,6 +152,47 @@ class ToolRegistry:
         return await _guarded()
 
 
+class ScopedToolRegistry:
+    """Wraps a parent ToolRegistry, adding per-scope tools.
+
+    Used by the researcher to inject the `refine` tool without mutating
+    the shared registry (which would raise on duplicate registration
+    when multiple researchers run in parallel).
+    """
+
+    def __init__(self, parent: ToolRegistry) -> None:
+        self._parent = parent
+        self._extra_tools: dict[str, ToolFunc] = {}
+        self._extra_schemas: list[dict] = []
+
+    def register(self, name: str, func: ToolFunc, schema: dict) -> None:
+        wrapped = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": schema.get("description", ""),
+                "parameters": schema.get("parameters", {}),
+            },
+        }
+        self._extra_tools[name] = func
+        self._extra_schemas.append(wrapped)
+
+    def names(self) -> list[str]:
+        return self._parent.names() + list(self._extra_tools)
+
+    def schemas(self) -> list[dict]:
+        return self._parent.schemas() + self._extra_schemas
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        if name in self._extra_tools:
+            try:
+                return await self._extra_tools[name](**arguments)
+            except Exception as e:
+                logger.exception("scoped tool %s raised", name)
+                return ToolResult(content="", error=f"{type(e).__name__}: {e}")
+        return await self._parent.call(name, arguments)
+
+
 async def run_with_tools(
     client,  # openai.AsyncOpenAI
     messages: list[dict],
@@ -246,4 +287,4 @@ async def run_with_tools(
     return messages, citations
 
 
-__all__ = ["ToolFunc", "ToolRegistry", "ToolResult", "run_with_tools"]
+__all__ = ["ScopedToolRegistry", "ToolFunc", "ToolRegistry", "ToolResult", "run_with_tools"]

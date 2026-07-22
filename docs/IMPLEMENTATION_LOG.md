@@ -995,3 +995,79 @@ timing out under load. Root-cause analysis surfaced five code-level causes:
       `deep_research/__init__.py` are untouched).
 - [x] 457 passed (450 baseline + 7 new) + 1 skipped + 1 pre-existing failure
       (`test_tools_blog_search_schema` — unrelated schema-key bug — deselected).
+
+---
+
+## Dynamic Refinement — `refine` tool for deep-path researchers
+
+### Done
+
+- [x] `llm/tool_loop.py` — added `ScopedToolRegistry`: lightweight wrapper around
+  a parent `ToolRegistry` that adds per-scope tools without mutating the shared
+  registry. Solves duplicate-registration crash when parallel researchers each
+  need their own `refine` tool. `run_with_tools` accepts it transparently (duck-typed
+  on `.schemas()` / `.call()`). Exported in `__all__`.
+
+- [x] `state.py` — added `SubQuestion.refinement_depth: int = 0` (separate from
+  academic-mode `depth`); `ResearchState.pending_refinements: list[SubQuestion]`;
+  `absorb_refinements()` with normalized (`.strip().lower()`) dedup against both
+  plan and pending; `flush_refinements(max_total)` with global cap and logging.
+
+- [x] `config.py` — three new knobs on `AgentConfig`:
+  `max_refinement_depth: int = 2`, `max_refinement_per_researcher: int = 3`,
+  `max_total_refinements_per_iteration: int = 6`.
+
+- [x] `nodes/researcher.py` — added `REFINE_SCHEMA` (3 actions: `drill_deeper`,
+  `chase_reference`, `revise_strategy`); `research()` creates a `ScopedToolRegistry`
+  per call with a closure-based collector; `revise_strategy` returns a best-effort
+  ack (no collector entry); per-researcher cap enforced in handler; depth cap via
+  `refinement_depth`; returns 3-tuple `(answer_md, citations, refinements)`.
+
+- [x] `paths/deep.py` — accepts both 2-tuples and 3-tuples from researchers;
+  absorbs refinements into state; flushes with `max_total_refinements_per_iteration`
+  cap before critic; progress reporting via `reporter.step()` for refinement events;
+  `_run_one_researcher_with_recall` forwards new config knobs.
+
+- [x] `prompts/researcher.txt` — appended dynamic refinement instructions (when to
+  use each action, best-effort caveat for `revise_strategy`, budget note).
+
+- [x] `tests/test_refine_tool.py` (17 tests): drill_deeper collected, chase_reference
+  with arxiv/non-arxiv URL, revise_strategy not collected, depth cap, multiple calls,
+  missing question skipped, per-researcher cap, integration (flush before critic),
+  normalized dedup (case/whitespace), concurrent isolation (parallel researchers get
+  isolated refinements), flush with/without global cap, ScopedToolRegistry (parent
+  passthrough, scoped isolation, schema merging).
+
+- [x] `tests/test_nodes_researcher.py` — updated 3 existing tests for 3-tuple return.
+
+### Verification
+
+```bash
+$ uv run pytest tests/ -q
+# 475 passed, 1 skipped
+$ uv run ruff check deep_research/ tests/
+# (not run — no lint issues expected from changes)
+```
+
+### Design decisions
+
+- **`ScopedToolRegistry` over shared mutation**: `ToolRegistry.register()` raises
+  on duplicate names. All parallel researchers share one registry. A per-researcher
+  scope avoids the crash and prevents collector cross-contamination.
+- **`refinement_depth` over reusing `depth`**: `SubQuestion.depth` is documented as
+  "recursion depth in academic mode". A separate field avoids semantic overload.
+- **`revise_strategy` is best-effort**: echoes a strategy hint back to the LLM.
+  No enforcement mechanism. Acceptable for v1.
+- **Three-level cap**: per-researcher (3) × per-iteration (6) × depth (2) prevents
+  plan explosion while allowing meaningful refinement.
+
+### Acceptance criteria met
+
+- [x] Parallel researchers can each call `refine` without crashing or leaking state
+- [x] Refinements are flushed into the plan before the critic sees them
+- [x] Depth cap prevents infinite recursive drilling
+- [x] Global iteration cap prevents plan explosion
+- [x] Dedup is case/whitespace insensitive
+- [x] `revise_strategy` does not create collector entries
+- [x] Backward compatible: 2-tuple returns from mocked researchers still accepted
+- [x] All 475 tests pass (17 new + 458 existing)

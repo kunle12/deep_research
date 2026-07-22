@@ -101,19 +101,31 @@ async def deep_research(
         )
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
-                # Distinguish a true timeout from other failures for triage.
                 rtype = "timeout" if isinstance(r, TimeoutError) else type(r).__name__
                 msg = str(r) or rtype
                 logger.warning("researcher for %s raised (%s): %s", sq.id, rtype, msg)
                 reporter.step("deep.research.fail", sq.id)
                 continue
-            if not isinstance(r, tuple) or len(r) != 2:
+            if not isinstance(r, tuple) or len(r) not in (2, 3):
                 logger.warning("researcher for %s returned unexpected type %r", sq.id, type(r).__name__)
                 reporter.step("deep.research.fail", sq.id)
                 continue
-            answer_md, citations = r
+            answer_md, citations = r[0], r[1]
             state.absorb_section(sq.id, citations, answer_md)
             reporter.step("deep.research.ok", f"{sq.id} ({len(citations)} cites)")
+            if len(r) == 3:
+                refinements = r[2]
+                state.absorb_refinements(refinements)
+                if refinements:
+                    logger.info("researcher %s emitted %d refinements", sq.id, len(refinements))
+                    reporter.step("deep.research.refine", f"{sq.id} (+{len(refinements)})")
+
+        flushed = state.flush_refinements(
+            max_total=config.agent.max_total_refinements_per_iteration,
+        )
+        if flushed:
+            logger.info("flushed %d refinements into plan", len(flushed))
+            reporter.step("deep.refine.flush", f"{len(flushed)} new sub-q(s)")
 
         # Critic
         reporter.phase("deep.critic", f"iter {iteration + 1}")
@@ -167,7 +179,7 @@ async def _run_one_researcher_with_recall(
     config: AgentTopConfig,
     tools: ToolRegistry,
     storage: Any | None,
-) -> tuple[str, list]:
+) -> tuple[str, list, list]:
     """Run the researcher for one sub-question with library recall for prior context."""
     prior_context = ""
     try:
@@ -181,6 +193,8 @@ async def _run_one_researcher_with_recall(
         sq, client, config.llm.text_model, tools,
         max_turns=config.agent.researcher_max_turns,
         prior_context=prior_context,
+        max_refinement_per_researcher=config.agent.max_refinement_per_researcher,
+        max_refinement_depth=config.agent.max_refinement_depth,
     )
 
 

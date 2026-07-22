@@ -169,9 +169,10 @@ class TestResearch:
         client = _fake_client_always(payload)
 
         reg = ToolRegistry()
-        answer, cites = await research(_sub_q(), client, "m", reg)
+        answer, cites, refs = await research(_sub_q(), client, "m", reg)
         assert "found results" in answer
         assert cites == []
+        assert refs == []
 
     @pytest.mark.asyncio
     async def test_parses_citations_from_final_message(self) -> None:
@@ -182,7 +183,7 @@ class TestResearch:
         client = _fake_client_always(payload)
 
         reg = ToolRegistry()
-        _, cites = await research(_sub_q(), client, "m", reg)
+        _, cites, _ = await research(_sub_q(), client, "m", reg)
         assert len(cites) == 1
         assert cites[0].url == "https://ref"
 
@@ -190,7 +191,7 @@ class TestResearch:
     async def test_non_json_fallback(self) -> None:
         client = _fake_client_always("plain text answer")
         reg = ToolRegistry()
-        answer, cites = await research(_sub_q(), client, "m", reg)
+        answer, cites, _ = await research(_sub_q(), client, "m", reg)
         assert "plain text answer" in answer
         assert cites == []
 

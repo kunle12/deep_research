@@ -229,6 +229,7 @@ deep_research/
 | **P12.5** | Web UI for browsing the library. | Visual library browser. | optional / deferred |
 | **P13** | Library-first recall — prior-knowledge injection before web search. Uses existing FTS5 index over prior analyses. Every path checks the library before hitting the web; delta-only fetching. | `nodes/recall.py` + integration into deep + academic + quick paths. | done |
 | **Scholar** | Google Scholar discovery backend (Serper primary, SearXNG fallback). Parallel arxiv+scholar seed gathering in academic path. Abstract-only analysis for paywalled hits. | `scholar_search` tool + academic-path integration + abstract-only leaf-node handling. | done |
+| **Refine** | Dynamic refinement during deep-path research. Researchers emit `refine` tool calls mid-loop (drill_deeper, chase_reference, revise_strategy). Refinements collected via `ScopedToolRegistry`, absorbed into state, flushed into plan before critic. Three-level cap hierarchy. | `ScopedToolRegistry` + `refine` tool + state/config/prompt changes + 17 tests. | done |
 
 > **Rule**: any new phase sub-rows must be added to THIS table. The detailed P10.0 / P10.5a / P10.5b / P10.6 sections later in this document are *expositions* of the rows above — they do not introduce new phases. If the table and the prose disagree, the table wins.
 
@@ -252,6 +253,9 @@ agent:
   researcher_timeout_s: 3600      # per-researcher wall-clock cap (PDF fetch + LLM turns)
   researcher_max_turns: 12        # turn budget; must satisfy max_turns × llm.timeout_s ≪ researcher_timeout_s
   tool_timeout_s: 120.0          # per-tool-call hard-kill timeout; 0 disables
+  max_refinement_depth: 2        # max recursive drill-deeper nesting levels
+  max_refinement_per_researcher: 3  # max refine calls per single researcher
+  max_total_refinements_per_iteration: 6  # global cap per iteration
   classifier:
     enabled: true
     force_path: null  # null | "quick" | "deep" | "academic" | "url_source"

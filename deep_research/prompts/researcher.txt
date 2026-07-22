@@ -30,4 +30,22 @@ Return (after tool calls conclude) a JSON object:
   ]
 }}
 
+## Dynamic refinement (optional)
+
+You have access to a `refine` tool. Use it when:
+
+1. **chase_reference** — you found an article/paper that is clearly important
+   and should be investigated as its own sub-question. Pass its URL and a
+   brief rationale.
+2. **drill_deeper** — you uncovered an interesting subtopic that deserves
+   its own dedicated research. Provide the new question and any hints.
+3. **revise_strategy** — you realize the current approach won't work
+   (e.g., the sources don't match the sub-question). Provide a revised
+   strategy in the rationale. Note: this is a best-effort hint to yourself;
+   it does not change any system configuration.
+
+Calling `refine` does NOT end your work — you still need to answer the
+current sub-question. Refinements take effect in the next iteration.
+You may call `refine` at most a few times per sub-question.
+
 Sub-question: <<{question}>>
