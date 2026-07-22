@@ -36,6 +36,7 @@ Design choices:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shutil
 from typing import Any
@@ -146,61 +147,50 @@ class _MCPClientCtx:
     def __init__(self, command: str, args: list[str]) -> None:
         self._command = command
         self._args = list(args)
-
-        # We use an ExitStack-style wrapper since stdio_client + ClientSession
-        # are both `async with`. We keep them directly so close() can drive
-        # teardown without relying on AsyncExitStack's exception trails.
-        self._read: Any | None = None
-        self._write: Any | None = None
+        self._stack: contextlib.AsyncExitStack | None = None
         self._session: Any | None = None
-        self._stdio_cm: Any | None = None
-        self._session_cm: Any | None = None
 
     async def __aenter__(self) -> _MCPClientCtx:
         from mcp.client.session import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
+        self._stack = contextlib.AsyncExitStack()
         params = StdioServerParameters(command=self._command, args=self._args)
-        self._stdio_cm = stdio_client(params)
         try:
-            transport = await self._stdio_cm.__aenter__()
-            self._read, self._write = transport
+            transport = await self._stack.enter_async_context(stdio_client(params))
+            read, write = transport
+            session = await self._stack.enter_async_context(ClientSession(read, write))
+            await asyncio.wait_for(session.initialize(), timeout=_INIT_TIMEOUT_S)
+            self._session = session
         except FileNotFoundError as e:
+            await self._stack.aclose()
+            self._stack = None
+            self._session = None
             raise _MCPStartupError(
                 f"failed to spawn MCP subprocess: {type(e).__name__}: {e}. "
                 f"Command was: {self._command} {self._args!r}. "
                 "Is `npx` / Node.js installed? See README."
             ) from e
         except OSError as e:
+            await self._stack.aclose()
+            self._stack = None
+            self._session = None
             raise _MCPStartupError(
                 f"OS error spawning MCP subprocess: {type(e).__name__}: {e}. "
                 "See README's browser setup section."
             ) from e
-
-        self._session_cm = ClientSession(self._read, self._write)
-        try:
-            self._session = await self._session_cm.__aenter__()
-        except Exception as e:
-            # Tear down the stdio transport we already started
-            await self._stdio_cm.__aexit__(type(e), e, e.__traceback__)
-            raise _MCPStartupError(
-                f"failed to create MCP ClientSession: {type(e).__name__}: {e}"
-            ) from e
-
-        try:
-            await asyncio.wait_for(self._session.initialize(), timeout=_INIT_TIMEOUT_S)
-        except TimeoutError:
-            await self._session_cm.__aexit__(None, None, None)
-            await self._stdio_cm.__aexit__(None, None, None)
+        except TimeoutError as e:
+            await self._stack.aclose()
+            self._stack = None
             self._session = None
             raise _MCPStartupError(
                 f"Playwright MCP server did not initialize within {_INIT_TIMEOUT_S:.0f}s. "
                 "Verify `npx -y @playwright/mcp@latest` works on your host "
                 "(first run downloads chromium; subsequent runs are faster)."
-            )
+            ) from e
         except Exception as e:
-            await self._session_cm.__aexit__(type(e), e, e.__traceback__)
-            await self._stdio_cm.__aexit__(type(e), e, e.__traceback__)
+            await self._stack.aclose()
+            self._stack = None
             self._session = None
             raise _MCPStartupError(
                 f"MCP initialize() failed: {type(e).__name__}: {e}"
@@ -209,23 +199,13 @@ class _MCPClientCtx:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        # Tear down in reverse order. Swallow teardown errors so we don't
-        # mask the original exception (if any) that triggered __aexit__.
-        if self._session_cm is not None:
+        if self._stack is not None:
             try:
-                await self._session_cm.__aexit__(exc_type, exc, tb)
+                await self._stack.aclose()
             except Exception as e:
-                logger.debug("MCP ClientSession teardown raised: %s: %s", type(e).__name__, e)
-            self._session_cm = None
-            self._session = None
-        if self._stdio_cm is not None:
-            try:
-                await self._stdio_cm.__aexit__(exc_type, exc, tb)
-            except Exception as e:
-                logger.debug("stdio_client teardown raised: %s: %s", type(e).__name__, e)
-            self._stdio_cm = None
-            self._read = None
-            self._write = None
+                logger.debug("MCP teardown raised: %s: %s", type(e).__name__, e)
+            self._stack = None
+        self._session = None
 
     async def call(self, name: str, arguments: dict[str, Any]) -> Any:
         """Call a remote MCP tool. Returns the CallToolResult from the session."""

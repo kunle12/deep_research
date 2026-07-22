@@ -28,9 +28,9 @@ def registry() -> ToolRegistry:
 async def test_blog_search_schema(registry, config):
     await register(registry, config)
     schemas = registry.schemas()
-    assert any(s["name"] == "blog_search" for s in schemas)
-    blog_schema = next(s for s in schemas if s["name"] == "blog_search")
-    assert "query" in blog_schema["parameters"]["properties"]
+    assert any(s["function"]["name"] == "blog_search" for s in schemas)
+    blog_schema = next(s for s in schemas if s["function"]["name"] == "blog_search")
+    assert "query" in blog_schema["function"]["parameters"]["properties"]
 
 
 @pytest.mark.asyncio

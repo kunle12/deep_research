@@ -93,12 +93,10 @@ async def _tavily_with_retry(
     ``TimeoutError`` — other errors (bad key, forbidden) propagate immediately
     so the caller can fall through to SearXNG.
     """
-    last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
             return await _tavily_search(query, max_results, api_key, search_depth)
         except TavilyKeylessLimitError as e:
-            last_exc = e
             retry_after = e.retry_after_seconds or 2 ** attempt
             logger.warning(
                 "Tavily keyless limit hit (attempt %d/%d), retrying after %ds",
@@ -106,15 +104,13 @@ async def _tavily_with_retry(
             )
             await asyncio.sleep(retry_after)
         except UsageLimitExceededError as e:
-            last_exc = e
-            backoff = 2 ** attempt  # 1, 2, 4 sec
+            backoff = 2 ** attempt
             logger.warning(
                 "Tavily rate limit (attempt %d/%d), backing off %ds",
                 attempt + 1, retries + 1, backoff,
             )
             await asyncio.sleep(backoff)
         except TimeoutError as e:
-            last_exc = e
             backoff = 2 ** attempt
             logger.warning(
                 "Tavily timeout (attempt %d/%d), backing off %ds",
@@ -122,7 +118,6 @@ async def _tavily_with_retry(
             )
             await asyncio.sleep(backoff)
         except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-            last_exc = e
             # Treat HTTP-level errors as transient; retry once
             if attempt < retries:
                 await asyncio.sleep(2 ** attempt)
@@ -132,8 +127,6 @@ async def _tavily_with_retry(
             # Non-recoverable Tavily errors (bad key, forbidden, bad request) —
             # don't retry, let caller fall through to SearXNG.
             raise
-    if last_exc is not None:
-        raise last_exc
     raise RuntimeError("Tavily retry loop exited unexpectedly")
 
 

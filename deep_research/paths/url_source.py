@@ -63,13 +63,8 @@ _DEFAULT_TRIGGER_PHRASES = [
     "check the claims",
     "fact-check",
     "fact check",
-    "comparison of",
+    "comparison",
     "compare to",
-    "alternative",
-    "alternatives",
-    "competing",
-    "what else",
-    "what other",
 ]
 
 
@@ -123,12 +118,7 @@ async def _fetch_arxiv_source(
                 page_urls = parse_rendered_pages(render)
     if not text:
         text = meta_res.content  # at least show meta as fallback content
-    if cit is not None:
-        citations = [cit]
-    elif meta_res.citations:
-        citations = [meta_res.citations[0]]
-    else:
-        citations = []
+    citations = list(meta_res.citations)
 
     # Archive PDF in library if writer is configured
     if isinstance(writer, LibraryWriter) and pdf_path and run_id:

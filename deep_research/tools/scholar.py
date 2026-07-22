@@ -271,6 +271,58 @@ async def _searxng_search(
 
 
 # ---------------------------------------------------------------------------
+# Rate-limit helper
+# ---------------------------------------------------------------------------
+
+
+class _RateLimiter:
+    """Per-backend rate-limit semaphore + inter-call spacing delay."""
+
+    def __init__(self, concurrency: int, request_delay_s: float) -> None:
+        self._sem = asyncio.Semaphore(concurrency)
+        self._lock = asyncio.Lock()
+        self._last_call: list[float] = [0.0]
+        self._request_delay_s = request_delay_s
+
+    async def __call__(self, coro_factory, *args):
+        async with self._sem:
+            delay = 0.0
+            async with self._lock:
+                now = time.monotonic()
+                elapsed = now - self._last_call[0]
+                if elapsed < self._request_delay_s:
+                    delay = self._request_delay_s - elapsed
+                self._last_call[0] = time.monotonic() + delay
+            if delay > 0:
+                await asyncio.sleep(delay)
+            return await coro_factory(*args)
+
+
+async def _backoff_retry(rate_limiter, coro_factory, *args, retries: int = 1):
+    """Single retry on 429/5xx with exponential backoff (1s, 2s)."""
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return await rate_limiter(coro_factory, *args)
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            status = e.response.status_code if e.response is not None else 0
+            if status not in {429, 500, 502, 503, 504} or attempt >= retries:
+                raise
+            backoff = 2 ** attempt
+            logger.warning("scholar search HTTP %d, backing off %ds", status, backoff)
+            await asyncio.sleep(backoff)
+        except httpx.HTTPError as e:
+            last_exc = e
+            if attempt >= retries:
+                raise
+            await asyncio.sleep(2 ** attempt)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("scholar search retry loop exited unexpectedly")
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -281,65 +333,13 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         logger.info("scholar disabled — not registering tools")
         return
 
-    # Per-backend rate-limit semaphore + inter-call spacing delay
-    # Separate semaphores so Serper and SearXNG don't block each other
-    _serper_sem = asyncio.Semaphore(cfg.concurrency)
-    _searxng_sem = asyncio.Semaphore(cfg.concurrency)
-    _serper_lock = asyncio.Lock()
-    _searxng_lock = asyncio.Lock()
-    _serper_last_call: list[float] = [0.0]
-    _searxng_last_call: list[float] = [0.0]
+    serper_limiter = _RateLimiter(cfg.concurrency, cfg.request_delay_s)
+    searxng_limiter = _RateLimiter(cfg.concurrency, cfg.request_delay_s)
 
     # Proactive Serper quota tracking
     _serper_call_count: int = 0
     _serper_call_lock = asyncio.Lock()
     _serper_max_calls = cfg.serper.max_calls_per_session
-
-    async def _rate_limited(sem: asyncio.Semaphore, lock: asyncio.Lock, last_call_ref: list, delay_s: float, coro_factory, *args):
-        """Wrap a tool call with concurrency semaphore + spacing delay.
-
-        Lock is held only to atomically read-and-project the last-call
-        timestamp; the actual sleep happens outside the lock so concurrent
-        callers under the semaphore can queue up with their own delay.
-        """
-        async with sem:
-            delay = 0.0
-            async with lock:
-                now = time.monotonic()
-                elapsed = now - last_call_ref[0]
-                if elapsed < delay_s:
-                    delay = delay_s - elapsed
-                # Project timestamp forward so concurrent callers
-                # see the occupied slot and compute their own delay.
-                last_call_ref[0] = time.monotonic() + delay
-            if delay > 0:
-                await asyncio.sleep(delay)
-            result = await coro_factory(*args)
-            return result
-
-    async def _backoff_retry(sem, lock, last_call_ref, delay_s, coro_factory, *args, retries: int = 1):
-        """Single retry on 429/5xx with exponential backoff (1s, 2s).
-        Semaphore is released during backoff sleep."""
-        last_exc: Exception | None = None
-        for attempt in range(retries + 1):
-            try:
-                return await _rate_limited(sem, lock, last_call_ref, delay_s, coro_factory, *args)
-            except httpx.HTTPStatusError as e:
-                last_exc = e
-                status = e.response.status_code if e.response is not None else 0
-                if status not in {429, 500, 502, 503, 504} or attempt >= retries:
-                    raise
-                backoff = 2 ** attempt  # 1, 2 sec
-                logger.warning("scholar search HTTP %d, backing off %ds", status, backoff)
-                await asyncio.sleep(backoff)
-            except httpx.HTTPError as e:
-                last_exc = e
-                if attempt >= retries:
-                    raise
-                await asyncio.sleep(2 ** attempt)
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("scholar search retry loop exited unexpectedly")
 
     async def _search(query: str, max_results: int = 10, **_: Any) -> ToolResult:
         nonlocal _serper_call_count
@@ -352,27 +352,18 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         async def _primary():
             async with httpx.AsyncClient(timeout=cfg.serper.timeout_s) as client:
                 return await _serper_search(
-                    client,
-                    cfg.serper.endpoint,
-                    primary_key or "",
-                    query,
-                    max_results,
-                    cfg.year_from,
-                    cfg.year_to,
+                    client, cfg.serper.endpoint, primary_key or "",
+                    query, max_results, cfg.year_from, cfg.year_to,
                 )
 
         async def _fallback():
             async with httpx.AsyncClient(timeout=cfg.searxng.timeout_s) as client:
                 return await _searxng_search(
-                    client,
-                    cfg.searxng.url,
-                    query,
-                    max_results,
-                    cfg.year_from,
-                    cfg.year_to,
+                    client, cfg.searxng.url, query, max_results,
+                    cfg.year_from, cfg.year_to,
                 )
 
-        # Pick ordered backends. Primary must have its required env/credentials.
+        # Pick ordered backends
         ordered: list[tuple[str, Any]] = []
         if cfg.primary == "serper" and primary_key:
             ordered.append(("serper", _primary))
@@ -387,38 +378,29 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         if not ordered:
             return ToolResult(
                 content="",
-                error=(
-                    "scholar.enabled but no usable backend: set SERPER_API_KEY "
-                    "or run a SearXNG instance with the `scholar` engine enabled."
-                ),
+                error="scholar.enabled but no usable backend: set SERPER_API_KEY "
+                "or run a SearXNG instance with the `scholar` engine enabled.",
             )
 
         citations: list[Citation] = []
         last_err: str = ""
         for name, factory in ordered:
             try:
-                # Proactive Serper quota check — skip to SearXNG if exhausted
-                # Lock ensures read + increment are atomic under concurrent calls
                 if name == "serper":
                     async with _serper_call_lock:
                         if _serper_max_calls is not None and _serper_call_count >= _serper_max_calls:
                             logger.info(
-                                "Serper call quota exhausted (%d >= %d), falling back to SearXNG",
+                                "Serper call quota exhausted (%d >= %d), falling back",
                                 _serper_call_count, _serper_max_calls,
                             )
-                            continue  # skip Serper, try next backend
+                            continue
                         _serper_call_count += 1
-                sem = _serper_sem if name == "serper" else _searxng_sem
-                lock = _serper_lock if name == "serper" else _searxng_lock
-                last_call = _serper_last_call if name == "serper" else _searxng_last_call
-                citations = await _backoff_retry(sem, lock, last_call, cfg.request_delay_s, factory)
+                rate_limiter = serper_limiter if name == "serper" else searxng_limiter
+                citations = await _backoff_retry(rate_limiter, factory)
                 if citations:
                     logger.info("scholar_search %s -> %d results (via %s)",
                                 repr(query), len(citations), name)
                     break
-                # Backend returned successfully but no hits — stop here rather
-                # than falling through to fallback (the query genuinely matched
-                # nothing in this engine).
                 logger.info("scholar_search %s -> 0 hits via %s (no fallback)",
                             repr(query), name)
                 break

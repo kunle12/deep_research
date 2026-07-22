@@ -161,6 +161,9 @@ def _is_pdf(ctype: str, url: str) -> bool:
     """
     if ctype == "application/pdf":
         return True
+    # application/octet-stream is ambiguous — check URL suffix
+    if ctype == "application/octet-stream":
+        return url.lower().split("?", 1)[0].split("#", 1)[0].endswith(".pdf")
     # If the server sent a non-empty Content-Type that isn't PDF, trust it.
     if ctype:
         return False

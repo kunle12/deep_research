@@ -62,7 +62,8 @@ class ClassifierConfig(BaseModel):
     # If set, every query routes here regardless of classifier output.
     # One of: null | "quick" | "deep" | "academic" | "url_source"
     force_path: Literal["quick", "deep", "academic", "url_source"] | None = None
-    min_query_length_for_deep: int = 30  # short queries default to quick
+    # Deprecated: unused by the classifier logic. Kept for backward compat.
+    min_query_length_for_deep: int = 30
 
 
 class AgentConfig(BaseModel):
@@ -230,7 +231,10 @@ class FetchPageConfig(BaseModel):
     min_content_chars_for_browser_fallback: int = 500
 
 
+
 class CacheConfig(BaseModel):
+    """Deprecated: kept for backward compat. The diskcache_dir is only used
+    for directory creation; the config object is otherwise unused."""
     model_config = ConfigDict(extra="forbid")
 
     diskcache_dir: str = "./.cache/misc"
@@ -241,6 +245,7 @@ class OutputConfig(BaseModel):
 
     format: Literal["markdown", "json"] = "markdown"
     include_citations_bibliography: bool = True
+    # Deprecated: unused by the renderer. Kept for backward compat.
     citation_style: Literal["inline_bare_url", "footnote"] = "inline_bare_url"
 
 

@@ -26,12 +26,17 @@ class RefreshScheduler:
     def __init__(self, config: AgentTopConfig) -> None:
         self._config = config
         self._shutdown_event = asyncio.Event()
+        self._backend = None
+
+    async def _ensure_backend(self):
+        if self._backend is None:
+            self._backend = await get_backend(self._config)
+        return self._backend
 
     async def _run_refresh_cycle(self) -> None:
         """Run one full refresh cycle across all source types."""
-        backend = None
         try:
-            backend = await get_backend(self._config)
+            backend = await self._ensure_backend()
             writer = LibraryWriter(backend, self._config.pdl.root_dir)
             for source_type in ("arxiv", "blog", "html"):
                 result = await writer.run_refresh_job("source_type", source_type)
@@ -44,25 +49,33 @@ class RefreshScheduler:
                 )
         except Exception as e:
             logger.error("refresh cycle failed: %s: %s", type(e).__name__, e)
-        finally:
-            if backend is not None:
-                await backend.close()
+            # Reset backend so next cycle creates a fresh connection
+            if self._backend is not None:
+                try:
+                    await self._backend.close()
+                except Exception:
+                    pass
+                self._backend = None
 
     async def run(self) -> None:
         """Run the scheduler loop until shutdown is requested."""
         interval_s = _DEFAULT_CHECK_INTERVAL_HOURS * 3600
         logger.info("refresh scheduler starting (interval=%ds)", interval_s)
-        while not self._shutdown_event.is_set():
-            try:
-                await self._run_refresh_cycle()
-            except Exception as e:
-                logger.error("refresh cycle error: %s", e)
-            # Wait for interval or shutdown signal
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(),
-                    timeout=interval_s,
-                )
+        try:
+            while not self._shutdown_event.is_set():
+                try:
+                    await self._run_refresh_cycle()
+                except Exception as e:
+                    logger.error("refresh cycle error: %s", e)
+                # Wait for interval or shutdown signal
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(),
+                        timeout=interval_s,
+                    )
+        finally:
+            if self._backend is not None:
+                await self._backend.close()
 
     async def shutdown(self) -> None:
         self._shutdown_event.set()

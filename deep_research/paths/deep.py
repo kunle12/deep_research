@@ -78,24 +78,27 @@ async def deep_research(
         )
         # P13: recall prior context from library before researcher dispatch
         storage = writer.storage if isinstance(writer, LibraryWriter) else None
-        # Wrap each researcher in a Task so we can explicitly cancel on timeout.
-        # asyncio.timeout (3.11+) provides cleaner cancellation propagation
-        # than wait_for: any sub-await observes CancelledError promptly.
-        # Inner ToolRegistry tool calls also have per-call asyncio.timeout,
-        # so a hung tool surfaces as a clean error result rather than dead
-        # weight. Sync work wrapped in run_in_executor that doesn't honour
-        # cancellation gets orphaned but the pipeline still unblocks the
-        # whole batch after `timeout` seconds — without ever blocking on
-        # the legacy run_in_executor return.
-        raw_tasks = [_run_one_researcher_with_recall(sq, client, config, tools, storage) for sq in pending]
-        tasks = [asyncio.create_task(t) for t in raw_tasks]
         timeout = config.agent.researcher_timeout_s
-        # Each task is wrapped individually: when a timeout fires on one,
-        # only that task is cancelled (its peers keep running); we still
-        # collect the rest via gather(return_exceptions=True). This matches
-        # the original `wait_for(t, timeout=...)` array contract exactly.
-        wrapped = [asyncio.wait_for(t, timeout=timeout) for t in tasks]
-        results = await asyncio.gather(*wrapped, return_exceptions=True)
+        # Each researcher runs with its own timeout. Individual tool calls
+        # inside the researcher already have per-call timeouts via
+        # ToolRegistry.call, so a hung tool surfaces as a clean error result
+        # rather than dead weight. If the researcher's total wall-clock
+        # exceeds timeout, we catch TimeoutError and skip that result.
+        # Sync work wrapped in run_in_executor that doesn't honour
+        # cancellation gets orphaned but the pipeline unblocks promptly.
+        async def _run_one_with_timeout(sq):
+            try:
+                return await asyncio.wait_for(
+                    _run_one_researcher_with_recall(sq, client, config, tools, storage),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                logger.warning("researcher for %s timed out after %ds", sq.id, timeout)
+                return TimeoutError(f"researcher timed out after {timeout}s")
+        results = await asyncio.gather(
+            *[_run_one_with_timeout(sq) for sq in pending],
+            return_exceptions=True,
+        )
         for sq, r in zip(pending, results):
             if isinstance(r, Exception):
                 # Distinguish a true timeout from other failures for triage.

@@ -67,10 +67,12 @@ async def run_research(
         )
 
     # Extract URL for url_source override (needs pre-check before async with)
+    override_url: str | None = None
+    override_remainder: str | None = None
     if path_override == "url_source":
-        url = extract_first_url(query) or query.strip()
-        remainder = strip_url_from_query(query, url) if url != query.strip() else ""
-        if not url.startswith(("http://", "https://")):
+        override_url = extract_first_url(query) or query.strip()
+        override_remainder = strip_url_from_query(query, override_url) if override_url != query.strip() else ""
+        if not override_url.startswith(("http://", "https://")):
             reporter.phase("error", "--url-source without URL")
             reporter.complete()
             return Report(
@@ -81,83 +83,99 @@ async def run_research(
 
     # Single async with block for LLM client + tools — all routing happens inside
     async with LLMClient(config.llm) as client, _build_tools(config) as tools:
-        # Determine classified query based on priority: override > force_path > URL > classifier
-        classified: ClassifiedQuery | None = None
-        url_remainder: tuple[str, str] | None = None
-
-        # Step 1 — explicit override (from CLI flag) wins
-        if path_override:
-            logger.info("path override: %s", path_override)
-            reporter.phase("routing", f"--{path_override} override")
-            if path_override == "url_source":
-                url_remainder = (url, remainder)
-            else:
-                classified = ClassifiedQuery(
-                    path=QueryPlan(path_override),
-                    rationale=f"explicit --{path_override} override",
-                    search_hint=query,
-                )
-                reporter.phase(path_override, f"--{path_override} override")
-
-        # Step 2 — config force_path (yaml) second-highest priority
-        elif config.agent.classifier.force_path:
-            force = config.agent.classifier.force_path
-            logger.info("config force_path: %s", force)
-            reporter.phase("routing", f"config.force_path = {force!r}")
-            classified = ClassifiedQuery(
-                path=QueryPlan(force),
-                rationale=f"config.force_path = {force!r}",
-                search_hint=query,
-            )
-
-        # Step 3 — URL detection routes to url_source
-        else:
-            detected_url = extract_first_url(query)
-            if detected_url and config.url_source.enabled:
-                remainder = strip_url_from_query(query, detected_url)
-                logger.info("URL detected: %s (remainder: %r)", detected_url, remainder)
-                reporter.phase("url_source", f"auto-detected URL: {detected_url[:80]}")
-                url_remainder = (detected_url, remainder)
-
-        # Dispatch
-        if url_remainder is not None:
-            report = await _dispatch_url_source(
-                url_remainder[0], url_remainder[1], client, tools, config, reporter,
-                writer=writer, run_id=run_id,
-            )
-        elif classified is not None:
-            report = await _dispatch_classified(
-                classified, query, client, tools, config, reporter,
-                writer=writer, run_id=run_id,
-            )
-        else:
-            # Step 4 — classifier (or default to deep if disabled)
-            if not config.agent.classifier.enabled:
-                logger.info("classifier disabled; defaulting to deep.")
-                reporter.phase("deep", "classifier disabled; defaulting to deep")
-                classified = ClassifiedQuery(
-                    path=QueryPlan.deep,
-                    rationale="classifier disabled by config",
-                    search_hint=query,
-                )
-            else:
-                reporter.phase("routing", "classifier LLM call")
-                from deep_research.paths import classify_query
-
-                classified = await classify_query(query, client, config.llm.text_model)
-                logger.info("classifier returned path=%s rationale=%r", classified.path, classified.rationale)
-                reporter.phase(
-                    classified.path.value if hasattr(classified.path, "value") else str(classified.path),
-                    f"chosen by classifier: {classified.rationale[:80]}",
-                )
-            report = await _dispatch_classified(
-                classified, query, client, tools, config, reporter,
-                writer=writer, run_id=run_id,
-            )
+        report = await _route_and_dispatch(
+            query, path_override, override_url, override_remainder,
+            client, tools, config, reporter, writer, run_id,
+        )
 
     reporter.complete()
     await _archive_report(report, writer, run_id)
     return report
+
+
+async def _route_and_dispatch(
+    query: str,
+    path_override: PathOverride | None,
+    override_url: str | None,
+    override_remainder: str | None,
+    client,
+    tools: ToolRegistry,
+    config: AgentTopConfig,
+    reporter: ProgressReporter,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
+) -> Report:
+    """Determine route and dispatch to the correct path.
+
+    Priority: path_override > force_path > URL detection > classifier > deep default.
+    """
+    # Step 1 — explicit override (from CLI flag) wins
+    if path_override:
+        logger.info("path override: %s", path_override)
+        if path_override == "url_source":
+            assert override_url is not None  # validated above
+            reporter.phase("routing", "--url_source override")
+            return await _dispatch_url_source(
+                override_url, override_remainder or "",
+                client, tools, config, reporter, writer=writer, run_id=run_id,
+            )
+        reporter.phase(path_override, f"--{path_override} override")
+        classified = ClassifiedQuery(
+            path=QueryPlan(path_override),
+            rationale=f"explicit --{path_override} override",
+            search_hint=query,
+        )
+        return await _dispatch_classified(
+            classified, query, client, tools, config, reporter, writer=writer, run_id=run_id,
+        )
+
+    # Step 2 — config force_path (yaml) second-highest priority
+    if config.agent.classifier.force_path:
+        force = config.agent.classifier.force_path
+        logger.info("config force_path: %s", force)
+        reporter.phase("routing", f"config.force_path = {force!r}")
+        classified = ClassifiedQuery(
+            path=QueryPlan(force),
+            rationale=f"config.force_path = {force!r}",
+            search_hint=query,
+        )
+        return await _dispatch_classified(
+            classified, query, client, tools, config, reporter, writer=writer, run_id=run_id,
+        )
+
+    # Step 3 — URL detection routes to url_source
+    detected_url = extract_first_url(query)
+    if detected_url and config.url_source.enabled:
+        remainder = strip_url_from_query(query, detected_url)
+        logger.info("URL detected: %s (remainder: %r)", detected_url, remainder)
+        reporter.phase("url_source", f"auto-detected URL: {detected_url[:80]}")
+        return await _dispatch_url_source(
+            detected_url, remainder, client, tools, config, reporter,
+            writer=writer, run_id=run_id,
+        )
+
+    # Step 4 — classifier (or default to deep if disabled)
+    if not config.agent.classifier.enabled:
+        logger.info("classifier disabled; defaulting to deep.")
+        reporter.phase("deep", "classifier disabled; defaulting to deep")
+        classified = ClassifiedQuery(
+            path=QueryPlan.deep,
+            rationale="classifier disabled by config",
+            search_hint=query,
+        )
+    else:
+        reporter.phase("routing", "classifier LLM call")
+        from deep_research.paths import classify_query
+
+        classified = await classify_query(query, client, config.llm.text_model)
+        logger.info("classifier returned path=%s rationale=%r", classified.path, classified.rationale)
+        reporter.phase(
+            classified.path.value if hasattr(classified.path, "value") else str(classified.path),
+            f"chosen by classifier: {classified.rationale[:80]}",
+        )
+    return await _dispatch_classified(
+        classified, query, client, tools, config, reporter, writer=writer, run_id=run_id,
+    )
 
 
 async def _dispatch_classified(
@@ -224,10 +242,11 @@ async def _archive_report(report: Report, writer: LibraryWriter | None, run_id: 
             await writer.archive_report(report, run_id)
         except Exception as e:
             logger.warning("archive_report failed: %s: %s", type(e).__name__, e)
-        try:
-            await writer.storage.close()
-        except Exception as e:
-            logger.warning("storage close failed: %s: %s", type(e).__name__, e)
+        finally:
+            try:
+                await writer.storage.close()
+            except Exception as e:
+                logger.warning("storage close failed: %s: %s", type(e).__name__, e)
 
 
 __all__ = ["run_research"]

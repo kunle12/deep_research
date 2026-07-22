@@ -113,6 +113,7 @@ async def academic_research(
 
     # ---- per-paper concurrency ---------------------------------------------
     sem = asyncio.Semaphore(cfg.concurrency)
+    claim_lock = asyncio.Lock()
 
     async def _analyze_and_recurse(node: PaperNode, depth: int, parent: str | None) -> None:
         nonlocal processed_count
@@ -122,12 +123,13 @@ async def academic_research(
                 logger.debug("arxiv_id %s already processed; skipping", base)
                 return
 
-            # Claim slot BEFORE analysis using atomic counter to avoid TOCTOU race.
-            if processed_count >= cfg.max_papers:
-                logger.info("max_papers=%d reached; skipping enqueued %s", cfg.max_papers, base)
-                return
-            processed.add(base)
-            processed_count += 1
+            # Claim slot atomically under lock to prevent TOCTOU race
+            async with claim_lock:
+                if processed_count >= cfg.max_papers:
+                    logger.info("max_papers=%d reached; skipping enqueued %s", cfg.max_papers, base)
+                    return
+                processed.add(base)
+                processed_count += 1
 
             # node already added to graph by _gather_seeds OR by the enqueuer
             graph.add_node(node)

@@ -19,7 +19,7 @@ agent:
   classifier:
     enabled: true
     force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"
-    min_query_length_for_deep: 30
+    # min_query_length_for_deep: 30  # deprecated — unused field
 
 search:
   primary: "tavily"

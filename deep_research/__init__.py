@@ -35,8 +35,6 @@ from deep_research.state import (
     ToolName,
 )
 
-__version__ = "0.1.0"
-
 __all__ = [
     "AcademicState",
     "AgentTopConfig",
@@ -58,6 +56,5 @@ __all__ = [
     "SourceAnalysis",
     "SubQuestion",
     "ToolName",
-    "__version__",
     "run_research",
 ]
