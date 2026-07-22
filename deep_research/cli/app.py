@@ -173,7 +173,9 @@ def main(
     )
 
     import asyncio
+    import time
 
+    t0 = time.monotonic()
     rich_reporter = RichProgressReporter(
         # `enabled=None` lets the reporter auto-disable when stdout is not a
         # TTY (piped to a file, captured by another process, run under a
@@ -244,6 +246,16 @@ def main(
                 f"[yellow]No citations in report; wrote empty JSON array to {cite_path}[/yellow]"
             )
             Path(cite_path).write_text(cits_json, encoding="utf-8")
+
+    elapsed = time.monotonic() - t0
+    mins, secs = divmod(int(elapsed), 60)
+    err_console.print(
+        f"[bold green]Done.[/bold green] "
+        f"path=[bold]{report.path}[/bold]  "
+        f"iterations={report.iterations}  "
+        f"citations={len(report.citations)}  "
+        f"time={mins}m{secs:02d}s"
+    )
 
 
 def _apply_flag_overrides(
