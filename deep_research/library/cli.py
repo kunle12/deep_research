@@ -1,7 +1,7 @@
 """Library CLI — Personal Digital Library management commands.
 
-P12(d): implemented. Commands: ls, find, show, tag, stats, prune, export-bibtex,
-glossary, refresh.
+P12(d): implemented. Commands: ls, find, show, tag, stats, prune, delete,
+export-bibtex, glossary, refresh.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -48,7 +49,10 @@ def library_ls(
         # List all artifacts (no direct list method, so we list reports + use find)
         reports = await backend.list_reports(limit=limit)
         for r in reports:
-            typer.echo(f"{r.run_id[:16]}  {r.path_taken:8s}  {r.original_query[:60]}")
+            started = r.started_at or "(unknown)"
+            typer.echo(
+                f"{started[:19]}  {r.run_id[:16]}  {r.path_taken:8s}  {r.original_query[:60]}"
+            )
         await backend.close()
 
     asyncio.run(_run())
@@ -145,6 +149,60 @@ def library_stats(
     asyncio.run(_run())
 
 
+@library_app.command("delete")
+def library_delete(
+    run_id: str = typer.Argument(..., help="Run ID (or prefix) of the report to delete"),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Delete a single report and its files from the library."""
+
+    async def _run():
+        cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        # Find matching report(s)
+        reports = await backend.list_reports(limit=1000)
+        matched = [r for r in reports if r.run_id.startswith(run_id)]
+        if len(matched) == 0:
+            typer.echo(f"No report found with run_id starting with '{run_id}'.")
+            await backend.close()
+            return
+        if len(matched) > 1:
+            typer.echo(f"Multiple reports match prefix '{run_id}':")
+            for r in matched:
+                typer.echo(f"  {r.run_id[:16]}  {r.started_at[:19]}  {r.original_query[:60]}")
+            typer.echo("Use a longer prefix to select a single report.")
+            await backend.close()
+            return
+
+        r = matched[0]
+        typer.echo(f"Deleting report {r.run_id[:16]} ({r.original_query[:60]})...")
+
+        # Delete files on disk
+        date_str = r.completed_at or r.started_at
+        root = Path(cfg.pdl.root_dir)
+        if date_str:
+            try:
+                dt = datetime.fromisoformat(date_str)
+                reports_dir = root / "reports"
+                ymd_dir = reports_dir / f"{dt.year}" / f"{dt.month:02d}" / f"{dt.day:02d}"
+                md_path = ymd_dir / f"{r.run_id}.md"
+                pdf_path = ymd_dir / f"{r.run_id}.pdf"
+                if md_path.exists():
+                    md_path.unlink()
+                    typer.echo(f"  Removed: {md_path}")
+                if pdf_path.exists():
+                    pdf_path.unlink()
+                    typer.echo(f"  Removed: {pdf_path}")
+            except Exception as e:
+                typer.echo(f"  Warning: could not remove files: {e}")
+
+        # Delete DB records
+        await backend.delete_report(r.run_id)
+        typer.echo("  Deleted from database.")
+        await backend.close()
+
+    asyncio.run(_run())
+
+
 @library_app.command("prune")
 def library_prune(
     older_than_days: int = typer.Option(
@@ -164,8 +222,6 @@ def library_prune(
         _cfg, backend, _writer = await _get_backend_and_writer(config_path)
         # List all reports and filter by age
         reports = await backend.list_reports(limit=1000)
-        from datetime import UTC, datetime, timedelta
-
         cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
         pruned = 0
         for r in reports:

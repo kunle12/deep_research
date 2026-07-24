@@ -588,6 +588,16 @@ class PostgresStorageBackend:
         await self._execute("DELETE FROM analyses WHERE run_id = $1", run_id)
         await self._execute("DELETE FROM tags WHERE applied_in_run = $1", run_id)
         await self._execute("DELETE FROM citation_edges WHERE discovered_in_run = $1", run_id)
+        # Nullify glossary entries and artifact_versions that reference this
+        # run (preserve the data itself — it may be relevant to other runs).
+        await self._execute(
+            "UPDATE glossary SET first_seen_run_id = NULL WHERE first_seen_run_id = $1",
+            run_id,
+        )
+        await self._execute(
+            "UPDATE artifact_versions SET discovered_in_run = NULL WHERE discovered_in_run = $1",
+            run_id,
+        )
         await self._execute("DELETE FROM reports WHERE run_id = $1", run_id)
 
     async def delete_artifact(self, artifact_id: str) -> None:

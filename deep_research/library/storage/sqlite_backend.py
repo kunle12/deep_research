@@ -100,42 +100,48 @@ class SqliteStorageBackend:
                 refresh_after_at, last_refreshed_at, upstream_unchanged_since
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        await self._execute(sql, (
-            artifact.artifact_id, artifact.kind, artifact.source_url,
-            artifact.source_type, artifact.title, artifact.authors,
-            artifact.discovered_by, artifact.arxiv_id, artifact.parents,
-            artifact.bytes_path, artifact.bytes_size,
-            artifact.first_seen_at, artifact.last_touched_at,
-            artifact.raw_metadata,
-            artifact.refresh_after_at, artifact.last_refreshed_at,
-            artifact.upstream_unchanged_since,
-        ))
+        await self._execute(
+            sql,
+            (
+                artifact.artifact_id,
+                artifact.kind,
+                artifact.source_url,
+                artifact.source_type,
+                artifact.title,
+                artifact.authors,
+                artifact.discovered_by,
+                artifact.arxiv_id,
+                artifact.parents,
+                artifact.bytes_path,
+                artifact.bytes_size,
+                artifact.first_seen_at,
+                artifact.last_touched_at,
+                artifact.raw_metadata,
+                artifact.refresh_after_at,
+                artifact.last_refreshed_at,
+                artifact.upstream_unchanged_since,
+            ),
+        )
         await self._conn.commit()
         return artifact.artifact_id
 
     async def get_artifact(self, artifact_id: str) -> ArtifactRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
-        )
+        row = await self._fetchone("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
         if row is None:
             return None
         return self._row_to_artifact(row)
 
     async def find_artifact_by_url(self, url: str) -> ArtifactRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM artifacts WHERE source_url = ?", (url,)
-        )
+        row = await self._fetchone("SELECT * FROM artifacts WHERE source_url = ?", (url,))
         if row is None:
             return None
         return self._row_to_artifact(row)
 
     async def find_artifact_by_arxiv_id(self, arxiv_id: str) -> ArtifactRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM artifacts WHERE arxiv_id = ?", (arxiv_id,)
-        )
+        row = await self._fetchone("SELECT * FROM artifacts WHERE arxiv_id = ?", (arxiv_id,))
         if row is None:
             return None
         return self._row_to_artifact(row)
@@ -207,28 +213,42 @@ class SqliteStorageBackend:
                 artifact_id, citations_json, classifier_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        await self._execute(sql, (
-            report.run_id, report.started_at, report.completed_at,
-            report.original_query, report.path_taken,
-            report.classifier_rationale, report.iterations,
-            report.config_snapshot, report.markdown,
-            report.artifact_id, report.citations_json, report.classifier_json,
-        ))
+        await self._execute(
+            sql,
+            (
+                report.run_id,
+                report.started_at,
+                report.completed_at,
+                report.original_query,
+                report.path_taken,
+                report.classifier_rationale,
+                report.iterations,
+                report.config_snapshot,
+                report.markdown,
+                report.artifact_id,
+                report.citations_json,
+                report.classifier_json,
+            ),
+        )
         await self._conn.commit()
 
     async def get_report(self, run_id: str) -> ReportRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM reports WHERE run_id = ?", (run_id,)
-        )
+        row = await self._fetchone("SELECT * FROM reports WHERE run_id = ?", (run_id,))
         if row is None:
             return None
         return ReportRow(
-            run_id=row[0], started_at=row[1], completed_at=row[2],
-            original_query=row[3], path_taken=row[4],
-            classifier_rationale=row[5], iterations=row[6],
-            config_snapshot=row[7], markdown=row[8],
-            artifact_id=row[9], citations_json=row[10],
+            run_id=row[0],
+            started_at=row[1],
+            completed_at=row[2],
+            original_query=row[3],
+            path_taken=row[4],
+            classifier_rationale=row[5],
+            iterations=row[6],
+            config_snapshot=row[7],
+            markdown=row[8],
+            artifact_id=row[9],
+            citations_json=row[10],
             classifier_json=row[11],
         )
 
@@ -239,14 +259,22 @@ class SqliteStorageBackend:
         )
         results: list[ReportRow] = []
         for r in rows:
-            results.append(ReportRow(
-                run_id=r[0], started_at=r[1], completed_at=r[2],
-                original_query=r[3], path_taken=r[4],
-                classifier_rationale=r[5], iterations=r[6],
-                config_snapshot=r[7], markdown=r[8],
-                artifact_id=r[9], citations_json=r[10],
-                classifier_json=r[11],
-            ))
+            results.append(
+                ReportRow(
+                    run_id=r[0],
+                    started_at=r[1],
+                    completed_at=r[2],
+                    original_query=r[3],
+                    path_taken=r[4],
+                    classifier_rationale=r[5],
+                    iterations=r[6],
+                    config_snapshot=r[7],
+                    markdown=r[8],
+                    artifact_id=r[9],
+                    citations_json=r[10],
+                    classifier_json=r[11],
+                )
+            )
         return results
 
     # -- Analysis ops --
@@ -260,13 +288,24 @@ class SqliteStorageBackend:
                 key_references, relevance_to_query, analyzed_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        await self._execute(sql, (
-            analysis.analysis_id, analysis.artifact_id, analysis.run_id,
-            analysis.analyzer, analysis.summary, analysis.key_findings,
-            analysis.methodology, analysis.limitations, analysis.gaps,
-            analysis.follow_ups, analysis.key_references,
-            analysis.relevance_to_query, analysis.analyzed_at,
-        ))
+        await self._execute(
+            sql,
+            (
+                analysis.analysis_id,
+                analysis.artifact_id,
+                analysis.run_id,
+                analysis.analyzer,
+                analysis.summary,
+                analysis.key_findings,
+                analysis.methodology,
+                analysis.limitations,
+                analysis.gaps,
+                analysis.follow_ups,
+                analysis.key_references,
+                analysis.relevance_to_query,
+                analysis.analyzed_at,
+            ),
+        )
         # Rebuild FTS5 row for this analysis_id: delete any prior FTS rows
         # with the same analysis_id (UNINDEXED — full scan but bounded by
         # how many stale duplicates exist; usually 0), then insert fresh.
@@ -284,35 +323,47 @@ class SqliteStorageBackend:
 
     async def get_analysis(self, analysis_id: str) -> AnalysisRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM analyses WHERE analysis_id = ?", (analysis_id,)
-        )
+        row = await self._fetchone("SELECT * FROM analyses WHERE analysis_id = ?", (analysis_id,))
         if row is None:
             return None
         return AnalysisRow(
-            analysis_id=row[0], artifact_id=row[1], run_id=row[2],
-            analyzer=row[3], summary=row[4], key_findings=row[5],
-            methodology=row[6], limitations=row[7], gaps=row[8],
-            follow_ups=row[9], key_references=row[10],
-            relevance_to_query=row[11], analyzed_at=row[12],
+            analysis_id=row[0],
+            artifact_id=row[1],
+            run_id=row[2],
+            analyzer=row[3],
+            summary=row[4],
+            key_findings=row[5],
+            methodology=row[6],
+            limitations=row[7],
+            gaps=row[8],
+            follow_ups=row[9],
+            key_references=row[10],
+            relevance_to_query=row[11],
+            analyzed_at=row[12],
         )
 
-    async def get_analyses_for_artifact(
-        self, artifact_id: str
-    ) -> list[AnalysisRow]:
+    async def get_analyses_for_artifact(self, artifact_id: str) -> list[AnalysisRow]:
         await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT * FROM analyses WHERE artifact_id = ?", (artifact_id,)
-        )
+        rows = await self._fetchall("SELECT * FROM analyses WHERE artifact_id = ?", (artifact_id,))
         results: list[AnalysisRow] = []
         for r in rows:
-            results.append(AnalysisRow(
-                analysis_id=r[0], artifact_id=r[1], run_id=r[2],
-                analyzer=r[3], summary=r[4], key_findings=r[5],
-                methodology=r[6], limitations=r[7], gaps=r[8],
-                follow_ups=r[9], key_references=r[10],
-                relevance_to_query=r[11], analyzed_at=r[12],
-            ))
+            results.append(
+                AnalysisRow(
+                    analysis_id=r[0],
+                    artifact_id=r[1],
+                    run_id=r[2],
+                    analyzer=r[3],
+                    summary=r[4],
+                    key_findings=r[5],
+                    methodology=r[6],
+                    limitations=r[7],
+                    gaps=r[8],
+                    follow_ups=r[9],
+                    key_references=r[10],
+                    relevance_to_query=r[11],
+                    analyzed_at=r[12],
+                )
+            )
         return results
 
     # -- Citation edge ops --
@@ -325,28 +376,36 @@ class SqliteStorageBackend:
                 rationale, weight, discovered_in_run
             ) VALUES (?, ?, ?, ?, ?, ?)
         """
-        await self._execute(sql, (
-            edge.source_artifact_id, edge.target_artifact_id,
-            edge.target_arxiv_id, edge.rationale, edge.weight,
-            edge.discovered_in_run,
-        ))
+        await self._execute(
+            sql,
+            (
+                edge.source_artifact_id,
+                edge.target_artifact_id,
+                edge.target_arxiv_id,
+                edge.rationale,
+                edge.weight,
+                edge.discovered_in_run,
+            ),
+        )
         await self._conn.commit()
 
-    async def get_citation_edges_for_source(
-        self, artifact_id: str
-    ) -> list[CitationEdgeRow]:
+    async def get_citation_edges_for_source(self, artifact_id: str) -> list[CitationEdgeRow]:
         await self._ensure_conn()
         rows = await self._fetchall(
-            "SELECT * FROM citation_edges WHERE source_artifact_id = ?",
-            (artifact_id,)
+            "SELECT * FROM citation_edges WHERE source_artifact_id = ?", (artifact_id,)
         )
         results: list[CitationEdgeRow] = []
         for r in rows:
-            results.append(CitationEdgeRow(
-                source_artifact_id=r[0], target_artifact_id=r[1],
-                target_arxiv_id=r[2], rationale=r[3], weight=r[4],
-                discovered_in_run=r[5],
-            ))
+            results.append(
+                CitationEdgeRow(
+                    source_artifact_id=r[0],
+                    target_artifact_id=r[1],
+                    target_arxiv_id=r[2],
+                    rationale=r[3],
+                    weight=r[4],
+                    discovered_in_run=r[5],
+                )
+            )
         return results
 
     # -- Tag ops --
@@ -357,16 +416,19 @@ class SqliteStorageBackend:
             INSERT OR REPLACE INTO tags (tag, artifact_id, applied_in_run)
             VALUES (?, ?, ?)
         """
-        await self._execute(sql, (
-            tag.tag, tag.artifact_id, tag.applied_in_run,
-        ))
+        await self._execute(
+            sql,
+            (
+                tag.tag,
+                tag.artifact_id,
+                tag.applied_in_run,
+            ),
+        )
         await self._conn.commit()
 
     async def get_tags_for_artifact(self, artifact_id: str) -> list[TagRow]:
         await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT * FROM tags WHERE artifact_id = ?", (artifact_id,)
-        )
+        rows = await self._fetchall("SELECT * FROM tags WHERE artifact_id = ?", (artifact_id,))
         results: list[TagRow] = []
         for r in rows:
             results.append(TagRow(tag=r[0], artifact_id=r[1], applied_in_run=r[2]))
@@ -374,16 +436,12 @@ class SqliteStorageBackend:
 
     async def get_artifacts_by_tag(self, tag: str) -> list[str]:
         await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT artifact_id FROM tags WHERE tag = ?", (tag,)
-        )
+        rows = await self._fetchall("SELECT artifact_id FROM tags WHERE tag = ?", (tag,))
         return [r[0] for r in rows]
 
     # -- Glossary ops --
 
-    async def upsert_glossary_entries(
-        self, entries: list[GlossaryEntry], run_id: str
-    ) -> int:
+    async def upsert_glossary_entries(self, entries: list[GlossaryEntry], run_id: str) -> int:
         count = 0
         for e in entries:
             await self.upsert_glossary_entry(e)
@@ -399,18 +457,26 @@ class SqliteStorageBackend:
                 first_seen_run_id, first_seen_artifact_id, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        await self._execute(sql, (
-            entry.term, entry.term_canonical, entry.kind, entry.short_def,
-            entry.long_def, entry.acronym_expansion, entry.related_terms,
-            entry.domain_tags, entry.confidence,
-            entry.first_seen_run_id, entry.first_seen_artifact_id,
-            entry.last_updated,
-        ))
+        await self._execute(
+            sql,
+            (
+                entry.term,
+                entry.term_canonical,
+                entry.kind,
+                entry.short_def,
+                entry.long_def,
+                entry.acronym_expansion,
+                entry.related_terms,
+                entry.domain_tags,
+                entry.confidence,
+                entry.first_seen_run_id,
+                entry.first_seen_artifact_id,
+                entry.last_updated,
+            ),
+        )
         await self._conn.commit()
 
-    async def get_glossary_entry(
-        self, term_canonical: str
-    ) -> GlossaryEntry | None:
+    async def get_glossary_entry(self, term_canonical: str) -> GlossaryEntry | None:
         await self._ensure_conn()
         row = await self._fetchone(
             "SELECT * FROM glossary WHERE term_canonical = ?", (term_canonical,)
@@ -418,11 +484,18 @@ class SqliteStorageBackend:
         if row is None:
             return None
         return GlossaryEntry(
-            term_id=row[0], term=row[1], term_canonical=row[2],
-            kind=row[3], short_def=row[4], long_def=row[5],
-            acronym_expansion=row[6], related_terms=row[7],
-            domain_tags=row[8], confidence=row[9],
-            first_seen_run_id=row[10], first_seen_artifact_id=row[11],
+            term_id=row[0],
+            term=row[1],
+            term_canonical=row[2],
+            kind=row[3],
+            short_def=row[4],
+            long_def=row[5],
+            acronym_expansion=row[6],
+            related_terms=row[7],
+            domain_tags=row[8],
+            confidence=row[9],
+            first_seen_run_id=row[10],
+            first_seen_artifact_id=row[11],
             last_updated=row[12],
         )
 
@@ -431,14 +504,23 @@ class SqliteStorageBackend:
         rows = await self._fetchall("SELECT * FROM glossary ORDER BY term_canonical")
         results: list[GlossaryEntry] = []
         for r in rows:
-            results.append(GlossaryEntry(
-                term_id=r[0], term=r[1], term_canonical=r[2],
-                kind=r[3], short_def=r[4], long_def=r[5],
-                acronym_expansion=r[6], related_terms=r[7],
-                domain_tags=r[8], confidence=r[9],
-                first_seen_run_id=r[10], first_seen_artifact_id=r[11],
-                last_updated=r[12],
-            ))
+            results.append(
+                GlossaryEntry(
+                    term_id=r[0],
+                    term=r[1],
+                    term_canonical=r[2],
+                    kind=r[3],
+                    short_def=r[4],
+                    long_def=r[5],
+                    acronym_expansion=r[6],
+                    related_terms=r[7],
+                    domain_tags=r[8],
+                    confidence=r[9],
+                    first_seen_run_id=r[10],
+                    first_seen_artifact_id=r[11],
+                    last_updated=r[12],
+                )
+            )
         return results
 
     # -- Refresh foundation --
@@ -454,15 +536,19 @@ class SqliteStorageBackend:
                 artifact_id_old, artifact_id_new, reason, discovered_at, discovered_in_run
             ) VALUES (?, ?, ?, ?, ?)
         """
-        await self._execute(sql, (
-            old_id, new_id, reason,
-            datetime.now(UTC).isoformat(), run_id,
-        ))
+        await self._execute(
+            sql,
+            (
+                old_id,
+                new_id,
+                reason,
+                datetime.now(UTC).isoformat(),
+                run_id,
+            ),
+        )
         await self._conn.commit()
 
-    async def start_refresh_job(
-        self, scope_kind: str, scope_value: str
-    ) -> str:
+    async def start_refresh_job(self, scope_kind: str, scope_value: str) -> str:
         await self._ensure_conn()
         import uuid
         from datetime import UTC, datetime
@@ -473,9 +559,15 @@ class SqliteStorageBackend:
                 job_id, started_at, scope_kind, scope_value, status
             ) VALUES (?, ?, ?, ?, 'running')
         """
-        await self._execute(sql, (
-            job_id, datetime.now(UTC).isoformat(), scope_kind, scope_value,
-        ))
+        await self._execute(
+            sql,
+            (
+                job_id,
+                datetime.now(UTC).isoformat(),
+                scope_kind,
+                scope_value,
+            ),
+        )
         await self._conn.commit()
         return job_id
 
@@ -499,10 +591,17 @@ class SqliteStorageBackend:
                 error = ?
             WHERE job_id = ?
         """
-        await self._execute(sql, (
-            datetime.now(UTC).isoformat(), considered, refreshed,
-            status, error, job_id,
-        ))
+        await self._execute(
+            sql,
+            (
+                datetime.now(UTC).isoformat(),
+                considered,
+                refreshed,
+                status,
+                error,
+                job_id,
+            ),
+        )
         await self._conn.commit()
 
     async def get_refresh_job(self, job_id: str) -> RefreshJobRow | None:
@@ -513,10 +612,15 @@ class SqliteStorageBackend:
         if not row:
             return None
         return RefreshJobRow(
-            job_id=row[0], started_at=row[1], completed_at=row[2],
-            scope_kind=row[3], scope_value=row[4],
-            artifacts_considered=row[5], artifacts_refreshed=row[6],
-            status=row[7], error=row[8],
+            job_id=row[0],
+            started_at=row[1],
+            completed_at=row[2],
+            scope_kind=row[3],
+            scope_value=row[4],
+            artifacts_considered=row[5],
+            artifacts_refreshed=row[6],
+            status=row[7],
+            error=row[8],
         )
 
     # -- Deletion --
@@ -538,8 +642,16 @@ class SqliteStorageBackend:
         await fts_cursor.close()
         await self._execute("DELETE FROM analyses WHERE run_id = ?", (run_id,))
         await self._execute("DELETE FROM tags WHERE applied_in_run = ?", (run_id,))
+        await self._execute("DELETE FROM citation_edges WHERE discovered_in_run = ?", (run_id,))
+        # Nullify glossary entries and artifact_versions that reference this
+        # run (preserve the data itself — it may be relevant to other runs).
         await self._execute(
-            "DELETE FROM citation_edges WHERE discovered_in_run = ?", (run_id,)
+            "UPDATE glossary SET first_seen_run_id = NULL WHERE first_seen_run_id = ?",
+            (run_id,),
+        )
+        await self._execute(
+            "UPDATE artifact_versions SET discovered_in_run = NULL WHERE discovered_in_run = ?",
+            (run_id,),
         )
         await self._execute("DELETE FROM reports WHERE run_id = ?", (run_id,))
         await self._conn.commit()
@@ -587,14 +699,13 @@ class SqliteStorageBackend:
         We keep only alphanumeric and whitespace, then join as an implicit AND.
         """
         import re
+
         cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", raw)
         tokens = cleaned.split()
         tokens = [t for t in tokens if t]
         return " ".join(tokens) if tokens else raw
 
-    async def full_text_search(
-        self, query: str, *, kind: str, limit: int
-    ) -> list[SearchHit]:
+    async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
         # Search analyses FTS index for artifacts of given kind.
         # Join on analysis_id (UNINDEXED FTS5 column) rather than rowid,
@@ -612,16 +723,19 @@ class SqliteStorageBackend:
         rows = await self._fetchall(sql, (safe_query, kind, limit))
         results: list[SearchHit] = []
         for r in rows:
-            results.append(SearchHit(
-                artifact_id=r[0], title=r[1] or "", authors=r[2] or "",
-                summary=r[3] or "", extracted_text=r[4] or "",
-                score=1.0,
-            ))
+            results.append(
+                SearchHit(
+                    artifact_id=r[0],
+                    title=r[1] or "",
+                    authors=r[2] or "",
+                    summary=r[3] or "",
+                    extracted_text=r[4] or "",
+                    score=1.0,
+                )
+            )
         return results
 
-    async def glossary_search(
-        self, query: str, limit: int
-    ) -> list[GlossaryEntry]:
+    async def glossary_search(self, query: str, limit: int) -> list[GlossaryEntry]:
         await self._ensure_conn()
         safe_query = self._sanitize_fts_query(query)
         sql = """
@@ -633,12 +747,21 @@ class SqliteStorageBackend:
         rows = await self._fetchall(sql, (safe_query, limit))
         results: list[GlossaryEntry] = []
         for r in rows:
-            results.append(GlossaryEntry(
-                term_id=r[0], term=r[1], term_canonical=r[2],
-                kind=r[3], short_def=r[4], long_def=r[5],
-                acronym_expansion=r[6], related_terms=r[7],
-                domain_tags=r[8], confidence=r[9],
-                first_seen_run_id=r[10], first_seen_artifact_id=r[11],
-                last_updated=r[12],
-            ))
+            results.append(
+                GlossaryEntry(
+                    term_id=r[0],
+                    term=r[1],
+                    term_canonical=r[2],
+                    kind=r[3],
+                    short_def=r[4],
+                    long_def=r[5],
+                    acronym_expansion=r[6],
+                    related_terms=r[7],
+                    domain_tags=r[8],
+                    confidence=r[9],
+                    first_seen_run_id=r[10],
+                    first_seen_artifact_id=r[11],
+                    last_updated=r[12],
+                )
+            )
         return results
