@@ -29,6 +29,9 @@ changes.
 | `tools/fetch_page.py` | httpx + trafilatura page fetch |
 | `paths/deep.py` | Deep research path (planner→researcher→critic→writer) |
 | `paths/academic.py` | Academic citation-graph path |
+| `nodes/auto_tag.py` | Post-synthesis LLM call — extracts 3-5 topic tags from query + report |
+| `prompts/auto_tag.txt` | Prompt template for auto-tag extraction |
+| `prompts/glossary_extract.txt` | Prompt template for glossary extraction |
 | `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call`; `ScopedToolRegistry` for per-researcher tool isolation |
 
 ---
@@ -130,6 +133,36 @@ All use `asyncio.Semaphore(concurrency)` + spacing delay between calls.
 - Tool subset: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_evaluate`
 - Graceful degradation: startup failures return `ToolResult(error=...)`, never crash
 - Teardown via `reg._close_hooks` — killed when agent finishes
+
+---
+
+---
+
+## Library CLI Patterns
+
+### Auto-tagging (P10.7)
+- Post-synthesis LLM call (`nodes/auto_tag.py`) extracts 3-5 topic tags from `query` + report first 2000 chars
+- Prompt: `prompts/auto_tag.txt` — expects `{"tags": ["tag1", "tag2"]}` JSON response
+- Called in `agent.py` after glossary extraction and archiving, using the returned `artifact_id`
+- Tags persisted via `writer.tag(artifact_id, tags, run_id=run_id)` — same FK rules apply (report must exist)
+
+### Tag CLI commands
+- `deep-research-library tag <artifact_id> <tag_name>` — add
+- `deep-research-library tag --remove/-r <artifact_id> <tag_name>` — remove
+- `deep-research-library tag --list/-l <artifact_id>` — list
+- `deep-research-library tag --rename-old <old> --rename-new <new>` — rename globally
+- Backend methods: `get_tags_for_artifacts()` (batch, avoids N+1), `delete_tag()`, `rename_tag()`
+
+### Delete command
+- `deep-research-library delete <run_id_prefix>` — matches by prefix, shows ambiguity if multiple
+- Deletes `.md` and `.pdf` files from `{root_dir}/reports/{year}/{month}/{day}/`
+- DB cascade: analyses, tags, citation_edges, search_index deleted; glossary + artifact_versions NULLed
+
+### ls output format
+```
+<started_at[:19]>  <run_id[:16]>  <path_taken:8s>  <original_query[:60]>  [tag1, tag2]
+```
+Tags are batch-fetched via `get_tags_for_artifacts()` to avoid N+1 queries.
 
 ---
 

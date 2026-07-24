@@ -42,7 +42,8 @@ async def test_archive_pdf(writer, tmp_path):
     pdf_path = tmp_path / "test.pdf"
     pdf_path.write_bytes(b"%PDF test content")
     aid = await writer.archive_pdf(
-        pdf_path, arxiv_id="2401.12345",
+        pdf_path,
+        arxiv_id="2401.12345",
         source_url="https://arxiv.org/pdf/2401.12345",
         title="Test Paper",
     )
@@ -53,7 +54,9 @@ async def test_archive_pdf(writer, tmp_path):
 async def test_archive_report(writer):
     report = Report(
         markdown="# Test Report\n\nContent",
-        citations=[Citation(url="https://example.com", title="Test", snippet="test", confidence_score=0.8)],
+        citations=[
+            Citation(url="https://example.com", title="Test", snippet="test", confidence_score=0.8)
+        ],
         path="quick",
         classifier_rationale="test",
     )
@@ -67,19 +70,29 @@ async def test_record_analysis(writer):
     from datetime import UTC, datetime
 
     from deep_research.library.storage.rows import ArtifactRow
+
     now = datetime.now(UTC).isoformat()
     art = ArtifactRow(
-        artifact_id="art1", kind="pdf", source_url="https://example.com/paper.pdf",
-        source_type="arxiv", bytes_path="artifacts/pdf/art1.pdf", bytes_size=1024,
-        first_seen_at=now, last_touched_at=now,
+        artifact_id="art1",
+        kind="pdf",
+        source_url="https://example.com/paper.pdf",
+        source_type="arxiv",
+        bytes_path="artifacts/pdf/art1.pdf",
+        bytes_size=1024,
+        first_seen_at=now,
+        last_touched_at=now,
     )
     await writer.storage.upsert_artifact(art)
 
     # Create a report first since analyses references reports(run_id)
     from deep_research.library.storage.rows import ReportRow
+
     report_row = ReportRow(
-        run_id="test_run", started_at=now, original_query="test query",
-        path_taken="quick", markdown="# test",
+        run_id="test_run",
+        started_at=now,
+        original_query="test query",
+        path_taken="quick",
+        markdown="# test",
     )
     await writer.storage.insert_report(report_row)
 
@@ -96,10 +109,13 @@ async def test_record_analysis(writer):
 async def test_upsert_glossary_entries(writer):
     entries = [
         GlossaryEntry(
-            term="RLHF", term_canonical="rlhf", kind="acronym",
+            term="RLHF",
+            term_canonical="rlhf",
+            kind="acronym",
             short_def="RL from human feedback",
             acronym_expansion="Reinforcement Learning from Human Feedback",
-            confidence=0.9, last_updated="now",
+            confidence=0.9,
+            last_updated="now",
         ),
     ]
     count = await writer.upsert_glossary_entries(entries, "test_run")
@@ -112,3 +128,30 @@ async def test_refresh_job(writer):
     assert isinstance(result, dict)
     assert "job_id" in result
     assert result["considered"] == 0
+
+
+@pytest.mark.asyncio
+async def test_tag(writer):
+    # First create an artifact
+    from datetime import UTC, datetime
+
+    from deep_research.library.storage.rows import ArtifactRow
+
+    now = datetime.now(UTC).isoformat()
+    art = ArtifactRow(
+        artifact_id="art1",
+        kind="pdf",
+        source_url="https://example.com/paper.pdf",
+        source_type="arxiv",
+        bytes_path="artifacts/pdf/art1.pdf",
+        bytes_size=1024,
+        first_seen_at=now,
+        last_touched_at=now,
+    )
+    await writer.storage.upsert_artifact(art)
+
+    await writer.tag("art1", ["test-tag", "another-tag"], run_id="test_run")
+    tags = await writer.storage.get_tags_for_artifact("art1")
+    assert len(tags) == 2
+    assert tags[0].tag in ("test-tag", "another-tag")
+    assert tags[0].applied_in_run == "test_run"

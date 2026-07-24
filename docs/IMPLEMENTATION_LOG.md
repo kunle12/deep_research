@@ -687,8 +687,29 @@ $ uv run mypy deep_research/ tests/
 - [x] `tests/test_paths_applied.py` (4 tests): missing blog_search, blog error, happy path, LLM fallback
 
 #### P12(d) — Library CLI
-- [x] `library/cli.py` — commands: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `refresh`, `glossary`
+- [x] `library/cli.py` — commands: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `delete`, `export-bibtex`, `refresh`, `glossary`
 - [x] `pyproject.toml` — `deep-research-library` script entrypoint
+
+#### P10.7 — Auto-tagging
+- [x] `prompts/auto_tag.txt` — LLM prompt for topic tag extraction from query + report
+- [x] `nodes/auto_tag.py` — `auto_tag_report()` lightweight LLM call, persists tags via `writer.tag()`
+- [x] `agent.py` — calls `auto_tag_report()` after glossary extraction and archiving
+- [x] `nodes/__init__.py` — exports `auto_tag_report`
+
+#### P12(d) extension — Enhanced tag management
+- [x] `library/cli.py` — `tag` command extended: `--remove`, `--list`, `--rename-old`/`--rename-new`
+- [x] `library/storage/base.py` — added `get_tags_for_artifacts()`, `delete_tag()`, `rename_tag()`
+- [x] `library/storage/sqlite_backend.py` — batch tag fetch, delete, rename implementations
+- [x] `library/storage/postgres_backend.py` — batch tag fetch, delete, rename implementations
+- [x] `library/cli.py` — `ls` shows `started_at` timestamps and tags `[tag1, tag2]`
+- [x] `library/cli.py` — `delete` command removes report files + DB records
+
+#### P12(d) extension — Tests
+- [x] `tests/test_library_cli.py` — 23 tests: all commands with PDL disabled + enabled (seeded DB)
+- [x] `tests/test_postgres_backend.py` — 17 tests: all CRUD operations with mocked asyncpg
+- [x] `tests/test_auto_tag.py` — 7 tests: skip conditions, LLM call, error handling, bad JSON
+- [x] `tests/test_library_storage_sqlite.py` — added tag batch/delete/rename tests
+- [x] `tests/test_library_writer.py` — added `writer.tag()` test
 
 #### P12(e) — FastAPI microservice + Dockerfile
 - [x] `microservice.py` — FastAPI app with `POST /research` and `GET /health`

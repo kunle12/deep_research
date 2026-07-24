@@ -165,24 +165,28 @@ uv run python -m deep_research "..." --verbose        # debug logs + rich traceb
 
 ### Library CLI (personal research archive)
 
-Every research run is automatically archived (enabled by default). Browse your
+Every research run is automatically archived (enabled by default). Topic tags are
+auto-extracted from the query and report by a lightweight LLM call. Browse your
 personal library:
 
 ```bash
-uv run deep-research-library ls                           # list recent reports (with timestamps)
-uv run deep-research-library find "transformer"           # full-text search
-uv run deep-research-library show <artifact_id>           # artifact details
-uv run deep-research-library tag <id> <tag>               # tag an artifact
-uv run deep-research-library stats                        # library statistics
-uv run deep-research-library delete <run_id_prefix>       # delete a single report
-uv run deep-research-library prune --older-than 90        # prune old reports
+uv run deep-research-library ls                            # list recent reports (with timestamps + tags)
+uv run deep-research-library find "transformer"            # full-text search
+uv run deep-research-library show <artifact_id>            # artifact details
+uv run deep-research-library tag <id> <tag>                # add a tag
+uv run deep-research-library tag --remove <id> <tag>       # remove a tag
+uv run deep-research-library tag --list <artifact_id>      # list tags for an artifact
+uv run deep-research-library tag --rename-old <o> --rename-new <n>  # rename a tag globally
+uv run deep-research-library stats                         # library statistics
+uv run deep-research-library delete <run_id_prefix>        # delete a single report
+uv run deep-research-library prune --older-than 90         # prune old reports
 uv run deep-research-library export-bibtex refs.bib
-uv run deep-research-library refresh                      # refresh stale artifacts
-uv run deep-research-library glossary                     # list all glossary entries
+uv run deep-research-library refresh                       # refresh stale artifacts
+uv run deep-research-library glossary                      # list all glossary entries
 uv run deep-research-library glossary --find "transformer" # full-text search
-uv run deep-research-library glossary --term RLHF         # detail view of one term
-uv run deep-research-library glossary --filter-tag "nlp"  # filter by domain tag
-uv run deep-research-library glossary --out glossary.json # export as JSON
+uv run deep-research-library glossary --term RLHF          # detail view of one term
+uv run deep-research-library glossary --filter-tag "nlp"   # filter by domain tag
+uv run deep-research-library glossary --out glossary.json  # export as JSON
 ```
 
 Refresh scheduler (daemon that auto-refreshes upstream URLs):

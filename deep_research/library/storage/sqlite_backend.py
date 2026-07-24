@@ -434,10 +434,41 @@ class SqliteStorageBackend:
             results.append(TagRow(tag=r[0], artifact_id=r[1], applied_in_run=r[2]))
         return results
 
+    async def get_tags_for_artifacts(self, artifact_ids: list[str]) -> dict[str, list[TagRow]]:
+        if not artifact_ids:
+            return {}
+        await self._ensure_conn()
+        placeholders = ",".join("?" * len(artifact_ids))
+        rows = await self._fetchall(
+            f"SELECT * FROM tags WHERE artifact_id IN ({placeholders})",
+            tuple(artifact_ids),
+        )
+        result: dict[str, list[TagRow]] = {a: [] for a in artifact_ids}
+        for r in rows:
+            tag = TagRow(tag=r[0], artifact_id=r[1], applied_in_run=r[2])
+            result.setdefault(tag.artifact_id, []).append(tag)
+        return result
+
     async def get_artifacts_by_tag(self, tag: str) -> list[str]:
         await self._ensure_conn()
         rows = await self._fetchall("SELECT artifact_id FROM tags WHERE tag = ?", (tag,))
         return [r[0] for r in rows]
+
+    async def delete_tag(self, tag: str, artifact_id: str) -> None:
+        await self._ensure_conn()
+        await self._execute(
+            "DELETE FROM tags WHERE tag = ? AND artifact_id = ?",
+            (tag, artifact_id),
+        )
+        await self._conn.commit()
+
+    async def rename_tag(self, old_tag: str, new_tag: str) -> None:
+        await self._ensure_conn()
+        await self._execute(
+            "UPDATE tags SET tag = ? WHERE tag = ?",
+            (new_tag, old_tag),
+        )
+        await self._conn.commit()
 
     # -- Glossary ops --
 

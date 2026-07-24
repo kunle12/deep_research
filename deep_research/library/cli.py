@@ -48,10 +48,15 @@ def library_ls(
         _cfg, backend, _writer = await _get_backend_and_writer(config_path)
         # List all artifacts (no direct list method, so we list reports + use find)
         reports = await backend.list_reports(limit=limit)
+        # Batch-fetch tags for all reports' artifact_ids
+        art_ids = [r.artifact_id for r in reports if r.artifact_id]
+        tags_by_art = await backend.get_tags_for_artifacts(art_ids) if art_ids else {}
         for r in reports:
             started = r.started_at or "(unknown)"
+            tags = tags_by_art.get(r.artifact_id, [])
+            tag_str = f"  [{', '.join(t.tag for t in tags)}]" if tags else ""
             typer.echo(
-                f"{started[:19]}  {r.run_id[:16]}  {r.path_taken:8s}  {r.original_query[:60]}"
+                f"{started[:19]}  {r.run_id[:16]}  {r.path_taken:8s}  {r.original_query[:60]}{tag_str}"
             )
         await backend.close()
 
@@ -115,18 +120,45 @@ def library_show(
 
 @library_app.command("tag")
 def library_tag(
-    artifact_id: str = typer.Argument(..., help="Artifact ID to tag"),
-    tag_name: str = typer.Argument(..., help="Tag name"),
+    artifact_id: str | None = typer.Argument(None, help="Artifact ID"),
+    tag_name: str | None = typer.Argument(None, help="Tag name"),
+    remove: bool = typer.Option(False, "--remove", "-r", help="Remove tag instead of adding"),
+    list_tags: bool = typer.Option(False, "--list", "-l", help="List tags for an artifact"),
+    rename_old: str | None = typer.Option(None, "--rename-old", help="Old tag name to rename"),
+    rename_new: str | None = typer.Option(None, "--rename-new", help="New tag name"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
-    """Tag an artifact."""
+    """Add, remove, list, or rename tags."""
 
     async def _run():
         _cfg, backend, writer = await _get_backend_and_writer(config_path)
-        # run_id=None — this tag is being applied directly from the CLI,
-        # not from a research run. tags.applied_in_run is nullable.
-        await writer.tag(artifact_id, [tag_name], run_id=None)
-        typer.echo(f"Tagged '{artifact_id}' with '{tag_name}'")
+
+        if remove and artifact_id and tag_name:
+            await backend.delete_tag(tag_name, artifact_id)
+            typer.echo(f"Removed tag '{tag_name}' from '{artifact_id}'")
+
+        elif list_tags and artifact_id:
+            tags = await backend.get_tags_for_artifact(artifact_id)
+            if tags:
+                for t in tags:
+                    typer.echo(f"  {t.tag}  (applied in run: {t.applied_in_run or 'manual'})")
+            else:
+                typer.echo(f"No tags for artifact '{artifact_id}'.")
+
+        elif rename_old and rename_new:
+            await backend.rename_tag(rename_old, rename_new)
+            typer.echo(f"Renamed tag '{rename_old}' -> '{rename_new}'")
+
+        elif artifact_id and tag_name:
+            await writer.tag(artifact_id, [tag_name], run_id=None)
+            typer.echo(f"Tagged '{artifact_id}' with '{tag_name}'")
+
+        else:
+            typer.echo("Usage: deep-research-library tag <artifact_id> <tag_name>")
+            typer.echo("       deep-research-library tag --remove/-r <artifact_id> <tag_name>")
+            typer.echo("       deep-research-library tag --list/-l <artifact_id>")
+            typer.echo("       deep-research-library tag --rename-old <old> --rename-new <new>")
+
         await backend.close()
 
     asyncio.run(_run())

@@ -1,0 +1,15 @@
+You are a topic tag extraction assistant. Given the research query and the report
+summary below, extract 3-5 topic tags that best describe the subject matter.
+
+Tags should be short (1-3 words), lowercase, and use underscores for multi-word
+tags (e.g. "quantization", "llm_optimization", "transformer_architectures").
+
+Return a JSON object with a single key "tags" containing an array of tag strings.
+Example: {"tags": ["quantization", "llm_inference", "model_compression"]}
+
+Output ONLY valid JSON — no markdown, no code fences.
+
+Query: {query}
+
+Report summary (first 2000 chars):
+{context}

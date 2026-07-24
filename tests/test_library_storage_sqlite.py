@@ -206,15 +206,46 @@ async def test_tag(backend):
     tag = TagRow(tag="RL", artifact_id="art1", applied_in_run="run001")
     await backend.upsert_tag(tag)
 
+    # Verify get_tags_for_artifact
+    tags = await backend.get_tags_for_artifact("art1")
+    assert len(tags) == 1
+    assert tags[0].tag == "RL"
+
+    # Verify get_tags_for_artifacts (batch)
+    tags_by_art = await backend.get_tags_for_artifacts(["art1", "nonexistent"])
+    assert "art1" in tags_by_art
+    assert len(tags_by_art["art1"]) == 1
+    assert tags_by_art["art1"][0].tag == "RL"
+    assert "nonexistent" in tags_by_art
+    assert len(tags_by_art["nonexistent"]) == 0
+
+    # Verify empty batch
+    assert await backend.get_tags_for_artifacts([]) == {}
+
+    # Verify delete_tag
+    await backend.delete_tag("RL", "art1")
+    tags = await backend.get_tags_for_artifact("art1")
+    assert len(tags) == 0
+
+    # Verify rename_tag
+    await backend.upsert_tag(TagRow(tag="old", artifact_id="art1", applied_in_run="run001"))
+    await backend.rename_tag("old", "renamed")
+    tags = await backend.get_tags_for_artifact("art1")
+    assert len(tags) == 1
+    assert tags[0].tag == "renamed"
+
 
 @pytest.mark.asyncio
 async def test_glossary(backend):
     entries = [
         GlossaryEntry(
-            term="RLHF", term_canonical="rlhf", kind="acronym",
+            term="RLHF",
+            term_canonical="rlhf",
+            kind="acronym",
             short_def="RL from human feedback",
             acronym_expansion="Reinforcement Learning from Human Feedback",
-            confidence=0.9, last_updated="2024-01-01T00:00:00Z",
+            confidence=0.9,
+            last_updated="2024-01-01T00:00:00Z",
         ),
     ]
     for e in entries:
@@ -231,13 +262,25 @@ async def test_glossary(backend):
 
 @pytest.mark.asyncio
 async def test_glossary_dedup(backend):
-    e1 = GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym",
-                        short_def="v1", confidence=0.5, last_updated="now")
+    e1 = GlossaryEntry(
+        term="RLHF",
+        term_canonical="rlhf",
+        kind="acronym",
+        short_def="v1",
+        confidence=0.5,
+        last_updated="now",
+    )
     await backend.upsert_glossary_entry(e1)
 
-    e2 = GlossaryEntry(term="RLHF", term_canonical="rlhf", kind="acronym",
-                        short_def="v2", long_def="longer",
-                        confidence=0.9, last_updated="now2")
+    e2 = GlossaryEntry(
+        term="RLHF",
+        term_canonical="rlhf",
+        kind="acronym",
+        short_def="v2",
+        long_def="longer",
+        confidence=0.9,
+        last_updated="now2",
+    )
     await backend.upsert_glossary_entry(e2)
 
     entries = await backend.list_glossary_entries()
@@ -264,25 +307,34 @@ async def test_refresh_jobs(backend):
 async def test_artifact_versions(backend):
     # Create artifacts first since artifact_versions references artifacts
     old = ArtifactRow(
-        artifact_id="old_id", kind="pdf", source_url="https://example.com/old",
-        bytes_path="old.pdf", bytes_size=100,
-        first_seen_at="2024-01-01T00:00:00Z", last_touched_at="2024-01-01T00:00:00Z",
+        artifact_id="old_id",
+        kind="pdf",
+        source_url="https://example.com/old",
+        bytes_path="old.pdf",
+        bytes_size=100,
+        first_seen_at="2024-01-01T00:00:00Z",
+        last_touched_at="2024-01-01T00:00:00Z",
     )
     new = ArtifactRow(
-        artifact_id="new_id", kind="pdf", source_url="https://example.com/new",
-        bytes_path="new.pdf", bytes_size=200,
-        first_seen_at="2024-01-01T00:00:00Z", last_touched_at="2024-01-01T00:00:00Z",
+        artifact_id="new_id",
+        kind="pdf",
+        source_url="https://example.com/new",
+        bytes_path="new.pdf",
+        bytes_size=200,
+        first_seen_at="2024-01-01T00:00:00Z",
+        last_touched_at="2024-01-01T00:00:00Z",
     )
     await backend.upsert_artifact(old)
     await backend.upsert_artifact(new)
 
     # Create a report since artifact_versions references reports(run_id)
     report = ReportRow(
-        run_id="run001", started_at="2024-01-01T00:00:00Z",
-        original_query="test", path_taken="quick", markdown="# test",
+        run_id="run001",
+        started_at="2024-01-01T00:00:00Z",
+        original_query="test",
+        path_taken="quick",
+        markdown="# test",
     )
     await backend.insert_report(report)
 
-    await backend.insert_artifact_version(
-        "old_id", "new_id", "content_changed", "run001"
-    )
+    await backend.insert_artifact_version("old_id", "new_id", "content_changed", "run001")

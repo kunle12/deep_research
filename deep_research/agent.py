@@ -12,6 +12,7 @@ from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.client import LLMClient
 from deep_research.llm.tool_loop import ToolRegistry
+from deep_research.nodes.auto_tag import auto_tag_report
 from deep_research.nodes.glossarize import extract_glossary_from_report
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
@@ -114,7 +115,22 @@ async def run_research(
             report.glossary_entries = glossary_entries
 
     reporter.complete()
-    await _archive_report(report, writer, run_id)
+    artifact_id = await _archive_report(report, writer, run_id)
+
+    # P10.7: auto-tag the report artifact with topic tags
+    if artifact_id and report.markdown:
+        await auto_tag_report(
+            query,
+            report.markdown,
+            artifact_id,
+            client,
+            config.llm.text_model,
+            writer,
+            run_id,
+        )
+
+    if writer and isinstance(writer, LibraryWriter):
+        await writer.storage.close()
     return report
 
 
@@ -337,18 +353,18 @@ async def _build_tools(config: AgentTopConfig) -> AsyncIterator[ToolRegistry]:
         await tools.close()
 
 
-async def _archive_report(report: Report, writer: LibraryWriter | None, run_id: str) -> None:
-    """Archive report in the personal digital library if writer is configured."""
+async def _archive_report(report: Report, writer: LibraryWriter | None, run_id: str) -> str | None:
+    """Archive report in the personal digital library if writer is configured.
+
+    Returns the artifact_id of the archived report, or None if archiving failed
+    or was skipped. Does NOT close storage — caller is responsible for that.
+    """
     if isinstance(writer, LibraryWriter) and run_id:
         try:
-            await writer.archive_report(report, run_id)
+            return await writer.archive_report(report, run_id)
         except Exception as e:
             logger.warning("archive_report failed: %s: %s", type(e).__name__, e)
-        finally:
-            try:
-                await writer.storage.close()
-            except Exception as e:
-                logger.warning("storage close failed: %s: %s", type(e).__name__, e)
+    return None
 
 
 __all__ = ["run_research"]
