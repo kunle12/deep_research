@@ -4,9 +4,9 @@ An async-first Python agent that performs **web / deep / academic / single-sourc
 
 ```bash
 # Quick start — auto-routes based on your query
-uv run python -m deep_research "What is the capital of France?"
-uv run python -m deep_research "Survey recent advances in RLHF"
-uv run python -m deep_research "Summarize https://arxiv.org/abs/2401.12345"
+uv run deep-research "What is the capital of France?"
+uv run deep-research "Survey recent advances in RLHF"
+uv run deep-research "Summarize https://arxiv.org/abs/2401.12345"
 ```
 
 ---
@@ -139,28 +139,28 @@ academic:
 Auto-routing (default — the agent picks the best path for your query):
 
 ```bash
-uv run python -m deep_research "What is the capital of France?"
-uv run python -m deep_research "Survey recent advances in RLHF"
-uv run python -m deep_research "Summarize https://arxiv.org/abs/2401.12345"
-uv run python -m deep_research "https://blog.example.com/post — what are its gaps?"
+uv run deep-research "What is the capital of France?"
+uv run deep-research "Survey recent advances in RLHF"
+uv run deep-research "Summarize https://arxiv.org/abs/2401.12345"
+uv run deep-research "https://blog.example.com/post — what are its gaps?"
 ```
 
 Force a specific research path:
 
 ```bash
-uv run python -m deep_research --quick "who invented the wheel?"
-uv run python -m deep_research --deep "compare transformer architectures" --max-iterations 5
-uv run python -m deep_research --academic "RLHF safety" --max-depth 2 --max-papers 20 --dump-graph refs.bib
-uv run python -m deep_research --url-source "https://example.com/foo.pdf" "verify its claims"
+uv run deep-research --quick "who invented the wheel?"
+uv run deep-research --deep "compare transformer architectures" --max-iterations 5
+uv run deep-research --academic "RLHF safety" --max-depth 2 --max-papers 20 --dump-graph refs.bib
+uv run deep-research --url-source "https://example.com/foo.pdf" "verify its claims"
 ```
 
 Output controls:
 
 ```bash
-uv run python -m deep_research "..." --out report.md --cite citations.json
-uv run python -m deep_research "..." --format json --out report.json
-uv run python -m deep_research "..." --quiet          # no live progress panel
-uv run python -m deep_research "..." --verbose        # debug logs + rich traceback
+uv run deep-research "..." --out report.md --cite citations.json
+uv run deep-research "..." --format json --out report.json
+uv run deep-research "..." --quiet          # no live progress panel
+uv run deep-research "..." --verbose        # debug logs + rich traceback
 ```
 
 ### Library CLI (personal research archive)
@@ -315,7 +315,7 @@ Or disable browser: `browser.enabled: false` in config.yaml.
 Pass `--quiet` / `-q` to disable the panel:
 
 ```bash
-uv run python -m deep_research --quiet "..." > report.md
+uv run deep-research --quiet "..." > report.md
 ```
 
 ---

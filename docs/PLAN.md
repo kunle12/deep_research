@@ -78,7 +78,7 @@ deep_research/
 │   └── IMPLEMENTATION_LOG.md     # progress tracker
 ├── deep_research/
 │   ├── __init__.py               # exports: run_research, AgentTopConfig, Report
-│   ├── __main__.py               # python -m deep_research → cli.app()
+│   ├── __main__.py               # deep-research → cli.app()
 │   ├── agent.py                  # run_research(query, config) → Report
 │   ├── config.py                 # AgentTopConfig (pydantic, Strict)
 │   ├── state.py                  # ResearchState + AcademicState + CitationGraph
@@ -338,33 +338,33 @@ url_source:
 
 ```bash
 # Auto-routing (default)
-python -m deep_research "What is the capital of France?"
-python -m deep_research "Survey recent advances in RLHF"
-python -m deep_research "Summarize https://arxiv.org/abs/2401.12345"
-python -m deep_research "https://blog.example.com/post — what are the gaps?"
+deep-research "What is the capital of France?"
+deep-research "Survey recent advances in RLHF"
+deep-research "Summarize https://arxiv.org/abs/2401.12345"
+deep-research "https://blog.example.com/post — what are the gaps?"
 
 # Force paths
-python -m deep_research --quick "..."
-python -m deep_research --deep "..." --max-iterations 5
-python -m deep_research --academic "..." --max-depth 2 --max-papers 20 --dump-graph refs.bib
-python -m deep_research --url-source "https://example.com/foo" "verify its claims"
+deep-research --quick "..."
+deep-research --deep "..." --max-iterations 5
+deep-research --academic "..." --max-depth 2 --max-papers 20 --dump-graph refs.bib
+deep-research --url-source "https://example.com/foo" "verify its claims"
 
 # Output controls
-python -m deep_research "..." --out report.md --cite citations.json --format markdown
+deep-research "..." --out report.md --cite citations.json --format markdown
 ```
 
 ---
 
 ## Acceptance criteria (full, all must pass)
 
-- [ ] `python -m deep_research "What is the capital of France?"` auto-classifies `quick`, returns in <15s, with 2-3 citations.
-- [ ] `python -m deep_research "Survey recent RLHF advances"` auto-classifies `deep`/`academic`, produces multi-section Markdown.
-- [ ] `python -m deep_research "..." --academic --max-depth 2 --max-papers 10 --dump-graph refs.bib` produces Markdown + `refs.bib`.
-- [ ] `python -m deep_research "..." --quick` bypasses classifier.
-- [ ] `python -m deep_research "Summarize https://arxiv.org/abs/2401.12345"` produces a 1-2 page Markdown analysis w/ summary, key claims, methodology, limitations; no auto follow-up research.
-- [ ] `python -m deep_research "https://arxiv.org/abs/2401.12345 — what are the gaps?"` produces analysis + a separate "follow-up research" section.
-- [ ] `python -m deep_research "https://blog.example.com/post — key claims?"` works for plain HTML; falls back to Playwright MCP if trafilatura returns low content.
-- [ ] `python -m deep_research --url-source "https://example.com/paper.pdf"` auto-detects PDF and uses vision path (falls back to text-only if `pdf_vision.enabled=false` — no crash).
+- [ ] `deep-research "What is the capital of France?"` auto-classifies `quick`, returns in <15s, with 2-3 citations.
+- [ ] `deep-research "Survey recent RLHF advances"` auto-classifies `deep`/`academic`, produces multi-section Markdown.
+- [ ] `deep-research "..." --academic --max-depth 2 --max-papers 10 --dump-graph refs.bib` produces Markdown + `refs.bib`.
+- [ ] `deep-research "..." --quick` bypasses classifier.
+- [ ] `deep-research "Summarize https://arxiv.org/abs/2401.12345"` produces a 1-2 page Markdown analysis w/ summary, key claims, methodology, limitations; no auto follow-up research.
+- [ ] `deep-research "https://arxiv.org/abs/2401.12345 — what are the gaps?"` produces analysis + a separate "follow-up research" section.
+- [ ] `deep-research "https://blog.example.com/post — key claims?"` works for plain HTML; falls back to Playwright MCP if trafilatura returns low content.
+- [ ] `deep-research --url-source "https://example.com/paper.pdf"` auto-detects PDF and uses vision path (falls back to text-only if `pdf_vision.enabled=false` — no crash).
 - [ ] `--url-source` overrides regex detection.
 - [ ] When no URL detected in query, `--url-source` flag raises a clean error.
 - [ ] `reddit.enabled: false` allows runs without `asyncpraw` installed.
@@ -439,7 +439,7 @@ If implementation gets disrupted mid-session, do the following in the new sessio
 2. Read `docs/IMPLEMENTATION_LOG.md` to see what's done.
 3. Check tracked files (`git ls-files`) to verify project structure.
 4. Run `cd /Users/xun/dev/deep_research && uv sync` to verify deps still resolve.
-5. Run `uv run python -m deep_research --help` to confirm CLI still works.
+5. Run `uv run deep-research --help` to confirm CLI still works.
 6. Continue from the next pending item in `IMPLEMENTATION_LOG.md`.
 
 Update `IMPLEMENTATION_LOG.md` as you complete each module/phase.

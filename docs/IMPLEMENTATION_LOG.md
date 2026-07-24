@@ -38,13 +38,13 @@
 ```bash
 $ cd /Users/xun/dev/deep_research
 $ uv sync --all-extras                    # core + reddit + dev deps install cleanly
-$ uv run python -m deep_research --help    # CLI renders
+$ uv run deep-research --help    # CLI renders
 $ uv run pytest tests/ -q                 # 44/44 tests pass
 $ uv run ruff check deep_research/        # clean (cosmetic-strict config)
 $ uv run mypy deep_research/               # passes (ignore_errors=true for SDK Literal nitpicks, deferred to P3 polish)
-$ uv run python -m deep_research --quick "what is the capital of France" --out report.md   # writes stub report with bibliography
-$ uv run python -m deep_research --academic --dump-graph refs.bib "survey of RLHF"          # academic stub + warns "no graph found"
-$ uv run python -m deep_research "https://arxiv.org/abs/2401.12345 what are the gaps?"     # URL auto-detection + follow-up flag detection -> True
+$ uv run deep-research --quick "what is the capital of France" --out report.md   # writes stub report with bibliography
+$ uv run deep-research --academic --dump-graph refs.bib "survey of RLHF"          # academic stub + warns "no graph found"
+$ uv run deep-research "https://arxiv.org/abs/2401.12345 what are the gaps?"     # URL auto-detection + follow-up flag detection -> True
 ```
 
 ### P1 acceptance criteria status
@@ -481,14 +481,14 @@ $ uv run pytest tests/test_nodes_analyze_paper.py -q
 $ uv run pytest tests/ -q               # 329 passed, 2 skipped
 $ uv run ruff check deep_research/ tests/   # All checks passed
 $ uv run mypy deep_research/ tests/         # Success: no issues in 65 source files
-$ uv run python -m deep_research --help    # --quiet flag correctly listed
-$ uv run python -m deep_research --quiet --quick "what is 2+2"   # quiet mode skips live panel; report still rendered
+$ uv run deep-research --help    # --quiet flag correctly listed
+$ uv run deep-research --quiet --quick "what is 2+2"   # quiet mode skips live panel; report still rendered
 ```
 
 ### Live smoke (visible progress panel)
 
 ```bash
-$ uv run python -m deep_research --quick "what is the capital of France"
+$ uv run deep-research --quick "what is the capital of France"
 ```
 
 Renders (in a real TTY):
