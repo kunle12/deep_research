@@ -20,13 +20,12 @@ async def write(
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",
 ) -> str:
-    """Call the writer LLM and return Markdown. Optionally extracts glossary entries."""
+    """Call the writer LLM and return Markdown. Glossary extraction is handled separately in agent.py."""
     sections_blob = _render_sections_for_prompt(state)
     citations_blob = _render_citations_for_prompt(state)
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
     prompt = (
-        prompt_template
-        .replace("{query}", state.query)
+        prompt_template.replace("{query}", state.query)
         .replace("{sections}", sections_blob)
         .replace("{citations}", citations_blob)
     )
@@ -37,12 +36,6 @@ async def write(
             "Cite sources inline using bare URLs like [https://example.com/source]. "
             "Do NOT include a Bibliography section — that is appended separately."
         )
-        # P10.6 glossary augmentation
-        glossary_prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
-        if glossary_prompt_path.exists():
-            glossary_text = glossary_prompt_path.read_text().strip()
-            if glossary_text:
-                system_msg += "\n\n" + glossary_text
 
         resp = await client.chat.completions.create(
             model=model,
@@ -58,10 +51,6 @@ async def write(
             lines = md.splitlines()
             if len(lines) >= 2:
                 md = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
-
-        # P10.6 glossary extraction from writer response
-        from deep_research.nodes.glossarize import extract_and_save_glossary
-        await extract_and_save_glossary(md, run_id, writer)
 
         return md
     except Exception as e:
@@ -86,7 +75,9 @@ def _render_sections_for_prompt(state: ResearchState) -> str:
 def _render_citations_for_prompt(state: ResearchState) -> str:
     lines: list[str] = []
     for c in state.citations.values():
-        lines.append(f"- URL: {c.url}\n  Title: {c.title or '(no title)'}\n  Snippet: {c.snippet[:200]}")
+        lines.append(
+            f"- URL: {c.url}\n  Title: {c.title or '(no title)'}\n  Snippet: {c.snippet[:200]}"
+        )
     if not lines:
         lines.append("(no citations available)")
     return "\n".join(lines)

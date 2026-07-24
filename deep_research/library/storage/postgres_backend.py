@@ -38,6 +38,7 @@ class PostgresStorageBackend:
 
     async def connect(self) -> None:
         import asyncpg
+
         self._conn = await asyncpg.connect(self._dsn)
 
     async def close(self) -> None:
@@ -60,7 +61,9 @@ class PostgresStorageBackend:
         statements = [s.strip() for s in sql.split(";") if s.strip()]
         for stmt in statements:
             await self._conn.execute(stmt)
-        logger.info("schema initialized from %s (%d statements)", _MIGRATION_FILE.name, len(statements))
+        logger.info(
+            "schema initialized from %s (%d statements)", _MIGRATION_FILE.name, len(statements)
+        )
 
     # -- Helpers --
 
@@ -109,41 +112,45 @@ class PostgresStorageBackend:
                 last_refreshed_at = EXCLUDED.last_refreshed_at,
                 upstream_unchanged_since = EXCLUDED.upstream_unchanged_since
         """
-        await self._execute(sql,
-            artifact.artifact_id, artifact.kind, artifact.source_url,
-            artifact.source_type, artifact.title, artifact.authors,
-            artifact.discovered_by, artifact.arxiv_id, artifact.parents,
-            artifact.bytes_path, artifact.bytes_size,
-            artifact.first_seen_at, artifact.last_touched_at,
+        await self._execute(
+            sql,
+            artifact.artifact_id,
+            artifact.kind,
+            artifact.source_url,
+            artifact.source_type,
+            artifact.title,
+            artifact.authors,
+            artifact.discovered_by,
+            artifact.arxiv_id,
+            artifact.parents,
+            artifact.bytes_path,
+            artifact.bytes_size,
+            artifact.first_seen_at,
+            artifact.last_touched_at,
             artifact.raw_metadata,
-            artifact.refresh_after_at, artifact.last_refreshed_at,
+            artifact.refresh_after_at,
+            artifact.last_refreshed_at,
             artifact.upstream_unchanged_since,
         )
         return artifact.artifact_id
 
     async def get_artifact(self, artifact_id: str) -> ArtifactRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM artifacts WHERE artifact_id = $1", artifact_id
-        )
+        row = await self._fetchone("SELECT * FROM artifacts WHERE artifact_id = $1", artifact_id)
         if row is None:
             return None
         return self._row_to_artifact(row)
 
     async def find_artifact_by_url(self, url: str) -> ArtifactRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM artifacts WHERE source_url = $1", url
-        )
+        row = await self._fetchone("SELECT * FROM artifacts WHERE source_url = $1", url)
         if row is None:
             return None
         return self._row_to_artifact(row)
 
     async def find_artifact_by_arxiv_id(self, arxiv_id: str) -> ArtifactRow | None:
         await self._ensure_conn()
-        row = await self._fetchone(
-            "SELECT * FROM artifacts WHERE arxiv_id = $1", arxiv_id
-        )
+        row = await self._fetchone("SELECT * FROM artifacts WHERE arxiv_id = $1", arxiv_id)
         if row is None:
             return None
         return self._row_to_artifact(row)
@@ -159,7 +166,8 @@ class PostgresStorageBackend:
                   AND refresh_after_at IS NOT NULL
                   AND (last_refreshed_at IS NULL OR last_refreshed_at < refresh_after_at)
                 LIMIT $2""",
-                scope_value, limit,
+                scope_value,
+                limit,
             )
         elif scope_kind == "tag":
             rows = await self._fetchall(
@@ -169,7 +177,8 @@ class PostgresStorageBackend:
                   AND a.refresh_after_at IS NOT NULL
                   AND (a.last_refreshed_at IS NULL OR a.last_refreshed_at < a.refresh_after_at)
                 LIMIT $2""",
-                scope_value, limit,
+                scope_value,
+                limit,
             )
         elif scope_kind == "artifact_id":
             rows = await self._fetchall(
@@ -218,12 +227,20 @@ class PostgresStorageBackend:
                 citations_json = EXCLUDED.citations_json,
                 classifier_json = EXCLUDED.classifier_json
         """
-        await self._execute(sql,
-            report.run_id, report.started_at, report.completed_at,
-            report.original_query, report.path_taken,
-            report.classifier_rationale, report.iterations,
-            report.config_snapshot, report.markdown,
-            report.artifact_id, report.citations_json, report.classifier_json,
+        await self._execute(
+            sql,
+            report.run_id,
+            report.started_at,
+            report.completed_at,
+            report.original_query,
+            report.path_taken,
+            report.classifier_rationale,
+            report.iterations,
+            report.config_snapshot,
+            report.markdown,
+            report.artifact_id,
+            report.citations_json,
+            report.classifier_json,
         )
 
     async def get_report(self, run_id: str) -> ReportRow | None:
@@ -232,11 +249,17 @@ class PostgresStorageBackend:
         if row is None:
             return None
         return ReportRow(
-            run_id=row[0], started_at=row[1], completed_at=row[2],
-            original_query=row[3], path_taken=row[4],
-            classifier_rationale=row[5], iterations=row[6],
-            config_snapshot=row[7], markdown=row[8],
-            artifact_id=row[9], citations_json=row[10],
+            run_id=row[0],
+            started_at=row[1],
+            completed_at=row[2],
+            original_query=row[3],
+            path_taken=row[4],
+            classifier_rationale=row[5],
+            iterations=row[6],
+            config_snapshot=row[7],
+            markdown=row[8],
+            artifact_id=row[9],
+            citations_json=row[10],
             classifier_json=row[11],
         )
 
@@ -247,14 +270,22 @@ class PostgresStorageBackend:
         )
         results: list[ReportRow] = []
         for r in rows:
-            results.append(ReportRow(
-                run_id=r[0], started_at=r[1], completed_at=r[2],
-                original_query=r[3], path_taken=r[4],
-                classifier_rationale=r[5], iterations=r[6],
-                config_snapshot=r[7], markdown=r[8],
-                artifact_id=r[9], citations_json=r[10],
-                classifier_json=r[11],
-            ))
+            results.append(
+                ReportRow(
+                    run_id=r[0],
+                    started_at=r[1],
+                    completed_at=r[2],
+                    original_query=r[3],
+                    path_taken=r[4],
+                    classifier_rationale=r[5],
+                    iterations=r[6],
+                    config_snapshot=r[7],
+                    markdown=r[8],
+                    artifact_id=r[9],
+                    citations_json=r[10],
+                    classifier_json=r[11],
+                )
+            )
         return results
 
     # -- Analysis ops --
@@ -274,28 +305,45 @@ class PostgresStorageBackend:
                 key_references = EXCLUDED.key_references,
                 relevance_to_query = EXCLUDED.relevance_to_query
         """
-        await self._execute(sql,
-            analysis.analysis_id, analysis.artifact_id, analysis.run_id,
-            analysis.analyzer, analysis.summary, analysis.key_findings,
-            analysis.methodology, analysis.limitations, analysis.gaps,
-            analysis.follow_ups, analysis.key_references,
-            analysis.relevance_to_query, analysis.analyzed_at,
+        await self._execute(
+            sql,
+            analysis.analysis_id,
+            analysis.artifact_id,
+            analysis.run_id,
+            analysis.analyzer,
+            analysis.summary,
+            analysis.key_findings,
+            analysis.methodology,
+            analysis.limitations,
+            analysis.gaps,
+            analysis.follow_ups,
+            analysis.key_references,
+            analysis.relevance_to_query,
+            analysis.analyzed_at,
         )
 
     async def get_analyses_for_artifact(self, artifact_id: str) -> list[AnalysisRow]:
         await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT * FROM analyses WHERE artifact_id = $1", artifact_id
-        )
+        rows = await self._fetchall("SELECT * FROM analyses WHERE artifact_id = $1", artifact_id)
         results: list[AnalysisRow] = []
         for r in rows:
-            results.append(AnalysisRow(
-                analysis_id=r[0], artifact_id=r[1], run_id=r[2],
-                analyzer=r[3], summary=r[4], key_findings=r[5],
-                methodology=r[6], limitations=r[7], gaps=r[8],
-                follow_ups=r[9], key_references=r[10],
-                relevance_to_query=r[11], analyzed_at=r[12],
-            ))
+            results.append(
+                AnalysisRow(
+                    analysis_id=r[0],
+                    artifact_id=r[1],
+                    run_id=r[2],
+                    analyzer=r[3],
+                    summary=r[4],
+                    key_findings=r[5],
+                    methodology=r[6],
+                    limitations=r[7],
+                    gaps=r[8],
+                    follow_ups=r[9],
+                    key_references=r[10],
+                    relevance_to_query=r[11],
+                    analyzed_at=r[12],
+                )
+            )
         return results
 
     # -- Citation edge ops --
@@ -313,15 +361,17 @@ class PostgresStorageBackend:
                 weight = EXCLUDED.weight,
                 discovered_in_run = EXCLUDED.discovered_in_run
         """
-        await self._execute(sql,
-            edge.source_artifact_id, edge.target_artifact_id,
-            edge.target_arxiv_id, edge.rationale, edge.weight,
+        await self._execute(
+            sql,
+            edge.source_artifact_id,
+            edge.target_artifact_id,
+            edge.target_arxiv_id,
+            edge.rationale,
+            edge.weight,
             edge.discovered_in_run,
         )
 
-    async def get_citation_edges_for_source(
-        self, artifact_id: str
-    ) -> list[CitationEdgeRow]:
+    async def get_citation_edges_for_source(self, artifact_id: str) -> list[CitationEdgeRow]:
         await self._ensure_conn()
         rows = await self._fetchall(
             "SELECT * FROM citation_edges WHERE source_artifact_id = $1",
@@ -329,11 +379,16 @@ class PostgresStorageBackend:
         )
         results: list[CitationEdgeRow] = []
         for r in rows:
-            results.append(CitationEdgeRow(
-                source_artifact_id=r[0], target_artifact_id=r[1],
-                target_arxiv_id=r[2], rationale=r[3], weight=r[4],
-                discovered_in_run=r[5],
-            ))
+            results.append(
+                CitationEdgeRow(
+                    source_artifact_id=r[0],
+                    target_artifact_id=r[1],
+                    target_arxiv_id=r[2],
+                    rationale=r[3],
+                    weight=r[4],
+                    discovered_in_run=r[5],
+                )
+            )
         return results
 
     # -- Tag ops --
@@ -350,9 +405,7 @@ class PostgresStorageBackend:
 
     async def get_tags_for_artifact(self, artifact_id: str) -> list[TagRow]:
         await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT * FROM tags WHERE artifact_id = $1", artifact_id
-        )
+        rows = await self._fetchall("SELECT * FROM tags WHERE artifact_id = $1", artifact_id)
         results: list[TagRow] = []
         for r in rows:
             results.append(TagRow(tag=r[0], artifact_id=r[1], applied_in_run=r[2]))
@@ -360,9 +413,7 @@ class PostgresStorageBackend:
 
     async def get_artifacts_by_tag(self, tag: str) -> list[str]:
         await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT artifact_id FROM tags WHERE tag = $1", tag
-        )
+        rows = await self._fetchall("SELECT artifact_id FROM tags WHERE tag = $1", tag)
         return [r[0] for r in rows]
 
     # -- Glossary ops --
@@ -386,17 +437,30 @@ class PostgresStorageBackend:
                 first_seen_artifact_id = EXCLUDED.first_seen_artifact_id,
                 last_updated = EXCLUDED.last_updated
         """
-        await self._execute(sql,
-            entry.term, entry.term_canonical, entry.kind, entry.short_def,
-            entry.long_def, entry.acronym_expansion, entry.related_terms,
-            entry.domain_tags, entry.confidence,
-            entry.first_seen_run_id, entry.first_seen_artifact_id,
+        await self._execute(
+            sql,
+            entry.term,
+            entry.term_canonical,
+            entry.kind,
+            entry.short_def,
+            entry.long_def,
+            entry.acronym_expansion,
+            entry.related_terms,
+            entry.domain_tags,
+            entry.confidence,
+            entry.first_seen_run_id,
+            entry.first_seen_artifact_id,
             entry.last_updated,
         )
 
-    async def get_glossary_entry(
-        self, term_canonical: str
-    ) -> GlossaryEntry | None:
+    async def upsert_glossary_entries(self, entries: list[GlossaryEntry], run_id: str) -> int:
+        count = 0
+        for e in entries:
+            await self.upsert_glossary_entry(e)
+            count += 1
+        return count
+
+    async def get_glossary_entry(self, term_canonical: str) -> GlossaryEntry | None:
         await self._ensure_conn()
         row = await self._fetchone(
             "SELECT * FROM glossary WHERE term_canonical = $1", term_canonical
@@ -404,29 +468,43 @@ class PostgresStorageBackend:
         if row is None:
             return None
         return GlossaryEntry(
-            term_id=row[0], term=row[1], term_canonical=row[2],
-            kind=row[3], short_def=row[4], long_def=row[5],
-            acronym_expansion=row[6], related_terms=row[7],
-            domain_tags=row[8], confidence=row[9],
-            first_seen_run_id=row[10], first_seen_artifact_id=row[11],
+            term_id=row[0],
+            term=row[1],
+            term_canonical=row[2],
+            kind=row[3],
+            short_def=row[4],
+            long_def=row[5],
+            acronym_expansion=row[6],
+            related_terms=row[7],
+            domain_tags=row[8],
+            confidence=row[9],
+            first_seen_run_id=row[10],
+            first_seen_artifact_id=row[11],
             last_updated=row[12],
         )
 
     async def list_glossary_entries(self) -> list[GlossaryEntry]:
         await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT * FROM glossary ORDER BY term_canonical"
-        )
+        rows = await self._fetchall("SELECT * FROM glossary ORDER BY term_canonical")
         results: list[GlossaryEntry] = []
         for r in rows:
-            results.append(GlossaryEntry(
-                term_id=r[0], term=r[1], term_canonical=r[2],
-                kind=r[3], short_def=r[4], long_def=r[5],
-                acronym_expansion=r[6], related_terms=r[7],
-                domain_tags=r[8], confidence=r[9],
-                first_seen_run_id=r[10], first_seen_artifact_id=r[11],
-                last_updated=r[12],
-            ))
+            results.append(
+                GlossaryEntry(
+                    term_id=r[0],
+                    term=r[1],
+                    term_canonical=r[2],
+                    kind=r[3],
+                    short_def=r[4],
+                    long_def=r[5],
+                    acronym_expansion=r[6],
+                    related_terms=r[7],
+                    domain_tags=r[8],
+                    confidence=r[9],
+                    first_seen_run_id=r[10],
+                    first_seen_artifact_id=r[11],
+                    last_updated=r[12],
+                )
+            )
         return results
 
     # -- Refresh foundation --
@@ -444,14 +522,16 @@ class PostgresStorageBackend:
             ON CONFLICT (artifact_id_old, artifact_id_new) DO UPDATE SET
                 reason = EXCLUDED.reason
         """
-        await self._execute(sql,
-            old_id, new_id, reason,
-            datetime.now(UTC).isoformat(), run_id,
+        await self._execute(
+            sql,
+            old_id,
+            new_id,
+            reason,
+            datetime.now(UTC).isoformat(),
+            run_id,
         )
 
-    async def start_refresh_job(
-        self, scope_kind: str, scope_value: str
-    ) -> str:
+    async def start_refresh_job(self, scope_kind: str, scope_value: str) -> str:
         await self._ensure_conn()
         import uuid
         from datetime import UTC, datetime
@@ -461,14 +541,22 @@ class PostgresStorageBackend:
             INSERT INTO refresh_jobs (job_id, started_at, scope_kind, scope_value, status)
             VALUES ($1, $2, $3, $4, 'running')
         """
-        await self._execute(sql,
-            job_id, datetime.now(UTC).isoformat(), scope_kind, scope_value,
+        await self._execute(
+            sql,
+            job_id,
+            datetime.now(UTC).isoformat(),
+            scope_kind,
+            scope_value,
         )
         return job_id
 
     async def complete_refresh_job(
-        self, job_id: str, considered: int, refreshed: int,
-        status: str, error: str | None = None,
+        self,
+        job_id: str,
+        considered: int,
+        refreshed: int,
+        status: str,
+        error: str | None = None,
     ) -> None:
         await self._ensure_conn()
         from datetime import UTC, datetime
@@ -479,9 +567,14 @@ class PostgresStorageBackend:
                 artifacts_refreshed = $3, status = $4, error = $5
             WHERE job_id = $6
         """
-        await self._execute(sql,
-            datetime.now(UTC).isoformat(), considered, refreshed,
-            status, error, job_id,
+        await self._execute(
+            sql,
+            datetime.now(UTC).isoformat(),
+            considered,
+            refreshed,
+            status,
+            error,
+            job_id,
         )
 
     # -- Deletion --
@@ -494,9 +587,7 @@ class PostgresStorageBackend:
         await self._ensure_conn()
         await self._execute("DELETE FROM analyses WHERE run_id = $1", run_id)
         await self._execute("DELETE FROM tags WHERE applied_in_run = $1", run_id)
-        await self._execute(
-            "DELETE FROM citation_edges WHERE discovered_in_run = $1", run_id
-        )
+        await self._execute("DELETE FROM citation_edges WHERE discovered_in_run = $1", run_id)
         await self._execute("DELETE FROM reports WHERE run_id = $1", run_id)
 
     async def delete_artifact(self, artifact_id: str) -> None:
@@ -518,9 +609,7 @@ class PostgresStorageBackend:
 
     # -- FTS --
 
-    async def full_text_search(
-        self, query: str, *, kind: str, limit: int
-    ) -> list[SearchHit]:
+    async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
         # Postgres uses tsvector instead of FTS5
         sql = """
@@ -537,16 +626,19 @@ class PostgresStorageBackend:
         rows = await self._fetchall(sql, kind, query, limit)
         results: list[SearchHit] = []
         for r in rows:
-            results.append(SearchHit(
-                artifact_id=r[0], title=r[1] or "", authors=r[2] or "",
-                summary=r[3] or "", extracted_text=r[4] or "",
-                score=1.0,
-            ))
+            results.append(
+                SearchHit(
+                    artifact_id=r[0],
+                    title=r[1] or "",
+                    authors=r[2] or "",
+                    summary=r[3] or "",
+                    extracted_text=r[4] or "",
+                    score=1.0,
+                )
+            )
         return results
 
-    async def glossary_search(
-        self, query: str, limit: int
-    ) -> list[GlossaryEntry]:
+    async def glossary_search(self, query: str, limit: int) -> list[GlossaryEntry]:
         await self._ensure_conn()
         sql = """
             SELECT * FROM glossary
@@ -557,12 +649,21 @@ class PostgresStorageBackend:
         rows = await self._fetchall(sql, query, limit)
         results: list[GlossaryEntry] = []
         for r in rows:
-            results.append(GlossaryEntry(
-                term_id=r[0], term=r[1], term_canonical=r[2],
-                kind=r[3], short_def=r[4], long_def=r[5],
-                acronym_expansion=r[6], related_terms=r[7],
-                domain_tags=r[8], confidence=r[9],
-                first_seen_run_id=r[10], first_seen_artifact_id=r[11],
-                last_updated=r[12],
-            ))
+            results.append(
+                GlossaryEntry(
+                    term_id=r[0],
+                    term=r[1],
+                    term_canonical=r[2],
+                    kind=r[3],
+                    short_def=r[4],
+                    long_def=r[5],
+                    acronym_expansion=r[6],
+                    related_terms=r[7],
+                    domain_tags=r[8],
+                    confidence=r[9],
+                    first_seen_run_id=r[10],
+                    first_seen_artifact_id=r[11],
+                    last_updated=r[12],
+                )
+            )
         return results

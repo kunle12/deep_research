@@ -177,7 +177,11 @@ uv run deep-research-library stats                 # library statistics
 uv run deep-research-library prune --older-than 90 # prune old artifacts
 uv run deep-research-library export-bibtex refs.bib
 uv run deep-research-library refresh               # refresh stale artifacts
-uv run deep-research-library glossary              # browse glossary
+uv run deep-research-library glossary              # list all glossary entries
+uv run deep-research-library glossary --find "transformer"  # full-text search
+uv run deep-research-library glossary --term RLHF          # detail view of one term
+uv run deep-research-library glossary --filter-tag "nlp"   # filter by domain tag
+uv run deep-research-library glossary --out glossary.json  # export as JSON
 ```
 
 Refresh scheduler (daemon that auto-refreshes upstream URLs):
@@ -257,7 +261,7 @@ By default, every research artifact is archived to `.deep_research_library/`:
 - **SQLite metadata DB**: reports, analyses, tags, glossary, citation edges, full-text search
 - **Postgres backend**: set `pdl.storage.backend: "postgres"` with `DEEP_RESEARCH_PG_DSN`
 - **Refresh daemon**: `deep-research-scheduler` probes upstream URLs for changes
-- **Glossary**: per-run LLM extraction, cross-run dedup, FTS5 search
+- **Glossary**: dedicated post-synthesis LLM extraction (JSON-only prompt, `response_format=json_object`), cross-run dedup, FTS5 search. Export via `--glossary-out` on the main CLI or `deep-research-library glossary --out glossary.json`.
 
 PDF rendering uses weasyprint (falls back to xhtml2pdf if system deps missing).
 Install native deps for best results:

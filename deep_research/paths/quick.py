@@ -75,10 +75,8 @@ async def quick_search(
     reporter.phase("quick.synthesize", f"{len(citations)} citations + {len(pages_text)} pages")
     rendered_results = _render_for_llm(original_query, search_result, pages_text)
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
-    prompt_text = (
-        prompt_template
-        .replace("{query}", original_query)
-        .replace("{results}", rendered_results)
+    prompt_text = prompt_template.replace("{query}", original_query).replace(
+        "{results}", rendered_results
     )
 
     # P13: inject prior context from library recall
@@ -93,6 +91,7 @@ async def quick_search(
 
     reporter.phase("quick.done", f"{len(citations)} citations")
     from datetime import UTC, datetime
+
     return Report(
         markdown=answer_text,
         citations=citations,
@@ -117,9 +116,7 @@ def _render_for_llm(
         lines.append(search_result.content)
     else:
         for i, c in enumerate(search_result.citations, start=1):
-            lines.append(
-                f"{i}. {c.title or c.url}\n   URL: {c.url}\n   Snippet: {c.snippet[:300]}"
-            )
+            lines.append(f"{i}. {c.title or c.url}\n   URL: {c.url}\n   Snippet: {c.snippet[:300]}")
     if pages_text:
         lines.append("")
         lines.append("## Fetched page contents (truncated to 4000 chars each):")
@@ -143,16 +140,10 @@ async def _synthesize(
         system_msg = (
             "You are a quick research synthesizer. "
             "Respond with a SINGLE JSON object and NOTHING ELSE - no markdown fences, "
-            'no surrounding text. Schema: '
+            "no surrounding text. Schema: "
             '{"answer": "<markdown string>", '
             '"citations": [{"url":"...","title":"...","snippet":"...","confidence_score":0.8}]}'
         )
-        # P10.6 glossary augmentation
-        glossary_prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
-        if glossary_prompt_path.exists():
-            glossary_text = glossary_prompt_path.read_text().strip()
-            if glossary_text:
-                system_msg += "\n\n" + glossary_text
 
         resp = await client.chat.completions.create(
             model=config.llm.text_model,
@@ -180,9 +171,6 @@ async def _synthesize(
                         source_type="web",
                     )
                 )
-            # P10.6 glossary extraction
-            from deep_research.nodes.glossarize import extract_and_save_glossary
-            await extract_and_save_glossary(raw, run_id, writer)
         except json.JSONDecodeError:
             answer_md = raw
     except Exception as e:

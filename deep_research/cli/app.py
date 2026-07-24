@@ -13,6 +13,7 @@ Output controls:
   --out PATH                write the final markdown report to file
   --format {markdown,json}  output format
   --dump-graph PATH         write the BibTeX citation graph (academic mode) to .bib
+  --glossary-out PATH       write extracted glossary terms to JSON file (any path mode)
 
 Config:
   --config PATH             path to config.yaml (default: ./config.yaml or ./config.example.yaml)
@@ -20,6 +21,7 @@ Config:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -50,8 +52,6 @@ app = typer.Typer(
 )
 
 
-
-
 def _setup_logging(verbose: bool) -> None:
     """Config root logger with rich-friendly formatting."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -76,6 +76,7 @@ def _load_env_dotlocal(cwd: Path) -> None:
         return
     try:
         from dotenv import load_dotenv
+
         load_dotenv(p, override=False)
     except ImportError:
         # python-dotenv not installed — silently skip
@@ -100,18 +101,22 @@ def _load_config(config_path: Path | None) -> AgentTopConfig:
     return AgentTopConfig()
 
 
-def _resolve_path_override(
-    quick: bool, deep: bool, academic: bool, url_source: bool
-) -> str | None:
+def _resolve_path_override(quick: bool, deep: bool, academic: bool, url_source: bool) -> str | None:
     """At most one of the path flags may be passed; return the corresponding value or None."""
-    selected = [name for flag, name in [
-        (quick, "quick"),
-        (deep, "deep"),
-        (academic, "academic"),
-        (url_source, "url_source"),
-    ] if flag]
+    selected = [
+        name
+        for flag, name in [
+            (quick, "quick"),
+            (deep, "deep"),
+            (academic, "academic"),
+            (url_source, "url_source"),
+        ]
+        if flag
+    ]
     if len(selected) > 1:
-        err_console.print(f"[red]Ambiguous flags — pick ONE of --quick/--deep/--academic/--url-source[/red]: {selected}")
+        err_console.print(
+            f"[red]Ambiguous flags — pick ONE of --quick/--deep/--academic/--url-source[/red]: {selected}"
+        )
         raise typer.Exit(code=2)
     return selected[0] if selected else None
 
@@ -120,17 +125,33 @@ def _resolve_path_override(
 def main(
     query: str = typer.Argument(..., help="The research query or 'URL [optional question]'"),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
-    quick: bool = typer.Option(False, "--quick", help="Force the quick path (1 search + summarize)"),
-    deep: bool = typer.Option(False, "--deep", help="Force the deep path (planner -> researcher -> critic -> writer)"),
-    academic: bool = typer.Option(False, "--academic", help="Force the academic path (recursive citation mining)"),
-    url_source: bool = typer.Option(False, "--url-source", help="Force URL-source mode (URL must be in query)"),
+    quick: bool = typer.Option(
+        False, "--quick", help="Force the quick path (1 search + summarize)"
+    ),
+    deep: bool = typer.Option(
+        False, "--deep", help="Force the deep path (planner -> researcher -> critic -> writer)"
+    ),
+    academic: bool = typer.Option(
+        False, "--academic", help="Force the academic path (recursive citation mining)"
+    ),
+    url_source: bool = typer.Option(
+        False, "--url-source", help="Force URL-source mode (URL must be in query)"
+    ),
     out: Path | None = typer.Option(None, "--out", "-o", help="Write final report to this file"),
     fmt: str = typer.Option("markdown", "--format", "-f", help="markdown | json"),
-    dump_graph: Path | None = typer.Option(None, "--dump-graph", help="Write BibTeX citation graph to this file (academic mode)"),
+    dump_graph: Path | None = typer.Option(
+        None, "--dump-graph", help="Write BibTeX citation graph to this file (academic mode)"
+    ),
     cite_path: Path | None = typer.Option(
         None,
         "--cite",
         help="Write the Report's citation list to this JSON file (any path mode)",
+    ),
+    glossary_out: Path | None = typer.Option(
+        None,
+        "--glossary-out",
+        "-go",
+        help="Write extracted glossary terms to this JSON file",
     ),
     max_iterations: int | None = typer.Option(
         None,
@@ -233,7 +254,9 @@ def main(
             Path(dump_graph).write_text(bib, encoding="utf-8")
             console.print(f"[green]Wrote citation graph[/green] {dump_graph}")
         else:
-            console.print(f"[yellow]No citation graph found in report; nothing to dump to {dump_graph}[/yellow]")
+            console.print(
+                f"[yellow]No citation graph found in report; nothing to dump to {dump_graph}[/yellow]"
+            )
 
     # Citations JSON dump (any path mode)
     if cite_path is not None:
@@ -246,6 +269,28 @@ def main(
                 f"[yellow]No citations in report; wrote empty JSON array to {cite_path}[/yellow]"
             )
             Path(cite_path).write_text(cits_json, encoding="utf-8")
+
+    # Glossary JSON dump
+    if glossary_out is not None and report.glossary_entries:
+        glossary_data = [
+            {
+                "term": e.term,
+                "term_canonical": e.term_canonical,
+                "kind": e.kind,
+                "short_def": e.short_def,
+                "long_def": e.long_def,
+                "acronym_expansion": e.acronym_expansion,
+                "related_terms": json.loads(e.related_terms) if e.related_terms else [],
+                "domain_tags": json.loads(e.domain_tags) if e.domain_tags else [],
+                "confidence": e.confidence,
+            }
+            for e in report.glossary_entries
+        ]
+        Path(glossary_out).write_text(
+            json.dumps(glossary_data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        console.print(f"[green]Wrote {len(glossary_data)} glossary entries[/green] {glossary_out}")
 
     elapsed = time.monotonic() - t0
     mins, secs = divmod(int(elapsed), 60)
@@ -279,9 +324,7 @@ def _apply_flag_overrides(
     """
     if max_iterations is not None:
         if max_iterations < 1:
-            err_console.print(
-                f"[red]Invalid --max-iterations {max_iterations}[/red]; must be >= 1"
-            )
+            err_console.print(f"[red]Invalid --max-iterations {max_iterations}[/red]; must be >= 1")
             raise typer.Exit(code=2)
         config.agent.max_iterations = max_iterations
     if max_depth is not None:
@@ -293,9 +336,7 @@ def _apply_flag_overrides(
         config.academic.max_depth = max_depth
     if max_papers is not None:
         if max_papers < 1:
-            err_console.print(
-                f"[red]Invalid --max-papers {max_papers}[/red]; must be >= 1"
-            )
+            err_console.print(f"[red]Invalid --max-papers {max_papers}[/red]; must be >= 1")
             raise typer.Exit(code=2)
         config.academic.max_papers = max_papers
 

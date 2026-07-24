@@ -107,9 +107,7 @@ async def academic_research(
             logger.info("blog_search in academic path failed; skipping")
 
     # Enqueue seed nodes at depth 0 (parent_arxiv_id=None, rationale="")
-    queue_white: deque = deque(
-        (node, 0, None) for node in seeds
-    )
+    queue_white: deque = deque((node, 0, None) for node in seeds)
 
     # ---- per-paper concurrency ---------------------------------------------
     sem = asyncio.Semaphore(cfg.concurrency)
@@ -134,9 +132,7 @@ async def academic_research(
             # node already added to graph by _gather_seeds OR by the enqueuer
             graph.add_node(node)
 
-            reporter.step(
-                "academic.analyze", f"depth={depth} arxiv={base} parent={parent or '-'}"
-            )
+            reporter.step("academic.analyze", f"depth={depth} arxiv={base} parent={parent or '-'}")
 
             # Detect scholar-only synthetic nodes — abstract-only path
             is_scholar_only = node.arxiv_id.startswith("scholar:")
@@ -213,17 +209,24 @@ async def academic_research(
                     except Exception:
                         artifact = None
                 if artifact:
-                    await writer.record_analysis(artifact.artifact_id, analysis, run_id, "analyze_paper")
+                    await writer.record_analysis(
+                        artifact.artifact_id, analysis, run_id, "analyze_paper"
+                    )
                     for ref in analysis.key_references:
                         if ref.arxiv_id:
                             await writer.record_citation_edge(
-                                artifact.artifact_id, ref.arxiv_id,
-                                weight=0.5, run_id=run_id,
+                                artifact.artifact_id,
+                                ref.arxiv_id,
+                                weight=0.5,
+                                run_id=run_id,
                                 rationale=f"key reference in {base}",
                             )
             logger.info(
                 "analyzed arxiv=%s depth=%d title=%r refs=%d",
-                base, depth, (analysis.title or "")[:60], len(analysis.key_references),
+                base,
+                depth,
+                (analysis.title or "")[:60],
+                len(analysis.key_references),
             )
             reporter.step(
                 "academic.analyzed",
@@ -232,9 +235,9 @@ async def academic_research(
 
             # Optionally enqueue children
             if depth < cfg.max_depth and processed_count < cfg.max_papers:
-                child_ids = extract_key_reference_arxiv_ids(
-                    analysis
-                )[: cfg.max_key_references_to_recurse]
+                child_ids = extract_key_reference_arxiv_ids(analysis)[
+                    : cfg.max_key_references_to_recurse
+                ]
                 # Enqueue newly-discovered child arxiv_ids (visible in next batch)
                 new_kids: list[str] = []
                 existing_ids = {n.arxiv_id for n in graph.nodes.values()}  # cache O(1) lookups
@@ -303,8 +306,12 @@ async def academic_research(
     citations: list[Citation] = []
     for aid, node in graph.nodes.items():
         a = analyses.get(aid)
-        node_url = node.url or (f"https://arxiv.org/abs/{aid}" if not aid.startswith("scholar:") else aid)
-        source_type: Literal["arxiv", "scholar"] = "scholar" if aid.startswith("scholar:") else "arxiv"
+        node_url = node.url or (
+            f"https://arxiv.org/abs/{aid}" if not aid.startswith("scholar:") else aid
+        )
+        source_type: Literal["arxiv", "scholar"] = (
+            "scholar" if aid.startswith("scholar:") else "arxiv"
+        )
         if a is not None:
             citations.append(
                 Citation(
@@ -340,6 +347,7 @@ async def academic_research(
 
     reporter.phase("academic.done", f"{len(analyses)} papers; {len(citations)} citations")
     from datetime import UTC, datetime
+
     return Report(
         markdown=final_md,
         citations=citations,
@@ -386,7 +394,9 @@ async def _gather_seeds(
 
     import hashlib
 
-    async def _run_scholar(q: str, n: int, t: ToolRegistry, c: AgentTopConfig) -> tuple[list[PaperNode], list[Citation]]:
+    async def _run_scholar(
+        q: str, n: int, t: ToolRegistry, c: AgentTopConfig
+    ) -> tuple[list[PaperNode], list[Citation]]:
         """Run scholar search and return (nodes, citations)."""
         results = await t.call("scholar_search", {"query": q, "max_results": n})
         if results.error is not None:
@@ -397,34 +407,38 @@ async def _gather_seeds(
         for cit in results.citations:
             if cit.arxiv_id:
                 out_cits.append(cit)
-                out_nodes.append(PaperNode(
-                    arxiv_id=cit.arxiv_id,
-                    title=cit.title or cit.arxiv_id,
-                    authors=list(cit.authors),
-                    abstract=cit.snippet or "",
-                    depth=0,
-                    url=cit.url,
-                    doi=cit.doi,
-                    pdf_url=cit.pdf_url,
-                    venue=cit.venue,
-                    year=cit.year,
-                    rationale="scholar search hit (arxiv overlap)",
-                ))
+                out_nodes.append(
+                    PaperNode(
+                        arxiv_id=cit.arxiv_id,
+                        title=cit.title or cit.arxiv_id,
+                        authors=list(cit.authors),
+                        abstract=cit.snippet or "",
+                        depth=0,
+                        url=cit.url,
+                        doi=cit.doi,
+                        pdf_url=cit.pdf_url,
+                        venue=cit.venue,
+                        year=cit.year,
+                        rationale="scholar search hit (arxiv overlap)",
+                    )
+                )
             else:
                 synthetic = "scholar:" + hashlib.sha256(cit.url.encode()).hexdigest()[:12]
-                out_nodes.append(PaperNode(
-                    arxiv_id=synthetic,
-                    title=cit.title or synthetic,
-                    authors=list(cit.authors),
-                    abstract=cit.snippet or "",
-                    depth=0,
-                    url=cit.url,
-                    doi=cit.doi,
-                    pdf_url=cit.pdf_url,
-                    venue=cit.venue,
-                    year=cit.year,
-                    rationale="scholar search hit",
-                ))
+                out_nodes.append(
+                    PaperNode(
+                        arxiv_id=synthetic,
+                        title=cit.title or synthetic,
+                        authors=list(cit.authors),
+                        abstract=cit.snippet or "",
+                        depth=0,
+                        url=cit.url,
+                        doi=cit.doi,
+                        pdf_url=cit.pdf_url,
+                        venue=cit.venue,
+                        year=cit.year,
+                        rationale="scholar search hit",
+                    )
+                )
                 out_cits.append(cit)
         return (out_nodes, out_cits)
 
@@ -438,14 +452,16 @@ async def _gather_seeds(
         if results.error is None:
             for c in results.citations:
                 if c.arxiv_id:
-                    arxiv_nodes.append(PaperNode(
-                        arxiv_id=c.arxiv_id,
-                        title=c.title or c.arxiv_id,
-                        authors=list(c.authors),
-                        abstract=c.snippet or "",
-                        depth=0,
-                        rationale="arxiv search hit",
-                    ))
+                    arxiv_nodes.append(
+                        PaperNode(
+                            arxiv_id=c.arxiv_id,
+                            title=c.title or c.arxiv_id,
+                            authors=list(c.authors),
+                            abstract=c.snippet or "",
+                            depth=0,
+                            rationale="arxiv search hit",
+                        )
+                    )
                     arxiv_cits.append(c)
         else:
             logger.warning("arxiv_search failed: %s", results.error)
@@ -458,14 +474,19 @@ async def _gather_seeds(
             if len(arxiv_cits) >= config.scholar.skip_if_arxiv_hits_ge:
                 logger.info(
                     "scholar skip: arxiv seeds=%d >= skip_if_arxiv_hits_ge=%d",
-                    len(arxiv_cits), config.scholar.skip_if_arxiv_hits_ge,
+                    len(arxiv_cits),
+                    config.scholar.skip_if_arxiv_hits_ge,
                 )
                 # skip scholar
                 pass
             else:
-                scholar_nodes, scholar_cits = await _run_scholar(search_query, seed_count, tools, config)
+                scholar_nodes, scholar_cits = await _run_scholar(
+                    search_query, seed_count, tools, config
+                )
         else:
-            scholar_nodes, scholar_cits = await _run_scholar(search_query, seed_count, tools, config)
+            scholar_nodes, scholar_cits = await _run_scholar(
+                search_query, seed_count, tools, config
+            )
     nodes = list(arxiv_nodes)
     seeds_citations.extend(arxiv_cits)
 
@@ -483,8 +504,12 @@ async def _gather_seeds(
             seeds_citations.append(c)
             seen_urls.add(c.url)
 
-    logger.info("_gather_seeds: %d arxiv + %d scholar → %d deduped seeds",
-                len(arxiv_nodes), len(scholar_nodes), len(nodes))
+    logger.info(
+        "_gather_seeds: %d arxiv + %d scholar → %d deduped seeds",
+        len(arxiv_nodes),
+        len(scholar_nodes),
+        len(nodes),
+    )
     return nodes
 
 
@@ -516,7 +541,8 @@ async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> tuple[str, st
     except TimeoutError:
         logger.warning(
             "arxiv_download_pdf timed out for %s after %.0fs; falling back to resolve",
-            arxiv_id, _fetch_timeout_s,
+            arxiv_id,
+            _fetch_timeout_s,
         )
         if "arxiv_resolve" in tools.names():
             try:
@@ -538,7 +564,11 @@ async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> tuple[str, st
         return ("", None)
     pdf_path = parse_pdf_path(dl.content)
     if pdf_path is None:
-        logger.warning("arxiv_download_pdf returned unexpected content for %s: %r", arxiv_id, (dl.content or "")[:100])
+        logger.warning(
+            "arxiv_download_pdf returned unexpected content for %s: %r",
+            arxiv_id,
+            (dl.content or "")[:100],
+        )
         return (dl.content or "", None)
     try:
         # Extraction is the most expensive step for large PDFs — give it the
@@ -548,7 +578,9 @@ async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> tuple[str, st
     except TimeoutError:
         logger.warning(
             "pdf_extract_text timed out for %s after %.0fs (path=%s); returning empty text",
-            arxiv_id, _fetch_timeout_s, pdf_path,
+            arxiv_id,
+            _fetch_timeout_s,
+            pdf_path,
         )
         return ("", pdf_path)
     return (extracted.content or "", pdf_path)
@@ -571,7 +603,8 @@ async def _render_paper_pages(arxiv_id: str, tools: ToolRegistry, max_pages: int
     except TimeoutError:
         logger.warning(
             "render: arxiv_download_pdf timed out for %s after %.0fs",
-            arxiv_id, _render_timeout_s,
+            arxiv_id,
+            _render_timeout_s,
         )
         return []
     if dl.error is not None:
@@ -588,7 +621,9 @@ async def _render_paper_pages(arxiv_id: str, tools: ToolRegistry, max_pages: int
         logger.warning(
             "render: pdf_render_pages timed out for %s after %.0fs (path=%s); "
             "downgrading this paper to text-only",
-            arxiv_id, _render_timeout_s, pdf_path,
+            arxiv_id,
+            _render_timeout_s,
+            pdf_path,
         )
         return []
     return parse_rendered_pages(render)
@@ -655,12 +690,6 @@ async def _synthesize_markdown(
         "Cite each paper inline using the bare-URL form "
         "([arxiv:ID](https://arxiv.org/abs/ID))."
     )
-    # P10.6 glossary augmentation
-    glossary_prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
-    if glossary_prompt_path.exists():
-        glossary_text = glossary_prompt_path.read_text().strip()
-        if glossary_text:
-            system_msg += "\n\n" + glossary_text
 
     # P13: inject prior context from library recall
     prior_section = ""
@@ -680,18 +709,16 @@ async def _synthesize_markdown(
         },
     ]
     try:
-        resp = await client.chat.completions.create(
-            model=model, messages=messages, temperature=0.0
+        resp = await client.chat.completions.create(model=model, messages=messages, temperature=0.0)
+        md = (resp.choices[0].message.content or "").strip() or _fallback_synthesis(
+            original_query, analyses
         )
-        md = (resp.choices[0].message.content or "").strip() or _fallback_synthesis(original_query, analyses)
-
-        # P10.6 glossary extraction
-        from deep_research.nodes.glossarize import extract_and_save_glossary
-        await extract_and_save_glossary(md, run_id, writer)
 
         return md
     except Exception as e:
-        logger.warning("academic synthesis LLM call failed: %s: %s; using fallback", type(e).__name__, e)
+        logger.warning(
+            "academic synthesis LLM call failed: %s: %s; using fallback", type(e).__name__, e
+        )
         return _fallback_synthesis(original_query, analyses)
 
 

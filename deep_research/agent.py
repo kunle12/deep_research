@@ -12,6 +12,7 @@ from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.client import LLMClient
 from deep_research.llm.tool_loop import ToolRegistry
+from deep_research.nodes.glossarize import extract_glossary_from_report
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     ClassifiedQuery,
@@ -47,12 +48,15 @@ async def run_research(
         backend = None
         try:
             from deep_research.library.storage import get_backend
+
             backend = await get_backend(config)
             writer = LibraryWriter(backend, config.pdl.root_dir)
             run_id = uuid.uuid4().hex[:16]
             writer.set_run_id(run_id)
         except Exception as e:
-            logger.warning("PDL backend init failed: %s: %s; proceeding without library", type(e).__name__, e)
+            logger.warning(
+                "PDL backend init failed: %s: %s; proceeding without library", type(e).__name__, e
+            )
             if backend is not None:
                 await backend.close()
             writer = None
@@ -71,7 +75,9 @@ async def run_research(
     override_remainder: str | None = None
     if path_override == "url_source":
         override_url = extract_first_url(query) or query.strip()
-        override_remainder = strip_url_from_query(query, override_url) if override_url != query.strip() else ""
+        override_remainder = (
+            strip_url_from_query(query, override_url) if override_url != query.strip() else ""
+        )
         if not override_url.startswith(("http://", "https://")):
             reporter.phase("error", "--url-source without URL")
             reporter.complete()
@@ -84,9 +90,28 @@ async def run_research(
     # Single async with block for LLM client + tools — all routing happens inside
     async with LLMClient(config.llm) as client, _build_tools(config) as tools:
         report = await _route_and_dispatch(
-            query, path_override, override_url, override_remainder,
-            client, tools, config, reporter, writer, run_id,
+            query,
+            path_override,
+            override_url,
+            override_remainder,
+            client,
+            tools,
+            config,
+            reporter,
+            writer,
+            run_id,
         )
+
+        # P10.6: dedicated glossary extraction from report text
+        if report.markdown:
+            glossary_entries = await extract_glossary_from_report(
+                report.markdown,
+                client,
+                config.llm.text_model,
+                writer,
+                run_id,
+            )
+            report.glossary_entries = glossary_entries
 
     reporter.complete()
     await _archive_report(report, writer, run_id)
@@ -116,8 +141,14 @@ async def _route_and_dispatch(
             assert override_url is not None  # validated above
             reporter.phase("routing", "--url_source override")
             return await _dispatch_url_source(
-                override_url, override_remainder or "",
-                client, tools, config, reporter, writer=writer, run_id=run_id,
+                override_url,
+                override_remainder or "",
+                client,
+                tools,
+                config,
+                reporter,
+                writer=writer,
+                run_id=run_id,
             )
         reporter.phase(path_override, f"--{path_override} override")
         classified = ClassifiedQuery(
@@ -126,7 +157,14 @@ async def _route_and_dispatch(
             search_hint=query,
         )
         return await _dispatch_classified(
-            classified, query, client, tools, config, reporter, writer=writer, run_id=run_id,
+            classified,
+            query,
+            client,
+            tools,
+            config,
+            reporter,
+            writer=writer,
+            run_id=run_id,
         )
 
     # Step 2 — config force_path (yaml) second-highest priority
@@ -140,7 +178,14 @@ async def _route_and_dispatch(
             search_hint=query,
         )
         return await _dispatch_classified(
-            classified, query, client, tools, config, reporter, writer=writer, run_id=run_id,
+            classified,
+            query,
+            client,
+            tools,
+            config,
+            reporter,
+            writer=writer,
+            run_id=run_id,
         )
 
     # Step 3 — URL detection routes to url_source
@@ -150,8 +195,14 @@ async def _route_and_dispatch(
         logger.info("URL detected: %s (remainder: %r)", detected_url, remainder)
         reporter.phase("url_source", f"auto-detected URL: {detected_url[:80]}")
         return await _dispatch_url_source(
-            detected_url, remainder, client, tools, config, reporter,
-            writer=writer, run_id=run_id,
+            detected_url,
+            remainder,
+            client,
+            tools,
+            config,
+            reporter,
+            writer=writer,
+            run_id=run_id,
         )
 
     # Step 4 — classifier (or default to deep if disabled)
@@ -168,13 +219,22 @@ async def _route_and_dispatch(
         from deep_research.paths import classify_query
 
         classified = await classify_query(query, client, config.llm.text_model)
-        logger.info("classifier returned path=%s rationale=%r", classified.path, classified.rationale)
+        logger.info(
+            "classifier returned path=%s rationale=%r", classified.path, classified.rationale
+        )
         reporter.phase(
             classified.path.value if hasattr(classified.path, "value") else str(classified.path),
             f"chosen by classifier: {classified.rationale[:80]}",
         )
     return await _dispatch_classified(
-        classified, query, client, tools, config, reporter, writer=writer, run_id=run_id,
+        classified,
+        query,
+        client,
+        tools,
+        config,
+        reporter,
+        writer=writer,
+        run_id=run_id,
     )
 
 
@@ -192,22 +252,62 @@ async def _dispatch_classified(
     from deep_research.paths import academic_research, applied_research, deep_research, quick_search
 
     if classified.path == QueryPlan.quick:
-        return await quick_search(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
+        return await quick_search(
+            classified,
+            original_query,
+            client,
+            tools,
+            config,
+            reporter,
+            writer=writer,
+            run_id=run_id,
+        )
     if classified.path == QueryPlan.deep:
-        return await deep_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
+        return await deep_research(
+            classified,
+            original_query,
+            client,
+            tools,
+            config,
+            reporter,
+            writer=writer,
+            run_id=run_id,
+        )
     if classified.path == QueryPlan.academic:
-        return await academic_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
+        return await academic_research(
+            classified,
+            original_query,
+            client,
+            tools,
+            config,
+            reporter,
+            writer=writer,
+            run_id=run_id,
+        )
     if classified.path == QueryPlan.applied:
-        return await applied_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
+        return await applied_research(
+            classified,
+            original_query,
+            client,
+            tools,
+            config,
+            reporter,
+            writer=writer,
+            run_id=run_id,
+        )
     if classified.path == QueryPlan.unclear:
         reporter.phase("clarify", "need clarification")
         return Report(
-            markdown=(f"# Clarification needed\n\n{chr(10).join(f'- {q}' for q in classified.clarifying_questions)}"),
+            markdown=(
+                f"# Clarification needed\n\n{chr(10).join(f'- {q}' for q in classified.clarifying_questions)}"
+            ),
             path="unclear",
             classifier_rationale=classified.rationale,
             clarifying_questions=list(classified.clarifying_questions),
         )
-    return await deep_research(classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id)
+    return await deep_research(
+        classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id
+    )
 
 
 async def _dispatch_url_source(
@@ -222,7 +322,9 @@ async def _dispatch_url_source(
 ) -> Report:
     from deep_research.paths import url_source
 
-    return await url_source(url, remainder, client, tools, config, reporter, writer=writer, run_id=run_id)
+    return await url_source(
+        url, remainder, client, tools, config, reporter, writer=writer, run_id=run_id
+    )
 
 
 @asynccontextmanager

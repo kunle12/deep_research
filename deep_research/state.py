@@ -11,9 +11,11 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
 
-logger = logging.getLogger(__name__)
-
 from pydantic import BaseModel, ConfigDict, Field
+
+from deep_research.library.storage.rows import GlossaryEntry
+
+logger = logging.getLogger(__name__)
 
 
 class ToolName(str, Enum):
@@ -255,6 +257,8 @@ class Report(BaseModel):
     follow_up_sub_questions: list[SubQuestion] = Field(default_factory=list)
     # Iterations completed (for deep / academic)
     iterations: int = 0
+    # Glossary entries extracted from this report
+    glossary_entries: list[GlossaryEntry] = Field(default_factory=list)
     # For library archival
     created_at: datetime | None = None
     query: str = ""
@@ -295,7 +299,6 @@ __all__ = [
     "CitationGraph",
     "ClassifiedQuery",
     "Critique",
-
     "PaperAnalysis",
     "PaperNode",
     "QueryPlan",
