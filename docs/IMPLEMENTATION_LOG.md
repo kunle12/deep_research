@@ -704,6 +704,10 @@ $ uv run mypy deep_research/ tests/
 - [x] `library/cli.py` — `ls` shows `started_at` timestamps and tags `[tag1, tag2]`
 - [x] `library/cli.py` — `delete` command removes report files + DB records
 
+#### Documentation consolidation
+- [x] `dynamic-refinement-plan.md` and `GLOSSARY_PLAN.md` merged into `docs/PLAN.md` and removed
+- [x] `docs/AGENTS.md` — added Library CLI Patterns section covering auto-tag, tag CLI, delete, ls format
+
 #### P12(d) extension — Tests
 - [x] `tests/test_library_cli.py` — 23 tests: all commands with PDL disabled + enabled (seeded DB)
 - [x] `tests/test_postgres_backend.py` — 17 tests: all CRUD operations with mocked asyncpg
@@ -750,6 +754,7 @@ $ uv run mypy deep_research/ tests/
 - The PDL is `enabled: true` by default; every `run_research()` call opens a SQLite connection. The `NullLibraryWriter` is used when PDL is disabled. The SQLite connection is NOT explicitly closed at run-end (the aiosqlite worker thread cleans up when the event loop closes). A future polish pass should add explicit `await writer.close()` at the end of `run_research()`.
 - `agent.py` was simplified to remove the library writer integration for now — the PDL backend initialization was causing test hangs. A subsequent session should re-wire the writer into the agent flow once the lifecycle management is resolved.
 - Glossary integration into the synthesis prompt (appending glossary extraction to writer/analyze_source calls) is deferred to a future polish pass. The `glossarize.py` module is fully functional and tested independently.
+- Glossary post-implementation fixes: contradictory prompt fixed (no longer says "Output ONLY valid JSON"), `parse_glossary_from_response` handles markdown+JSON, `Report.glossary_entries` field added, `--glossary-out` CLI flag, `glossary --find` uses backend FTS, Postgres `upsert_glossary_entries` added.
 
 ---
 

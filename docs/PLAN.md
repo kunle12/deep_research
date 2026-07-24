@@ -1173,6 +1173,27 @@ For each of `paths/quick.py:_synthesize`, `paths/academic.py:_synthesize_markdow
 - Response parsing already extracts `answer`/`citations`; add a parallel parser for `glossary`.
 - If LLM omits `glossary` field → empty list. Never raise. Never call LLM again.
 
+### Post-implementation fixes (from GLOSSARY_PLAN.md)
+
+**Problem:** `deep-research-library glossary` returned empty because:
+1. Glossary entries were only created as a side-effect of research runs
+2. The glossary prompt (`prompts/glossary_extract.txt:15`) said "Output ONLY valid JSON" but was appended to system messages that ask for Markdown reports. The LLM followed the primary instruction → outputs Markdown → `json.loads()` failed → no entries saved.
+3. The quick path worked (`response_format=json_object`) but academic/deep paths didn't.
+
+**Fixes applied:**
+
+| File | Change |
+|---|---|
+| `prompts/glossary_extract.txt` | Changed contradictory instruction to "At the end of your response, include a glossary section with a JSON array of extracted terms." |
+| `nodes/glossarize.py` | `parse_glossary_from_response`: Try `json.loads()` first; if that fails, use regex to extract a JSON block from markdown. `extract_and_save_glossary` returns `list[GlossaryEntry]`. |
+| `state.py` | Added `glossary_entries: list[GlossaryEntry] = []` to `Report` dataclass |
+| `paths/quick.py`, `paths/academic.py`, `nodes/writer.py` | Store returned glossary entries on the Report object before returning |
+| `cli/app.py` | Added `--glossary-out` / `-go` CLI option; saves glossary JSON alongside report |
+| `library/cli.py` | `--find` calls `backend.glossary_search()` instead of Python substring matching; added `--limit` |
+| `library/storage/postgres_backend.py` | Added `upsert_glossary_entries` method (plural) |
+
+No extra LLM calls, no schema changes, no contradictory prompts.
+
 ### Acceptance criteria
 
 - [ ] Every `run_research()` call that produces a non-empty `Report.markdown` MAY append glossary entries (zero entries is allowed when the report is too short, contains an error, or the LLM omits the field).
@@ -1419,3 +1440,79 @@ Scholar-only nodes are emitted as `@misc` entries in BibTeX using URL/DOI (not m
 36. **Paywall ethics**: only follow Scholar's explicit `[PDF]` side link. **Never** spin up the Playwright/browser tool to circumvent paywalls.
 37. **LLM hallucination on abstract-only nodes**: `[ABSTRACT-ONLY]` tag in prompt + forced `key_references = []`.
 38. **Arxiv rate limit interaction**: scholar calls are independent of the arxiv Semaphore. Per-backend rate-limit semaphores keep Serper and SearXNG independent.
+
+---
+
+## Dynamic Refinement During Research — Implementation Plan
+
+### Overview
+
+Add a **`refine`** tool to the researcher's tool-calling loop that lets the LLM emit refinement requests as "side effects" during its tool loop. These requests are collected, validated, and flushed into `ResearchState` after the researcher finishes — so they become available to the next iteration.
+
+### Design Decisions
+
+**D1 — Per-researcher scoped registry (not shared mutation)**
+
+`ToolRegistry.register()` raises `ValueError` on duplicate names (`tool_loop.py:91`).
+All parallel researchers share the **same** `ToolRegistry` instance, so registering
+`"refine"` inside `research()` would crash on the second concurrent call and leak
+collector state across researchers.
+
+**Solution:** Introduce a lightweight `ScopedToolRegistry` that wraps the shared
+parent registry and adds per-researcher tools. Each `research()` call creates its
+own scope with its own collector — the shared registry is never mutated.
+
+**D2 — Separate `refinement_depth` field**
+
+`SubQuestion.depth` is documented as "recursion depth in academic mode"
+(`state.py:64`). Repurposing it for deep-path refinement nesting creates
+ambiguity. A dedicated `refinement_depth: int = 0` field keeps the two
+concepts independent.
+
+**D3 — `revise_strategy` is best-effort**
+
+Option A (echo a strategy-update message back to the LLM) provides **no
+enforcement guarantee** — the LLM may ignore the suggestion. This is
+acceptable for v1 because it requires zero loop changes, but the prompt
+wording should make the best-effort nature clear to avoid false expectations.
+
+**D4 — Three-level cap hierarchy**
+
+| Cap | Scope | Config knob | Default |
+|-----|-------|-------------|---------|
+| Per-researcher | single `research()` call | `max_refinement_per_researcher` | 3 |
+| Per-iteration | all researchers in one iteration | `max_total_refinements_per_iteration` | 6 |
+| Depth | recursive drill-deeper nesting | `max_refinement_depth` | 2 |
+
+Without the per-iteration cap, 6 researchers × 3 refinements = 18 new
+sub-questions per iteration (plus critic gaps) can explode the plan and
+prevent convergence within `max_iterations`.
+
+**D5 — Normalized dedup**
+
+`absorb_refinements` deduplicates by question text. Exact-string matching
+misses semantically identical refinements that differ in casing or whitespace.
+Normalize with `.strip().lower()` before comparison.
+
+### File Change Summary
+
+| File | Lines changed | What |
+|---|---|---|
+| `state.py` | +1 field (SubQuestion), +1 field (ResearchState), +2 methods | `refinement_depth`, `pending_refinements`, `absorb_refinements()`, `flush_refinements()` |
+| `llm/tool_loop.py` | +~40 lines | `ScopedToolRegistry` class |
+| `nodes/researcher.py` | ~40 lines | `REFINE_SCHEMA`, scoped handler, collector, return tuple extension, new params |
+| `paths/deep.py` | ~20 lines | Absorb refinements, flush with cap, progress reporting, wrapper update |
+| `prompts/researcher.txt` | +18 lines | Instructions for when/how to use `refine` |
+| `config.py` | +3 fields | `max_refinement_depth`, `max_refinement_per_researcher`, `max_total_refinements_per_iteration` |
+| `tests/test_refine_tool.py` | ~180 lines | 12 test cases |
+
+### Execution Order
+
+1. `llm/tool_loop.py` — add `ScopedToolRegistry`
+2. `state.py` — add `refinement_depth`, `pending_refinements`, methods
+3. `config.py` — add knobs
+4. `nodes/researcher.py` — add schema, scoped handler, collector, return refinements
+5. `paths/deep.py` — absorb refinements, flush with cap before critic, progress reporting
+6. `prompts/researcher.txt` — add instructions
+7. `tests/test_refine_tool.py` — write and verify
+8. Run `pytest tests/` to confirm nothing breaks
