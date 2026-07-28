@@ -51,10 +51,8 @@ class RefreshScheduler:
             logger.error("refresh cycle failed: %s: %s", type(e).__name__, e)
             # Reset backend so next cycle creates a fresh connection
             if self._backend is not None:
-                try:
+                with contextlib.suppress(Exception):
                     await self._backend.close()
-                except Exception:
-                    pass
                 self._backend = None
 
     async def run(self) -> None:
@@ -85,6 +83,7 @@ def _run_scheduler(config_path: str = "config.yaml") -> None:
     """Run the scheduler as a blocking entrypoint."""
     logging.basicConfig(level=logging.INFO)
     cfg = AgentTopConfig.load_yaml(config_path)
+    cfg.ensure_dirs()
     if not cfg.pdl.enabled:
         logger.warning("PDL is disabled — scheduler has nothing to refresh.")
         return

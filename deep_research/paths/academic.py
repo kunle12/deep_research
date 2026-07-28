@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -107,7 +108,7 @@ async def academic_research(
             logger.info("blog_search in academic path failed; skipping")
 
     # Enqueue seed nodes at depth 0 (parent_arxiv_id=None, rationale="")
-    queue_white: deque = deque((node, 0, None) for node in seeds)
+    queue_white: deque[tuple[PaperNode, int, str | None]] = deque((node, 0, None) for node in seeds)
 
     # ---- per-paper concurrency ---------------------------------------------
     sem = asyncio.Semaphore(cfg.concurrency)
@@ -346,7 +347,6 @@ async def academic_research(
     citations = sorted(seen.values(), key=lambda c: c.confidence_score, reverse=True)
 
     reporter.phase("academic.done", f"{len(analyses)} papers; {len(citations)} citations")
-    from datetime import UTC, datetime
 
     return Report(
         markdown=final_md,

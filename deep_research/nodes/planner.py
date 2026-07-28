@@ -16,6 +16,14 @@ from deep_research.state import ResearchPlan, SubQuestion
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "planner.txt"
+_PROMPT_TEMPLATE: str | None = None
+
+
+def _get_prompt_template() -> str:
+    global _PROMPT_TEMPLATE
+    if _PROMPT_TEMPLATE is None:
+        _PROMPT_TEMPLATE = _PROMPT_FILE.read_text(encoding="utf-8")
+    return _PROMPT_TEMPLATE
 
 
 async def plan(
@@ -25,15 +33,11 @@ async def plan(
     breadth: int = 6,
 ) -> ResearchPlan:
     """Make one LLM call to generate a research plan."""
-    prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
+    prompt_template = _get_prompt_template()
     # Validate tool_hint vocabulary client-side so we don't surprise downstream.
     valid_hints = {"general-web", "arxiv", "reddit", "browser-required"}
 
-    prompt = (
-        prompt_template
-        .replace("{max_subquestions}", str(breadth))
-        .replace("{query}", query)
-    )
+    prompt = prompt_template.replace("{max_subquestions}", str(breadth)).replace("{query}", query)
     try:
         resp = await client.chat.completions.create(
             model=model,
@@ -73,7 +77,9 @@ async def plan(
             # Fallback: produce a single sub-question = the original query
             sub_qs.append(
                 SubQuestion(
-                    id="sq1", question=query, tool_hint="general-web",
+                    id="sq1",
+                    question=query,
+                    tool_hint="general-web",
                     rationale="planner produced no sub-questions; using original query",
                 )
             )
@@ -81,10 +87,14 @@ async def plan(
     except Exception as e:
         logger.warning("planner LLM call failed: %s: %s", type(e).__name__, e)
         return ResearchPlan(
-            sub_questions=[SubQuestion(
-                id="sq1", question=query, tool_hint="general-web",
-                rationale=f"planner failed ({type(e).__name__}); using original query",
-            )],
+            sub_questions=[
+                SubQuestion(
+                    id="sq1",
+                    question=query,
+                    tool_hint="general-web",
+                    rationale=f"planner failed ({type(e).__name__}); using original query",
+                )
+            ],
             breadth=1,
             max_depth=0,
         )

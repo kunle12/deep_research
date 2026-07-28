@@ -738,20 +738,27 @@ class SqliteStorageBackend:
 
     async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
-        # Search analyses FTS index for artifacts of given kind.
-        # Join on analysis_id (UNINDEXED FTS5 column) rather than rowid,
-        # since rowids in the internal-content FTS5 table have no
-        # relationship to the analyses table's rowid.
         safe_query = self._sanitize_fts_query(query)
-        sql = """
-            SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
-            FROM search_index
-            JOIN analyses an ON an.analysis_id = search_index.analysis_id
-            JOIN artifacts a ON a.artifact_id = an.artifact_id
-            WHERE search_index MATCH ? AND a.kind = ?
-            LIMIT ?
-        """
-        rows = await self._fetchall(sql, (safe_query, kind, limit))
+        if kind == "any":
+            sql = """
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                FROM search_index
+                JOIN analyses an ON an.analysis_id = search_index.analysis_id
+                JOIN artifacts a ON a.artifact_id = an.artifact_id
+                WHERE search_index MATCH ?
+                LIMIT ?
+            """
+            rows = await self._fetchall(sql, (safe_query, limit))
+        else:
+            sql = """
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                FROM search_index
+                JOIN analyses an ON an.analysis_id = search_index.analysis_id
+                JOIN artifacts a ON a.artifact_id = an.artifact_id
+                WHERE search_index MATCH ? AND a.kind = ?
+                LIMIT ?
+            """
+            rows = await self._fetchall(sql, (safe_query, kind, limit))
         results: list[SearchHit] = []
         for r in rows:
             results.append(

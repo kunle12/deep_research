@@ -651,19 +651,31 @@ class PostgresStorageBackend:
 
     async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
-        # Postgres uses tsvector instead of FTS5
-        sql = """
-            SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
-            FROM analyses an
-            JOIN artifacts a ON a.artifact_id = an.artifact_id
-            WHERE a.kind = $1
-              AND (
-                to_tsvector('english', coalesce(an.summary, '')) @@ plainto_tsquery('english', $2)
-                OR to_tsvector('english', coalesce(an.key_findings, '')) @@ plainto_tsquery('english', $2)
-              )
-            LIMIT $3
-        """
-        rows = await self._fetchall(sql, kind, query, limit)
+        if kind == "any":
+            sql = """
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                FROM analyses an
+                JOIN artifacts a ON a.artifact_id = an.artifact_id
+                WHERE (
+                    to_tsvector('english', coalesce(an.summary, '')) @@ plainto_tsquery('english', $1)
+                    OR to_tsvector('english', coalesce(an.key_findings, '')) @@ plainto_tsquery('english', $1)
+                )
+                LIMIT $2
+            """
+            rows = await self._fetchall(sql, query, limit)
+        else:
+            sql = """
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                FROM analyses an
+                JOIN artifacts a ON a.artifact_id = an.artifact_id
+                WHERE a.kind = $1
+                  AND (
+                    to_tsvector('english', coalesce(an.summary, '')) @@ plainto_tsquery('english', $2)
+                    OR to_tsvector('english', coalesce(an.key_findings, '')) @@ plainto_tsquery('english', $2)
+                  )
+                LIMIT $3
+            """
+            rows = await self._fetchall(sql, kind, query, limit)
         results: list[SearchHit] = []
         for r in rows:
             results.append(

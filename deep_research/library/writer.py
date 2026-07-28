@@ -43,6 +43,7 @@ def _compute_refresh_after(source_type: str | None, policy: dict[str, int] | Non
     if days <= 0:
         return None
     from datetime import timedelta
+
     return (datetime.now(UTC) + timedelta(days=days)).isoformat()
 
 
@@ -97,6 +98,7 @@ class LibraryWriter:
         dest = rel_dir / f"{slug}.pdf"
         if not dest.exists():
             import shutil
+
             shutil.copy2(str(path), str(dest))
 
         artifact = ArtifactRow(
@@ -116,9 +118,7 @@ class LibraryWriter:
         await self._storage.upsert_artifact(artifact)
         return sha
 
-    async def archive_html(
-        self, url: str, html: str, pdf_bytes: bytes | None = None
-    ) -> str:
+    async def archive_html(self, url: str, html: str, pdf_bytes: bytes | None = None) -> str:
         sha = _content_sha256(html.encode("utf-8"))
         if pdf_bytes:
             pdf_sha = _content_sha256(pdf_bytes)
@@ -214,7 +214,7 @@ class LibraryWriter:
 
         report_row = ReportRow(
             run_id=run_id,
-            started_at=report.created_at.isoformat() if hasattr(report, 'created_at') and report.created_at else _now_iso(),
+            started_at=report.created_at.isoformat() if report.created_at else _now_iso(),
             completed_at=_now_iso(),
             original_query=report.query or "",
             path_taken=report.path or "",
@@ -223,7 +223,9 @@ class LibraryWriter:
             config_snapshot=json.dumps(config_snapshot) if config_snapshot else None,
             markdown=report.markdown,
             artifact_id=artifact_id,
-            citations_json=json.dumps([c.model_dump(mode="json") for c in report.citations]) if report.citations else None,
+            citations_json=json.dumps([c.model_dump(mode="json") for c in report.citations])
+            if report.citations
+            else None,
             classifier_json=report.classifier_rationale if report.classifier_rationale else None,
         )
         await self._storage.insert_report(report_row)
@@ -241,7 +243,7 @@ class LibraryWriter:
         if isinstance(analysis, dict):
             d = analysis
         else:
-            d = analysis.model_dump() if hasattr(analysis, 'model_dump') else {}
+            d = analysis.model_dump() if hasattr(analysis, "model_dump") else {}
 
         row = AnalysisRow(
             analysis_id=str(uuid.uuid4())[:16],
@@ -283,20 +285,18 @@ class LibraryWriter:
             tag_row = TagRow(tag=t, artifact_id=artifact_id, applied_in_run=run_id)
             await self._storage.upsert_tag(tag_row)
 
-    async def upsert_glossary_entries(
-        self, entries: list[GlossaryEntry], run_id: str
-    ) -> int:
+    async def upsert_glossary_entries(self, entries: list[GlossaryEntry], run_id: str) -> int:
         return await self._storage.upsert_glossary_entries(entries, run_id)
 
     # -- Refresh foundation (P10.5b) --
 
-    async def refresh_needed(
-        self, scope_kind: str, scope_value: str, limit: int = 100
-    ) -> list:
+    async def refresh_needed(self, scope_kind: str, scope_value: str, limit: int = 100) -> list:
         return await self._storage.artifacts_needing_refresh(scope_kind, scope_value, limit)
 
     async def probe_upstream(self, artifact_id: str) -> dict[str, Any]:
-        logger.info("probe_upstream not implemented yet (artifact_id=%s); marking unchanged", artifact_id)
+        logger.info(
+            "probe_upstream not implemented yet (artifact_id=%s); marking unchanged", artifact_id
+        )
         return {"changed": False, "new_sha": "", "error": None}
 
     async def run_refresh_job(
@@ -329,7 +329,10 @@ class LibraryWriter:
 
         status = "completed" if errored == 0 else "partial"
         await self._storage.complete_refresh_job(
-            job_id, considered, refreshed, status,
+            job_id,
+            considered,
+            refreshed,
+            status,
             error=f"{errored} errors" if errored else None,
         )
         return {
@@ -344,17 +347,20 @@ class LibraryWriter:
 
 async def _render_pdf(markdown_text: str, pdf_path: Path) -> bytes | None:
     import markdown
+
     html = markdown.markdown(markdown_text, extensions=["extra"])
     html = f"<!DOCTYPE html><html><body>{html}</body></html>"
 
     try:
         from weasyprint import HTML
+
         HTML(string=html).write_pdf(str(pdf_path))
         return pdf_path.read_bytes()
     except Exception as e:
         logger.warning("weasyprint unavailable (%s); falling back to xhtml2pdf", e)
         try:
             from xhtml2pdf import pisa
+
             with open(str(pdf_path), "wb") as fh:
                 pisa.CreatePDF(html, dest=fh)
             return pdf_path.read_bytes()

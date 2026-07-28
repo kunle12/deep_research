@@ -19,6 +19,15 @@ from deep_research.state import Citation, SubQuestion
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "researcher.txt"
+_PROMPT_TEMPLATE: str | None = None
+
+
+def _get_prompt_template() -> str:
+    global _PROMPT_TEMPLATE
+    if _PROMPT_TEMPLATE is None:
+        _PROMPT_TEMPLATE = _PROMPT_FILE.read_text(encoding="utf-8")
+    return _PROMPT_TEMPLATE
+
 
 # Hard cap on free-text length each tool result is truncated to before showing the LLM,
 # to keep context manageable across many sub-agents.
@@ -96,7 +105,7 @@ async def research(
     `prior_context`: optional markdown section from library recall injected as
     additional context so the researcher knows what we already know.
     """
-    prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
+    prompt_template = _get_prompt_template()
     prompt = prompt_template.replace("{question}", sub_q.question)
 
     hint_blurb = _hint_blurb(sub_q.tool_hint, tools.names())

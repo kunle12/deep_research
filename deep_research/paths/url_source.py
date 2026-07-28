@@ -18,6 +18,7 @@ Flow:
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -122,7 +123,6 @@ async def _fetch_arxiv_source(
 
     # Archive PDF in library if writer is configured
     if isinstance(writer, LibraryWriter) and pdf_path and run_id:
-        from pathlib import Path
         await writer.archive_pdf(
             Path(pdf_path),
             arxiv_id=arxiv_id,
@@ -178,7 +178,6 @@ async def _fetch_pdf_source(
 
     # Archive PDF in library if writer is configured
     if isinstance(writer, LibraryWriter) and run_id:
-        from pathlib import Path
         await writer.archive_pdf(
             Path(pdf_path),
             source_url=url,
@@ -240,7 +239,6 @@ async def _fetch_html_source(
         await writer.archive_html(url, res.content)
 
     return (res.content, list(res.citations))
-
 
 
 def _render_analysis_markdown(
@@ -310,13 +308,12 @@ async def url_source(
     """Execute the url_source path."""
     reporter: ProgressReporter = ensure_reporter(progress)
     reporter.phase("url.classify", url[:80])
-    url_type = await classify_url(
-        url, head_probe_timeout_s=config.url_source.head_probe_timeout_s
-    )
+    url_type = await classify_url(url, head_probe_timeout_s=config.url_source.head_probe_timeout_s)
     arxiv_id = extract_arxiv_id(url) if url_type == UrlType.arxiv else None
     wants_follow_up = query_asks_for_follow_up(query, config.url_source.follow_up_trigger_phrases)
     reporter.step(
-        "url.classify", f"type={url_type.value} arxiv_id={arxiv_id or '-'} followup={wants_follow_up}"
+        "url.classify",
+        f"type={url_type.value} arxiv_id={arxiv_id or '-'} followup={wants_follow_up}",
     )
 
     # Fetch content + initial citation(s)
@@ -329,23 +326,34 @@ async def url_source(
     if url_type == UrlType.arxiv and arxiv_id:
         reporter.phase("url.fetch", f"arxiv:{arxiv_id}")
         content_text, _title, citations, page_image_data_urls = await _fetch_arxiv_source(
-            arxiv_id, tools, render_pages=render_pdf, max_pages=max_pdf_pages,
-            writer=writer, run_id=run_id,
+            arxiv_id,
+            tools,
+            render_pages=render_pdf,
+            max_pages=max_pdf_pages,
+            writer=writer,
+            run_id=run_id,
         )
     elif url_type == UrlType.pdf:
         reporter.phase("url.fetch", f"pdf download: {url[:80]}")
         content_text, citations, page_image_data_urls = await _fetch_pdf_source(
-            url, tools, render_pages=render_pdf, max_pages=max_pdf_pages,
-            writer=writer, run_id=run_id,
+            url,
+            tools,
+            render_pages=render_pdf,
+            max_pages=max_pdf_pages,
+            writer=writer,
+            run_id=run_id,
             pdf_cache_dir=config.arxiv.pdf_cache_dir,
         )
     elif url_type == UrlType.html:
         reporter.phase("url.fetch", f"html: {url[:80]}")
         content_text, citations = await _fetch_html_source(
-            url, tools, config, writer=writer, run_id=run_id,
+            url,
+            tools,
+            config,
+            writer=writer,
+            run_id=run_id,
         )
     else:
-        from datetime import UTC, datetime
         return Report(
             markdown=f"# Error\n\nUnsupported URL type for `{url}` ({url_type.value}).",
             path="unclear",
@@ -353,7 +361,9 @@ async def url_source(
             created_at=datetime.now(UTC),
             query=query,
         )
-    reporter.step("url.fetch", f"{len(content_text)} chars; {len(page_image_data_urls)} vision pages")
+    reporter.step(
+        "url.fetch", f"{len(content_text)} chars; {len(page_image_data_urls)} vision pages"
+    )
 
     if not content_text or content_text.startswith(("HTTP", "(")):
         # If fetch failed, report it but don't try to analyze
@@ -364,7 +374,6 @@ async def url_source(
             f"**Detected type:** `{url_type.value}`\n\n"
             f"**Fetch result:**\n\n```\n{content_text[:2000]}\n```\n"
         )
-        from datetime import UTC, datetime
         return Report(
             markdown=md,
             citations=citations,
@@ -393,7 +402,9 @@ async def url_source(
     followup_md = ""
     followup_citations: list[Citation] = []
     if wants_follow_up and (analysis.gaps or analysis.follow_ups):
-        reporter.phase("url.followup", f"gaps={len(analysis.gaps)}; follow_ups={len(analysis.follow_ups)}")
+        reporter.phase(
+            "url.followup", f"gaps={len(analysis.gaps)}; follow_ups={len(analysis.follow_ups)}"
+        )
         followup_md, followup_citations = await _maybe_run_follow_up(
             analysis=analysis,
             original_url=url,
@@ -415,7 +426,6 @@ async def url_source(
                 all_citations.append(c)
                 seen.add(c.url)
 
-    from datetime import UTC, datetime
     return Report(
         markdown=md + "\n\n" + followup_md if followup_md else md,
         citations=all_citations,

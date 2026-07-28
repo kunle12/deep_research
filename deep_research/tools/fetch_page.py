@@ -74,7 +74,8 @@ class _PageCache:
         at ``<cache_dir>/pdfs/<digest>.pdf`` and the *extracted text* is
         cached here).
       - ``text`` is the extracted (trafilatura or pdf_extract_text) text.
-      - ``fetched_at`` is a ``time.monotonic()`` timestamp.
+      - ``fetched_at`` is a ``time.time()`` timestamp (wall-clock, persists
+        across process restarts).
 
     Legacy 3-tuple entries ``(html, text, fetched_at)`` written by older
     versions are tolerated and treated as ``("html", html, text)``.
@@ -97,7 +98,6 @@ class _PageCache:
             return None
         if not row:
             return None
-        # Handle legacy 3-tuples gracefully.
         if len(row) == 3:
             html, text, fetched_at = row
             kind = "html"
@@ -105,8 +105,7 @@ class _PageCache:
             kind, html, text, fetched_at = row
         else:
             return None
-        # Use monotonic clock to avoid spurious expiry on NTP/system-time jumps
-        if (time.monotonic() - fetched_at) > self._ttl:
+        if (time.time() - fetched_at) > self._ttl:
             return None
         return kind, html, text
 
@@ -114,7 +113,7 @@ class _PageCache:
         if self._cache is None:
             return
         with contextlib.suppress(Exception):
-            self._cache.set(url, (kind, html, text, time.monotonic()))
+            self._cache.set(url, (kind, html, text, time.time()))
 
 
 async def _fetch(

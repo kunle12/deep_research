@@ -53,8 +53,6 @@ class NullReporter:
         return None
 
 
-
-
 def ensure_reporter(progress: ProgressReporter | None) -> ProgressReporter:
     """Return a ProgressReporter; default to NullReporter when None."""
     return progress if progress is not None else NullReporter()

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -201,7 +202,6 @@ async def deep_research(
         discard_checkpoint(run_id)
 
     reporter.phase("deep.done", f"{len(all_citations)} citations")
-    from datetime import UTC, datetime
 
     return Report(
         markdown=final_md,

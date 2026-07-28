@@ -24,20 +24,6 @@ logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "glossary_extract.txt"
 
 
-async def extract_and_save_glossary(
-    response_text: str,
-    run_id: str,
-    writer: LibraryWriter | None,
-) -> list[GlossaryEntry]:
-    """Parse glossary entries from an LLM response and persist them via the library writer."""
-    if not isinstance(writer, LibraryWriter) or not run_id:
-        return []
-    glossary_entries = parse_glossary_from_response(response_text, run_id)
-    if glossary_entries:
-        await writer.upsert_glossary_entries(glossary_entries, run_id)
-    return glossary_entries
-
-
 async def extract_glossary_from_report(
     report_text: str,
     llm: AsyncOpenAI,
@@ -153,7 +139,6 @@ def _canonicalize(term: str) -> str:
 
 
 __all__ = [
-    "extract_and_save_glossary",
     "extract_glossary_from_report",
     "parse_glossary_from_response",
 ]

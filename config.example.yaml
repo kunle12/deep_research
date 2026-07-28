@@ -19,7 +19,6 @@ agent:
   classifier:
     enabled: true
     force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"
-    # min_query_length_for_deep: 30  # deprecated — unused field
 
 search:
   primary: "tavily"
@@ -99,7 +98,6 @@ cache:
 output:
   format: "markdown"
   include_citations_bibliography: true
-  citation_style: "inline_bare_url"   # also: "footnote"
 
 academic:
   enabled: true

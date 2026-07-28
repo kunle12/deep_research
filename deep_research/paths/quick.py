@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -68,9 +69,11 @@ async def quick_search(
                 continue
             reporter.step("fetch.ok", u[:80])
             pages_text.append(f"=== Source: {u} ===\n{fr.content[:4000]}\n")
+            existing_urls = {x.url for x in citations}
             for c in fr.citations:
-                if c.url != u and c.url not in {x.url for x in citations}:
+                if c.url != u and c.url not in existing_urls:
                     citations.append(c)
+                    existing_urls.add(c.url)
 
     reporter.phase("quick.synthesize", f"{len(citations)} citations + {len(pages_text)} pages")
     rendered_results = _render_for_llm(original_query, search_result, pages_text)
@@ -90,7 +93,6 @@ async def quick_search(
     citations = _merge_citations(citations, llm_citations)
 
     reporter.phase("quick.done", f"{len(citations)} citations")
-    from datetime import UTC, datetime
 
     return Report(
         markdown=answer_text,

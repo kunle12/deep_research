@@ -180,6 +180,7 @@ def main(
     _setup_logging(verbose)
     _load_env_dotlocal(Path.cwd())
     config = _load_config(config_path)
+    config.ensure_dirs()
 
     if fmt not in {"markdown", "json"}:
         err_console.print(f"[red]Invalid --format {fmt!r}[/red]; must be 'markdown' or 'json'")

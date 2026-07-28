@@ -16,6 +16,14 @@ from deep_research.state import ClassifiedQuery, QueryPlan
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "classifier.txt"
+_PROMPT_TEMPLATE: str | None = None
+
+
+def _get_prompt_template() -> str:
+    global _PROMPT_TEMPLATE
+    if _PROMPT_TEMPLATE is None:
+        _PROMPT_TEMPLATE = _PROMPT_FILE.read_text(encoding="utf-8")
+    return _PROMPT_TEMPLATE
 
 
 async def classify_query(
@@ -27,7 +35,7 @@ async def classify_query(
 
     Falls back to `deep` if the LLM response can't be parsed (log warning).
     """
-    prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
+    prompt_template = _get_prompt_template()
     prompt = prompt_template.replace("{query}", query)
 
     messages = [

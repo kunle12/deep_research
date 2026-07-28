@@ -88,49 +88,51 @@ async def run_research(
                 classifier_rationale="--url-source override with non-URL query.",
             )
 
-    # Single async with block for LLM client + tools — all routing happens inside
-    async with LLMClient(config.llm) as client, _build_tools(config) as tools:
-        report = await _route_and_dispatch(
-            query,
-            path_override,
-            override_url,
-            override_remainder,
-            client,
-            tools,
-            config,
-            reporter,
-            writer,
-            run_id,
-        )
-
-        # P10.6: dedicated glossary extraction from report text
-        if report.markdown:
-            glossary_entries = await extract_glossary_from_report(
-                report.markdown,
+    try:
+        # Single async with block for LLM client + tools — all routing happens inside
+        async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+            report = await _route_and_dispatch(
+                query,
+                path_override,
+                override_url,
+                override_remainder,
                 client,
-                config.llm.text_model,
+                tools,
+                config,
+                reporter,
                 writer,
                 run_id,
             )
-            report.glossary_entries = glossary_entries
 
-    reporter.complete()
-    artifact_id = await _archive_report(report, writer, run_id)
+            # P10.6: dedicated glossary extraction from report text
+            if report.markdown:
+                glossary_entries = await extract_glossary_from_report(
+                    report.markdown,
+                    client,
+                    config.llm.text_model,
+                    writer,
+                    run_id,
+                )
+                report.glossary_entries = glossary_entries
 
-    # P10.7: auto-tag the report artifact with topic tags
-    if artifact_id and report.markdown:
-        await auto_tag_report(
-            query,
-            report.markdown,
-            artifact_id,
-            client,
-            config.llm.text_model,
-            writer,
-            run_id,
-        )
+            reporter.complete()
+            artifact_id = await _archive_report(report, writer, run_id)
 
-    if writer and isinstance(writer, LibraryWriter):
-        await writer.storage.close()
+            # P10.7: auto-tag the report artifact with topic tags
+            if artifact_id and report.markdown:
+                await auto_tag_report(
+                    query,
+                    report.markdown,
+                    artifact_id,
+                    client,
+                    config.llm.text_model,
+                    writer,
+                    run_id,
+                )
+    finally:
+        if writer and isinstance(writer, LibraryWriter):
+            await writer.storage.close()
+
     return report
 
 
@@ -154,7 +156,12 @@ async def _route_and_dispatch(
     if path_override:
         logger.info("path override: %s", path_override)
         if path_override == "url_source":
-            assert override_url is not None  # validated above
+            if override_url is None:
+                return Report(
+                    markdown="# Error\n\n`--url-source` requires a URL.",
+                    path="unclear",
+                    classifier_rationale="--url-source override without URL.",
+                )
             reporter.phase("routing", "--url_source override")
             return await _dispatch_url_source(
                 override_url,
@@ -267,50 +274,6 @@ async def _dispatch_classified(
     """Run the path chosen by the classifier."""
     from deep_research.paths import academic_research, applied_research, deep_research, quick_search
 
-    if classified.path == QueryPlan.quick:
-        return await quick_search(
-            classified,
-            original_query,
-            client,
-            tools,
-            config,
-            reporter,
-            writer=writer,
-            run_id=run_id,
-        )
-    if classified.path == QueryPlan.deep:
-        return await deep_research(
-            classified,
-            original_query,
-            client,
-            tools,
-            config,
-            reporter,
-            writer=writer,
-            run_id=run_id,
-        )
-    if classified.path == QueryPlan.academic:
-        return await academic_research(
-            classified,
-            original_query,
-            client,
-            tools,
-            config,
-            reporter,
-            writer=writer,
-            run_id=run_id,
-        )
-    if classified.path == QueryPlan.applied:
-        return await applied_research(
-            classified,
-            original_query,
-            client,
-            tools,
-            config,
-            reporter,
-            writer=writer,
-            run_id=run_id,
-        )
     if classified.path == QueryPlan.unclear:
         reporter.phase("clarify", "need clarification")
         return Report(
@@ -321,8 +284,23 @@ async def _dispatch_classified(
             classifier_rationale=classified.rationale,
             clarifying_questions=list(classified.clarifying_questions),
         )
-    return await deep_research(
-        classified, original_query, client, tools, config, reporter, writer=writer, run_id=run_id
+
+    _DISPATCH = {
+        QueryPlan.quick: quick_search,
+        QueryPlan.deep: deep_research,
+        QueryPlan.academic: academic_research,
+        QueryPlan.applied: applied_research,
+    }
+    handler = _DISPATCH.get(classified.path, deep_research)
+    return await handler(
+        classified,
+        original_query,
+        client,
+        tools,
+        config,
+        reporter,
+        writer=writer,
+        run_id=run_id,
     )
 
 

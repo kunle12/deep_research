@@ -27,7 +27,6 @@ from deep_research.state import Citation, ToolName
 logger = logging.getLogger(__name__)
 
 
-
 SCHEMA = {
     "type": "function",
     "description": (
@@ -97,30 +96,35 @@ async def _tavily_with_retry(
         try:
             return await _tavily_search(query, max_results, api_key, search_depth)
         except TavilyKeylessLimitError as e:
-            retry_after = e.retry_after_seconds or 2 ** attempt
+            retry_after = e.retry_after_seconds or 2**attempt
             logger.warning(
                 "Tavily keyless limit hit (attempt %d/%d), retrying after %ds",
-                attempt + 1, retries + 1, retry_after,
+                attempt + 1,
+                retries + 1,
+                retry_after,
             )
             await asyncio.sleep(retry_after)
-        except UsageLimitExceededError as e:
-            backoff = 2 ** attempt
+        except UsageLimitExceededError:
+            backoff = 2**attempt
             logger.warning(
                 "Tavily rate limit (attempt %d/%d), backing off %ds",
-                attempt + 1, retries + 1, backoff,
+                attempt + 1,
+                retries + 1,
+                backoff,
             )
             await asyncio.sleep(backoff)
-        except TimeoutError as e:
-            backoff = 2 ** attempt
+        except TimeoutError:
+            backoff = 2**attempt
             logger.warning(
                 "Tavily timeout (attempt %d/%d), backing off %ds",
-                attempt + 1, retries + 1, backoff,
+                attempt + 1,
+                retries + 1,
+                backoff,
             )
             await asyncio.sleep(backoff)
-        except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-            # Treat HTTP-level errors as transient; retry once
+        except (httpx.HTTPStatusError, httpx.TimeoutException):
             if attempt < retries:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
                 continue
             raise  # Exhausted retries — let caller fall through
         except Exception:
@@ -211,23 +215,27 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 if backend == "tavily":
                     if not tavily_key:
                         continue
-                    # Proactive quota check — fall back to SearXNG if exhausted
-                    # Lock ensures read + increment are atomic under concurrent calls
                     async with _tavily_call_lock:
                         if tavily_max_calls is not None and _tavily_call_count >= tavily_max_calls:
                             logger.info(
                                 "Tavily call quota exhausted (%d >= %d), falling back",
-                                _tavily_call_count, tavily_max_calls,
+                                _tavily_call_count,
+                                tavily_max_calls,
                             )
-                            continue  # skip Tavily, try next backend (SearXNG)
+                            continue
                         _tavily_call_count += 1
-                    citations = await _tavily_with_retry(
-                        query=query,
-                        max_results=max_results,
-                        api_key=tavily_key,
-                        search_depth=cfg.tavily.search_depth,
-                        retries=tavily_rate_limit_retries,
-                    )
+                    try:
+                        citations = await _tavily_with_retry(
+                            query=query,
+                            max_results=max_results,
+                            api_key=tavily_key,
+                            search_depth=cfg.tavily.search_depth,
+                            retries=tavily_rate_limit_retries,
+                        )
+                    except Exception:
+                        async with _tavily_call_lock:
+                            _tavily_call_count -= 1
+                        raise
                 elif backend == "searxng":
                     citations = await _searxng_search(
                         query=query,
@@ -240,7 +248,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     continue
                 logger.info(
                     "web_search backend=%s query=%r -> %d results",
-                    backend, query, len(citations),
+                    backend,
+                    query,
+                    len(citations),
                 )
                 return ToolResult(
                     content=_format_for_llm(citations),
@@ -249,7 +259,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
                 logger.warning(
-                    "web_search backend=%s failed: %s; trying next", backend, last_error,
+                    "web_search backend=%s failed: %s; trying next",
+                    backend,
+                    last_error,
                 )
                 continue
         return ToolResult(

@@ -59,11 +59,7 @@ class ClassifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    # If set, every query routes here regardless of classifier output.
-    # One of: null | "quick" | "deep" | "academic" | "url_source"
     force_path: Literal["quick", "deep", "academic", "url_source"] | None = None
-    # Deprecated: unused by the classifier logic. Kept for backward compat.
-    min_query_length_for_deep: int = 30
 
 
 class AgentConfig(BaseModel):
@@ -99,7 +95,9 @@ class TavilyConfig(BaseModel):
     search_depth: Literal["basic", "advanced"] = "basic"
     max_results: int = 10
     rate_limit_retries: int = 2  # retries on 429 before falling back
-    max_calls_per_session: int | None = None  # None = unlimited; set to switch to SearXNG proactively
+    max_calls_per_session: int | None = (
+        None  # None = unlimited; set to switch to SearXNG proactively
+    )
 
 
 class SearXNGConfig(BaseModel):
@@ -114,9 +112,7 @@ class SearchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     primary: Literal["tavily", "searxng"] = "tavily"
-    fallback_chain: list[Literal["tavily", "searxng"]] = Field(
-        default_factory=lambda: ["searxng"]
-    )
+    fallback_chain: list[Literal["tavily", "searxng"]] = Field(default_factory=lambda: ["searxng"])
     tavily: TavilyConfig = Field(default_factory=TavilyConfig)
     searxng: SearXNGConfig = Field(default_factory=SearXNGConfig)
 
@@ -129,7 +125,9 @@ class BrowserConfig(BaseModel):
 
     enabled: bool = True
     mcp_command: str = "npx"
-    mcp_args: list[str] = Field(default_factory=lambda: ["-y", "@playwright/mcp@latest", "--headless"])
+    mcp_args: list[str] = Field(
+        default_factory=lambda: ["-y", "@playwright/mcp@latest", "--headless"]
+    )
     transport: Literal["stdio", "http"] = "stdio"
     mcp_url: str | None = None  # only when transport == "http"
 
@@ -163,7 +161,9 @@ class ScholarSerperConfig(BaseModel):
     api_key_env: str = "SERPER_API_KEY"
     endpoint: str = "https://google.serper.dev/scholar"
     timeout_s: int = 30
-    max_calls_per_session: int | None = None  # None = unlimited; set to switch to SearXNG proactively
+    max_calls_per_session: int | None = (
+        None  # None = unlimited; set to switch to SearXNG proactively
+    )
 
 
 class ScholarSearXNGConfig(BaseModel):
@@ -188,9 +188,7 @@ class ScholarConfig(BaseModel):
 
     enabled: bool = False
     primary: Literal["serper", "searxng"] = "serper"
-    fallback_chain: list[Literal["serper", "searxng"]] = Field(
-        default_factory=lambda: ["searxng"]
-    )
+    fallback_chain: list[Literal["serper", "searxng"]] = Field(default_factory=lambda: ["searxng"])
     serper: ScholarSerperConfig = Field(default_factory=ScholarSerperConfig)
     searxng: ScholarSearXNGConfig = Field(default_factory=ScholarSearXNGConfig)
 
@@ -234,10 +232,10 @@ class FetchPageConfig(BaseModel):
     min_content_chars_for_browser_fallback: int = 500
 
 
-
 class CacheConfig(BaseModel):
     """Deprecated: kept for backward compat. The diskcache_dir is only used
     for directory creation; the config object is otherwise unused."""
+
     model_config = ConfigDict(extra="forbid")
 
     diskcache_dir: str = "./.cache/misc"
@@ -248,8 +246,6 @@ class OutputConfig(BaseModel):
 
     format: Literal["markdown", "json"] = "markdown"
     include_citations_bibliography: bool = True
-    # Deprecated: unused by the renderer. Kept for backward compat.
-    citation_style: Literal["inline_bare_url", "footnote"] = "inline_bare_url"
 
 
 class AcademicConfig(BaseModel):
@@ -272,9 +268,7 @@ class AcademicConfig(BaseModel):
     # Which discovery backends engage in the academic path's seed phase.
     # Default ["arxiv"] preserves backward-compat; add "scholar" to also draw
     # seeds from Google Scholar (requires `scholar.enabled: true`).
-    seed_backends: list[Literal["arxiv", "scholar"]] = Field(
-        default_factory=lambda: ["arxiv"]
-    )
+    seed_backends: list[Literal["arxiv", "scholar"]] = Field(default_factory=lambda: ["arxiv"])
 
 
 class BlogSearchConfig(BaseModel):
@@ -373,6 +367,10 @@ class AgentTopConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_paths(self) -> AgentTopConfig:
+        return self
+
+    def ensure_dirs(self) -> None:
+        """Create cache directories. Call explicitly at startup, not during config load."""
         for p in [
             self.arxiv.pdf_cache_dir,
             self.fetch_page.cache_dir,
@@ -380,7 +378,6 @@ class AgentTopConfig(BaseModel):
         ]:
             with contextlib.suppress(OSError):
                 Path(p).mkdir(parents=True, exist_ok=True)
-        return self
 
     @classmethod
     def load_yaml(cls, path: str | Path) -> AgentTopConfig:
@@ -393,13 +390,9 @@ class AgentTopConfig(BaseModel):
         return cls.model_validate(data)
 
 
-# Convenience re-export
-AgentConfigType = AgentTopConfig
-
 __all__ = [
     "AcademicConfig",
     "AgentConfig",
-    "AgentConfigType",
     "AgentTopConfig",
     "ArxivConfig",
     "BlogSearchConfig",

@@ -25,6 +25,8 @@ dependencies = [
     "httpx>=0.27,<1.0",
     # LLM client (OpenAI-compatible — works with any compliant endpoint, e.g. your Qwen service)
     "openai>=1.40,<2.0",
+    # Token counting for context management
+    "tiktoken>=0.7,<1.0",
     # MCP client (for Playwright MCP browser integration). Pin <2 until SDK v2 stabilizes.
     "mcp>=1.27,<2",
     # HTML article body extraction

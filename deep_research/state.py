@@ -209,7 +209,11 @@ class CitationGraph(BaseModel):
 
 
 class AcademicState(BaseModel):
-    """Mutable state for the academic-recursion path."""
+    """Mutable state for the academic-recursion path.
+
+    NOTE: Currently unused — the academic path uses local variables.
+    Kept for potential future checkpoint support.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

@@ -7,6 +7,7 @@ producing a report focused on practical / implementation details.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from openai import AsyncOpenAI
 
@@ -51,9 +52,7 @@ async def applied_research(
         )
 
     search_query = classified.search_hint or original_query
-    blog_result = await tools.call(
-        "blog_search", {"query": search_query, "max_results": 5}
-    )
+    blog_result = await tools.call("blog_search", {"query": search_query, "max_results": 5})
     if blog_result.error is not None:
         return Report(
             markdown=f"# Applied Research\n\nBlog search failed: {blog_result.error}",
@@ -84,7 +83,6 @@ async def applied_research(
     )
 
     reporter.phase("applied.done", f"{len(citations)} blog posts")
-    from datetime import UTC, datetime
     return Report(
         markdown=final_md,
         citations=citations,
@@ -102,10 +100,13 @@ async def _synthesize_applied(
     model: str,
 ) -> str:
     """Synthesize blog posts into an applied research report."""
-    blog_digest = "\n\n".join(
-        f"### {c.title}\nURL: {c.url}\n\n{fetched_texts[i] if i < len(fetched_texts) else c.snippet}"
-        for i, c in enumerate(citations)
-    ) or "No blog content available."
+    blog_digest = (
+        "\n\n".join(
+            f"### {c.title}\nURL: {c.url}\n\n{fetched_texts[i] if i < len(fetched_texts) else c.snippet}"
+            for i, c in enumerate(citations)
+        )
+        or "No blog content available."
+    )
 
     messages = [
         {
@@ -125,9 +126,7 @@ async def _synthesize_applied(
     ]
 
     try:
-        resp = await client.chat.completions.create(
-            model=model, messages=messages, temperature=0.0
-        )
+        resp = await client.chat.completions.create(model=model, messages=messages, temperature=0.0)
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
         logger.warning("applied synthesis failed: %s: %s; using fallback", type(e).__name__, e)
