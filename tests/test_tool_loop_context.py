@@ -35,12 +35,11 @@ from deep_research.llm.tool_loop import (
 class TestEncodingForModel:
     def test_known_model_returns_encoding(self) -> None:
         enc = _encoding_for_model("gpt-4")
-        assert isinstance(enc, str)
-        assert enc != ""
+        assert hasattr(enc, "encode")
 
     def test_custom_model_falls_back(self) -> None:
         enc = _encoding_for_model("qwen3.5-122b")
-        assert enc == "cl100k_base"
+        assert enc.name == "cl100k_base"
 
 
 # ---------------------------------------------------------------------------

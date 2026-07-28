@@ -205,14 +205,12 @@ class ScopedToolRegistry:
 # ---------------------------------------------------------------------------
 
 
-def _encoding_for_model(model: str) -> str:
-    """Return a tiktoken encoding name roughly matching *model*."""
-    # tiktoken.model.MODEL_TO_ENCODING may not cover custom models like
-    # qwen3.5-122b; fall back to cl100k_base (used by GPT-4 / GPT-3.5).
+def _encoding_for_model(model: str):
+    """Return a tiktoken Encoding object roughly matching *model*."""
     try:
-        return tiktoken.encoding_name_for_model(model)
+        return tiktoken.encoding_for_model(model)
     except Exception:
-        return "cl100k_base"
+        return tiktoken.get_encoding("cl100k_base")
 
 
 def _token_count(messages: list[dict], model: str) -> int:
