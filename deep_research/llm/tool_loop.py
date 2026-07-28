@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOL_TIMEOUT_S: float = 120.0
 
+# Hard cap on tool-result content length (chars) before it enters the message
+# history. Prevents a single large tool result (e.g. full PDF text extraction)
+# from blowing the context window in one shot.
+_MAX_TOOL_RESULT_CHARS: int = 12000
+
 
 class ToolResult:
     """Standard return shape for tool calls.
@@ -44,9 +49,12 @@ class ToolResult:
         self.citations = citations or []
         self.error = error
 
-    def to_json(self) -> str:
+    def to_json(self, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
         # The OpenAI tool-message role expects a string content; we send JSON.
-        payload: dict[str, Any] = {"content": self.content}
+        content = self.content
+        if max_chars > 0 and len(content) > max_chars:
+            content = content[:max_chars] + f"\n\n[... truncated, {len(self.content)} chars total]"
+        payload: dict[str, Any] = {"content": content}
         if self.error:
             payload["error"] = self.error
         return json.dumps(payload, ensure_ascii=False)
@@ -231,6 +239,9 @@ def _token_count(messages: list[dict], model: str) -> int:
     return total
 
 
+_MAX_SUMMARY_INPUT_CHARS: int = 60000
+
+
 async def _summarize_turns(
     client,
     model: str,
@@ -238,7 +249,27 @@ async def _summarize_turns(
     max_summary_tokens: int = 2048,
 ) -> str:
     """Ask the LLM to compress a sequence of conversation turns into a short
-    summary paragraph that preserves all key findings, evidence, and sources."""
+    summary paragraph that preserves all key findings, evidence, and sources.
+
+    Individual message contents are truncated so the summarisation request
+    itself cannot exceed the model's context window.
+    """
+    parts: list[str] = []
+    budget = _MAX_SUMMARY_INPUT_CHARS
+    for m in messages_to_summarize:
+        content = m.get("content", "(no text)") or "(no text)"
+        if isinstance(content, list):
+            content = " ".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            )
+        if len(content) > 4000:
+            content = content[:4000] + " [...truncated]"
+        parts.append(f"--- {m.get('role', '?')} ---\n{content}")
+        budget -= len(parts[-1])
+        if budget <= 0:
+            parts.append("[... remaining turns omitted for length]")
+            break
+
     summary_messages = [
         {
             "role": "system",
@@ -252,13 +283,7 @@ async def _summarize_turns(
         },
         {
             "role": "user",
-            "content": (
-                "Summarise the following conversation turns:\n\n"
-                + "\n\n".join(
-                    f"--- {m.get('role', '?')} ---\n{m.get('content', '(no text)')}"
-                    for m in messages_to_summarize
-                )
-            ),
+            "content": "Summarise the following conversation turns:\n\n" + "\n\n".join(parts),
         },
     ]
     try:

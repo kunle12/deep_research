@@ -29,10 +29,6 @@ def _get_prompt_template() -> str:
     return _PROMPT_TEMPLATE
 
 
-# Hard cap on free-text length each tool result is truncated to before showing the LLM,
-# to keep context manageable across many sub-agents.
-_MAX_RESULT_CHARS = 6000
-
 REFINE_SCHEMA = {
     "type": "function",
     "function": {
