@@ -65,6 +65,7 @@ def _registry_with_search() -> ToolRegistry:
 
     async def _web_search(**kwargs: Any) -> Any:
         from deep_research.llm.tool_loop import ToolResult
+
         return ToolResult(
             content="search results",
             citations=[_citation("https://result", title="Result", score=0.8)],
@@ -89,12 +90,18 @@ class TestDeepHappyPath:
         plan_result = _plan([_sub_q(id="sq1", question="What is X?")])
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   return_value=("X is Y.", [_citation("https://a", title="A", score=0.9)])),
-            patch("deep_research.paths.deep.critic_review",
-                   return_value=Critique(sufficient=True, rationale="covered", gaps=[])),
-            patch("deep_research.paths.deep.writer_write",
-                   return_value="# Deep Report\n\nConclusion about X."),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                return_value=("X is Y.", [_citation("https://a", title="A", score=0.9)]),
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="covered", gaps=[]),
+            ),
+            patch(
+                "deep_research.paths.deep.writer_write",
+                return_value="# Deep Report\n\nConclusion about X.",
+            ),
         ):
             client = MagicMock()  # not used by patched nodes
             reg = _registry_with_search()
@@ -109,13 +116,20 @@ class TestDeepHappyPath:
         plan_result = _plan([_sub_q(id="sq1", question="Q?")])
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   return_value=("ans", [
-                       _citation("https://high", title="H", score=0.9),
-                       _citation("https://low", title="L", score=0.5),
-                   ])),
-            patch("deep_research.paths.deep.critic_review",
-                   return_value=Critique(sufficient=True, rationale="r", gaps=[])),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                return_value=(
+                    "ans",
+                    [
+                        _citation("https://high", title="H", score=0.9),
+                        _citation("https://low", title="L", score=0.5),
+                    ],
+                ),
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
             patch("deep_research.paths.deep.writer_write", return_value="# Report"),
         ):
             client = MagicMock()
@@ -159,7 +173,10 @@ class TestCriticIteration:
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
             patch("deep_research.paths.deep.researcher_run", side_effect=_researcher),
             patch("deep_research.paths.deep.critic_review", side_effect=_critic),
-            patch("deep_research.paths.deep.writer_write", return_value="# Final report with Q1 and Q2"),
+            patch(
+                "deep_research.paths.deep.writer_write",
+                return_value="# Final report with Q1 and Q2",
+            ),
         ):
             client = MagicMock()
             reg = _registry_with_search()
@@ -178,13 +195,14 @@ class TestCriticIteration:
             call_count["critic"] += 1
             if call_count["critic"] == 1:
                 # Gap has same question text as existing sub-question
-                return Critique(sufficient=False, rationale="r", gaps=[_sub_q(id="gap1", question="Q1?")])
+                return Critique(
+                    sufficient=False, rationale="r", gaps=[_sub_q(id="gap1", question="Q1?")]
+                )
             return Critique(sufficient=True, rationale="r", gaps=[])
 
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   return_value=("ans", [])),
+            patch("deep_research.paths.deep.researcher_run", return_value=("ans", [])),
             patch("deep_research.paths.deep.critic_review", side_effect=_critic),
             patch("deep_research.paths.deep.writer_write", return_value="# Report"),
         ):
@@ -198,10 +216,11 @@ class TestCriticIteration:
         plan_result = _plan([_sub_q(id="sq1", question="Q?")])
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   return_value=("ans", [])),
-            patch("deep_research.paths.deep.critic_review",
-                   return_value=Critique(sufficient=True, rationale="r", gaps=[])),
+            patch("deep_research.paths.deep.researcher_run", return_value=("ans", [])),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
             patch("deep_research.paths.deep.writer_write", return_value="# Done"),
         ):
             client = MagicMock()
@@ -221,12 +240,15 @@ class TestDeepResilience:
         plan_result = _plan([_sub_q(id="sq1", question="Q?")])
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   side_effect=RuntimeError("simulated researcher failure")),
-            patch("deep_research.paths.deep.critic_review",
-                   return_value=Critique(sufficient=True, rationale="r", gaps=[])),
-            patch("deep_research.paths.deep.writer_write",
-                   return_value="# Fallback report"),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                side_effect=RuntimeError("simulated researcher failure"),
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Fallback report"),
         ):
             client = MagicMock()
             reg = _registry_with_search()
@@ -238,12 +260,12 @@ class TestDeepResilience:
         plan_result = _plan([_sub_q(id="sq1", question="Q?")])
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   return_value=("draft answer", [])),
-            patch("deep_research.paths.deep.critic_review",
-                   return_value=Critique(sufficient=True, rationale="r", gaps=[])),
-            patch("deep_research.paths.deep.writer_write",
-                   return_value="# Report"),
+            patch("deep_research.paths.deep.researcher_run", return_value=("draft answer", [])),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
         ):
             client = MagicMock()
             reg = _registry_with_search()
@@ -276,10 +298,11 @@ class TestConfigIntegration:
         plan_result = _plan([_sub_q(id="sq1", question="Q?")])
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   return_value=("ans", [])),
-            patch("deep_research.paths.deep.critic_review",
-                   return_value=Critique(sufficient=True, rationale="r", gaps=[])),
+            patch("deep_research.paths.deep.researcher_run", return_value=("ans", [])),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
             patch("deep_research.paths.deep.writer_write", return_value="# Report"),
         ):
             client = MagicMock()
@@ -298,10 +321,11 @@ class TestConfigIntegration:
         plan_result = _plan([sq1, sq2])
         with (
             patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
-            patch("deep_research.paths.deep.researcher_run",
-                   return_value=("ans", [])),
-            patch("deep_research.paths.deep.critic_review",
-                   return_value=Critique(sufficient=True, rationale="r", gaps=[])),
+            patch("deep_research.paths.deep.researcher_run", return_value=("ans", [])),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
             patch("deep_research.paths.deep.writer_write", return_value="# Report with 2 sections"),
         ):
             client = MagicMock()
@@ -310,7 +334,129 @@ class TestConfigIntegration:
             assert report.path == "deep"
 
 
+# ---------------------------------------------------------------------------
+# Checkpoint resume
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointResume:
+    @pytest.mark.asyncio
+    async def test_resume_loads_checkpoint_and_skips_planner(self, cfg: AgentTopConfig) -> None:
+        """When a checkpoint exists, planner is skipped and loop resumes from saved iteration."""
+        from deep_research.state import ResearchState
+
+        checkpoint_state = ResearchState(query="Q")
+        checkpoint_state.iteration = 1
+        checkpoint_state.plan = _plan([_sub_q(id="sq1", question="Q?")])
+        checkpoint_state.absorb_section(
+            "sq1", [_citation("https://a", title="A", score=0.9)], "draft answer"
+        )
+
+        with (
+            patch(
+                "deep_research.paths.deep.load_checkpoint",
+                return_value=(checkpoint_state, {"run_id": "test_run"}),
+            ),
+            patch("deep_research.paths.deep.save_checkpoint") as mock_save,
+            patch("deep_research.paths.deep.discard_checkpoint") as mock_discard,
+            patch("deep_research.paths.deep.planner_plan") as mock_planner,
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                return_value=("ans", [_citation("https://b", title="B", score=0.8)]),
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            report = await deep_research(_classified("Q"), "Q", client, reg, cfg, run_id="test_run")
+            # Planner should NOT have been called
+            mock_planner.assert_not_called()
+            # Checkpoint should have been saved (after critic) and discarded (after writer)
+            mock_save.assert_called_once()
+            mock_discard.assert_called_once()
+            assert report.path == "deep"
+
+    @pytest.mark.asyncio
+    async def test_query_mismatch_discards_checkpoint(self, cfg: AgentTopConfig) -> None:
+        """Checkpoint with a different query is discarded and planner runs."""
+        from deep_research.state import ResearchState
+
+        checkpoint_state = ResearchState(query="DIFFERENT QUERY")
+        checkpoint_state.iteration = 1
+        plan_result = _plan([_sub_q(id="sq1", question="Q?")])
+
+        with (
+            patch(
+                "deep_research.paths.deep.load_checkpoint",
+                return_value=(checkpoint_state, {"run_id": "test_run"}),
+            ),
+            patch("deep_research.paths.deep.discard_checkpoint") as mock_discard,
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                return_value=("ans", [_citation("https://a", title="A", score=0.9)]),
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            report = await deep_research(_classified("Q"), "Q", client, reg, cfg, run_id="test_run")
+            # Discard should have been called because query mismatched
+            mock_discard.assert_called_once()
+            # Planner should have been called (fresh start)
+            assert report.path == "deep"
+
+    @pytest.mark.asyncio
+    async def test_no_checkpoint_runs_planner_normally(self, cfg: AgentTopConfig) -> None:
+        """When load_checkpoint returns None, planner runs as usual."""
+        plan_result = _plan([_sub_q(id="sq1", question="Q?")])
+        with (
+            patch("deep_research.paths.deep.load_checkpoint", return_value=None),
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch("deep_research.paths.deep.researcher_run", return_value=("ans", [])),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            report = await deep_research(_classified("Q"), "Q", client, reg, cfg, run_id="test_run")
+            assert report.path == "deep"
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_saved_after_critic(self, cfg: AgentTopConfig) -> None:
+        """Checkpoint is saved after critic runs, before break/continue."""
+        plan_result = _plan([_sub_q(id="sq1", question="Q?")])
+        with (
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch("deep_research.paths.deep.researcher_run", return_value=("ans", [])),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="r", gaps=[]),
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+            patch("deep_research.paths.deep.save_checkpoint") as mock_save,
+            patch("deep_research.paths.deep.discard_checkpoint"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            await deep_research(_classified("Q"), "Q", client, reg, cfg, run_id="test_run")
+            # save_checkpoint should have been called after critic
+            mock_save.assert_called_once()
+
+
 __all__ = [
+    "TestCheckpointResume",
     "TestConfigIntegration",
     "TestCriticIteration",
     "TestDeepHappyPath",

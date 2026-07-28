@@ -87,6 +87,7 @@ async def research(
     prior_context: str = "",
     max_refinement_per_researcher: int = 3,
     max_refinement_depth: int = 2,
+    max_context_tokens: int = 131072,
 ) -> tuple[str, list[Citation], list[SubQuestion]]:
     """Run the researcher loop for one sub-question.
 
@@ -129,10 +130,12 @@ async def research(
     async def _refine_handler(**kwargs) -> ToolResult:
         if kwargs.get("action") == "revise_strategy":
             strategy = kwargs.get("rationale", "")
-            return ToolResult(content=(
-                f"Strategy update noted: {strategy}. "
-                "You should adjust your remaining tool calls accordingly."
-            ))
+            return ToolResult(
+                content=(
+                    f"Strategy update noted: {strategy}. "
+                    "You should adjust your remaining tool calls accordingly."
+                )
+            )
         if len(refine_calls_collector) >= max_refinement_per_researcher:
             return ToolResult(content="Refinement budget exhausted for this sub-question.")
         refine_calls_collector.append(dict(kwargs))
@@ -146,6 +149,7 @@ async def research(
         tools=scoped,
         model=model,
         max_turns=max_turns,
+        max_context_tokens=max_context_tokens,
     )
 
     answer_md, extra_citations = _parse_final_assistant(final_messages)
@@ -155,26 +159,34 @@ async def research(
     ref_depth = sub_q.refinement_depth + 1
     for call in refine_calls_collector:
         if ref_depth > max_refinement_depth:
-            logger.info("refinement skipped: depth %d exceeds max %d", ref_depth, max_refinement_depth)
+            logger.info(
+                "refinement skipped: depth %d exceeds max %d", ref_depth, max_refinement_depth
+            )
             break
         action = call.get("action")
         if action == "drill_deeper" and call.get("question"):
-            refinements.append(SubQuestion(
-                id=f"{sub_q.id}.refine{len(refinements) + 1}",
-                question=call["question"],
-                tool_hint=call.get("tool_hint", "general-web"),
-                refinement_depth=ref_depth,
-                rationale=call.get("rationale", ""),
-            ))
+            refinements.append(
+                SubQuestion(
+                    id=f"{sub_q.id}.refine{len(refinements) + 1}",
+                    question=call["question"],
+                    tool_hint=call.get("tool_hint", "general-web"),
+                    refinement_depth=ref_depth,
+                    rationale=call.get("rationale", ""),
+                )
+            )
         elif action == "chase_reference" and call.get("reference_url"):
-            refinements.append(SubQuestion(
-                id=f"{sub_q.id}.ref{len(refinements) + 1}",
-                question=call.get("question", f"Follow reference: {call['reference_url']}"),
-                tool_hint=call.get("tool_hint", "general-web"),
-                refinement_depth=ref_depth,
-                rationale=call.get("rationale", ""),
-                parent_arxiv_id=call["reference_url"] if "arxiv" in call["reference_url"] else None,
-            ))
+            refinements.append(
+                SubQuestion(
+                    id=f"{sub_q.id}.ref{len(refinements) + 1}",
+                    question=call.get("question", f"Follow reference: {call['reference_url']}"),
+                    tool_hint=call.get("tool_hint", "general-web"),
+                    refinement_depth=ref_depth,
+                    rationale=call.get("rationale", ""),
+                    parent_arxiv_id=call["reference_url"]
+                    if "arxiv" in call["reference_url"]
+                    else None,
+                )
+            )
 
     return (answer_md, citations, refinements)
 

@@ -16,6 +16,11 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from deep_research.checkpoint import (
+    discard_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+)
 from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
@@ -45,40 +50,59 @@ async def deep_research(
 
     reporter: ProgressReporter = ensure_reporter(progress)
     breadth = (
-        classified.breadth_hint
-        if classified.breadth_hint > 0
-        else config.agent.max_subquestions
+        classified.breadth_hint if classified.breadth_hint > 0 else config.agent.max_subquestions
     )
     iterations_cap = config.agent.max_iterations
 
-    # 1. Plan
-    reporter.phase("deep.plan", f"decomposing (breadth ≤ {breadth})")
-    plan_result = await planner_plan(original_query, client, config.llm.text_model, breadth=breadth)
-    state = ResearchState(query=original_query, plan=plan_result)
-    reporter.step("deep.plan", f"{len(plan_result.sub_questions)} sub-questions")
+    # 1. Plan (or resume from checkpoint)
+    state = ResearchState(query=original_query)
+    if run_id:
+        loaded = load_checkpoint(run_id)
+        if loaded is not None:
+            candidate, _ = loaded
+            if candidate.query == original_query:
+                state = candidate
+                reporter.phase("deep.resume", f"resuming iteration {state.iteration}")
+                logger.info("resuming deep research from iteration %d", state.iteration)
+            else:
+                logger.warning(
+                    "checkpoint query mismatch: expected %r, got %r — discarding",
+                    original_query,
+                    candidate.query,
+                )
+                discard_checkpoint(run_id)
+    if not state.plan.sub_questions:
+        # No plan yet — run planner (fresh start or discarded checkpoint)
+        reporter.phase("deep.plan", f"decomposing (breadth ≤ {breadth})")
+        plan_result = await planner_plan(
+            original_query,
+            client,
+            config.llm.text_model,
+            breadth=breadth,
+        )
+        state.plan = plan_result
+        reporter.step("deep.plan", f"{len(plan_result.sub_questions)} sub-questions")
 
     # 2. Iteration loop
-    for iteration in range(iterations_cap):
+    for iteration in range(state.iteration, iterations_cap):
         state.iteration = iteration
-        pending = [
-            sq for sq in state.plan.sub_questions
-            if not state.is_covered(sq)
-        ]
+        pending = [sq for sq in state.plan.sub_questions if not state.is_covered(sq)]
         if not pending:
             logger.info("no pending sub-questions after iteration %d", iteration)
             break
 
         reporter.phase(
-            "deep.research",
-            f"iter {iteration + 1}/{iterations_cap}: {len(pending)} sub-q(s)"
+            "deep.research", f"iter {iteration + 1}/{iterations_cap}: {len(pending)} sub-q(s)"
         )
         logger.info(
             "deep iteration %d: %d pending sub-question(s)",
-            iteration, len(pending),
+            iteration,
+            len(pending),
         )
         # P13: recall prior context from library before researcher dispatch
         storage = writer.storage if isinstance(writer, LibraryWriter) else None
         timeout = config.agent.researcher_timeout_s
+
         # Each researcher runs with its own timeout. Individual tool calls
         # inside the researcher already have per-call timeouts via
         # ToolRegistry.call, so a hung tool surfaces as a clean error result
@@ -86,15 +110,16 @@ async def deep_research(
         # exceeds timeout, we catch TimeoutError and skip that result.
         # Sync work wrapped in run_in_executor that doesn't honour
         # cancellation gets orphaned but the pipeline unblocks promptly.
-        async def _run_one_with_timeout(sq):
+        async def _run_one_with_timeout(sq, _storage=storage, _timeout=timeout):
             try:
                 return await asyncio.wait_for(
-                    _run_one_researcher_with_recall(sq, client, config, tools, storage),
-                    timeout=timeout,
+                    _run_one_researcher_with_recall(sq, client, config, tools, _storage),
+                    timeout=_timeout,
                 )
             except TimeoutError:
-                logger.warning("researcher for %s timed out after %ds", sq.id, timeout)
-                return TimeoutError(f"researcher timed out after {timeout}s")
+                logger.warning("researcher for %s timed out after %ds", sq.id, _timeout)
+                return TimeoutError(f"researcher timed out after {_timeout}s")
+
         results = await asyncio.gather(
             *[_run_one_with_timeout(sq) for sq in pending],
             return_exceptions=True,
@@ -107,7 +132,9 @@ async def deep_research(
                 reporter.step("deep.research.fail", sq.id)
                 continue
             if not isinstance(r, tuple) or len(r) not in (2, 3):
-                logger.warning("researcher for %s returned unexpected type %r", sq.id, type(r).__name__)
+                logger.warning(
+                    "researcher for %s returned unexpected type %r", sq.id, type(r).__name__
+                )
                 reporter.step("deep.research.fail", sq.id)
                 continue
             answer_md, citations = r[0], r[1]
@@ -131,8 +158,15 @@ async def deep_research(
         reporter.phase("deep.critic", f"iter {iteration + 1}")
         critique = await critic_review(state, client, config.llm.text_model)
         logger.info(
-            "critic iter=%d sufficient=%s gaps=%d", iteration, critique.sufficient, len(critique.gaps),
+            "critic iter=%d sufficient=%s gaps=%d",
+            iteration,
+            critique.sufficient,
+            len(critique.gaps),
         )
+        # Save checkpoint after critic (before next iteration or break)
+        if run_id:
+            save_checkpoint(state, run_id)
+
         if critique.sufficient:
             reporter.step("deep.critic", "sufficient")
             break
@@ -151,7 +185,9 @@ async def deep_research(
 
     # 3. Synthesize final report
     reporter.phase("deep.writer", f"synthesizing {len(state.citations)} citations")
-    final_md = await writer_write(state, client, config.llm.text_model, writer=writer, run_id=run_id)
+    final_md = await writer_write(
+        state, client, config.llm.text_model, writer=writer, run_id=run_id
+    )
 
     # 4. Project all assembled citations into a sorted list (by confidence desc)
     all_citations = sorted(
@@ -160,8 +196,13 @@ async def deep_research(
         reverse=True,
     )
 
+    # Clean up checkpoint — research completed successfully
+    if run_id:
+        discard_checkpoint(run_id)
+
     reporter.phase("deep.done", f"{len(all_citations)} citations")
     from datetime import UTC, datetime
+
     return Report(
         markdown=final_md,
         citations=all_citations,
@@ -190,11 +231,15 @@ async def _run_one_researcher_with_recall(
         logger.debug("recall failed for %s: %s", sq.id, e)
 
     return await researcher_run(
-        sq, client, config.llm.text_model, tools,
+        sq,
+        client,
+        config.llm.text_model,
+        tools,
         max_turns=config.agent.researcher_max_turns,
         prior_context=prior_context,
         max_refinement_per_researcher=config.agent.max_refinement_per_researcher,
         max_refinement_depth=config.agent.max_refinement_depth,
+        max_context_tokens=config.llm.max_context_tokens,
     )
 
 

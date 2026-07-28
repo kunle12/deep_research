@@ -27,12 +27,13 @@ changes.
 | `tools/browser.py` | Playwright MCP headless browser |
 | `tools/arxiv.py` | arxiv.org search + PDF download |
 | `tools/fetch_page.py` | httpx + trafilatura page fetch |
-| `paths/deep.py` | Deep research path (planner→researcher→critic→writer) |
+| `paths/deep.py` | Deep research path (planner→researcher→critic→writer); checkpoint resume |
 | `paths/academic.py` | Academic citation-graph path |
+| `checkpoint.py` | JSON checkpoint save/load for crash recovery of deep research state |
 | `nodes/auto_tag.py` | Post-synthesis LLM call — extracts 3-5 topic tags from query + report |
 | `prompts/auto_tag.txt` | Prompt template for auto-tag extraction |
 | `prompts/glossary_extract.txt` | Prompt template for glossary extraction |
-| `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call`; `ScopedToolRegistry` for per-researcher tool isolation |
+| `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call`; `ScopedToolRegistry` for per-researcher tool isolation; context management with summarisation at 75% of max context window |
 
 ---
 
@@ -269,6 +270,72 @@ researchers will hit the outer timeout even when nothing is broken.
 Defaults: 12 × 240s = 2880s, ~720s of tool-I/O headroom under 3600s.
 `run_with_tools` logs per-turn LLM ms + tool ms to make budget exhaustion
 diagnosable.
+
+---
+
+## Context Management Pattern (tool_loop.py)
+
+`run_with_tools()` now accepts `max_context_tokens` (default 131072). When the
+estimated token count of the message list exceeds 75% of this value, older
+turns are summarised into a single compressed "user" message.
+
+**Key implementation details:**
+
+- **Token estimation**: uses `tiktoken` with a fallback to `cl100k_base` for
+  custom models like `qwen3.5-122b`. Counts message framing overhead (~4
+  tokens/message) plus content tokens from both top-level string fields and
+  nested `tool_calls` dicts.
+- **Exchange-aware truncation**: walks backwards from the end of the message
+  list, grouping assistant/user messages with their preceding tool-message
+  chains into proper exchanges. Keeps the last 3 complete exchanges; summarises
+  everything before that.
+- **Summarisation is async and non-fatal**: `_summarize_turns()` calls the LLM
+  with a dedicated summarisation prompt. If it fails (timeout, API error), the
+  original messages are kept unchanged — the loop continues without context
+  compression.
+- **75% threshold**: triggers before the model hits its absolute limit, leaving
+  headroom for the summarised conversation to continue. Configurable per
+  deployment via `config.llm.max_context_tokens`.
+
+**Call chain:**
+`config.llm.max_context_tokens` → `deep.py` → `researcher.py` → `tool_loop.py`
+
+---
+
+## Checkpoint Resume Pattern (checkpoint.py + deep.py)
+
+The deep research loop saves a JSON checkpoint after each critic invocation so
+a crashed run can resume from where it left off.
+
+**Checkpoint save points (`deep.py` line 159):**
+```
+planner → iteration(N) researchers → critic → save checkpoint → break/continue
+```
+Saved after the critic but before the loop decides to break or add gaps. This
+captures all absorbed researcher results and flushed refinements.
+
+**Resume flow (`deep.py` line 59-86):**
+1. On startup, if `run_id` is set, calls `load_checkpoint(run_id)`
+2. If a checkpoint exists and its `query` matches the current run, loads it and
+   skips the planner entirely
+3. The iteration loop starts from `range(state.iteration, iterations_cap)` —
+   already-completed iterations are skipped
+4. `is_covered()` prevents re-running researchers on sub-questions that already
+   have drafts + citations
+5. After the writer completes, the checkpoint is discarded via `discard_checkpoint()`
+
+**What gets saved:**
+- `ResearchState` serialised via pydantic `model_dump(mode="json")` — query,
+  plan, sections, drafts, citations, iteration, pending_refinements
+- `run_id` metadata at top level for cross-reference
+
+**Safety mechanisms:**
+- Query validation: if the checkpoint's `query != original_query`, it's
+  discarded and a fresh plan is created
+- Non-fatal I/O: save/load/discard all catch exceptions and log warnings rather
+  than crashing the agent
+- Separate storage: checkpoints live in `./.cache/research_checkpoints/`,
+  independent from the PDL SQLite store — no schema migration needed
 
 ---
 

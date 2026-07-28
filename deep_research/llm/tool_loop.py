@@ -4,6 +4,9 @@ Implements:
 1. A tool registry: `name -> async_callable(**kwargs) -> ToolResult`
 2. A run loop: dispatches tool calls requested by the LLM, concurrently
    via `asyncio.gather`, up to `max_turns`.
+3. Context management: when total tokens exceed 75% of `max_context_tokens`,
+   older turns are summarised into a single compressed message to stay
+   within the model's context window.
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ import logging
 import time
 from collections.abc import Awaitable
 from typing import Any, Protocol
+
+import tiktoken
 
 from deep_research.state import Citation
 
@@ -116,6 +121,7 @@ class ToolRegistry:
         func = self._tools.get(name)
         if func is None:
             return ToolResult(content="", error=f"unknown tool: {name}")
+
         # Run under the registry-wide semaphore if configured
         async def _run() -> ToolResult:
             try:
@@ -139,7 +145,8 @@ class ToolRegistry:
             except TimeoutError:
                 logger.warning(
                     "tool %s exceeded per-call timeout %.1fs",
-                    name, self._tool_timeout_s,
+                    name,
+                    self._tool_timeout_s,
                 )
                 return ToolResult(
                     content="",
@@ -193,6 +200,163 @@ class ScopedToolRegistry:
         return await self._parent.call(name, arguments)
 
 
+# ---------------------------------------------------------------------------
+# Context management helpers
+# ---------------------------------------------------------------------------
+
+
+def _encoding_for_model(model: str) -> str:
+    """Return a tiktoken encoding name roughly matching *model*."""
+    # tiktoken.model.MODEL_TO_ENCODING may not cover custom models like
+    # qwen3.5-122b; fall back to cl100k_base (used by GPT-4 / GPT-3.5).
+    try:
+        return tiktoken.encoding_name_for_model(model)
+    except Exception:
+        return "cl100k_base"
+
+
+def _token_count(messages: list[dict], model: str) -> int:
+    """Rough token count of the message list using tiktoken."""
+    enc = _encoding_for_model(model)
+    total = 2  # <|start|> overhead
+    for m in messages:
+        total += 4  # per-message framing overhead
+        for _, v in m.items():
+            if isinstance(v, str):
+                total += len(enc.encode(v))
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        for sv in item.values():
+                            if isinstance(sv, str):
+                                total += len(enc.encode(sv))
+    return total
+
+
+async def _summarize_turns(
+    client,
+    model: str,
+    messages_to_summarize: list[dict],
+    max_summary_tokens: int = 2048,
+) -> str:
+    """Ask the LLM to compress a sequence of conversation turns into a short
+    summary paragraph that preserves all key findings, evidence, and sources."""
+    summary_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a conversation summariser. Condense the following "
+                "research conversation turns into a single concise paragraph "
+                "that preserves every important finding, citation URL, "
+                "source title, and data point. Omit tool-call mechanics; "
+                "keep only the substance."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Summarise the following conversation turns:\n\n"
+                + "\n\n".join(
+                    f"--- {m.get('role', '?')} ---\n{m.get('content', '(no text)')}"
+                    for m in messages_to_summarize
+                )
+            ),
+        },
+    ]
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=summary_messages,
+            max_tokens=max_summary_tokens,
+            temperature=0.3,
+        )
+        return resp.choices[0].message.content or ""
+    except Exception as e:
+        logger.warning("context summarization failed: %s — keeping original messages", e)
+        return ""
+
+
+async def _maybe_summarise(
+    client,
+    messages: list[dict],
+    model: str,
+    max_context_tokens: int,
+) -> list[dict]:
+    """If total token usage exceeds 75 % of *max_context_tokens*, compress
+    older turns into a single summary message injected as a 'user' role.
+
+    The system message (index 0) is always preserved as-is. The *last 3*
+    conversational exchanges (assistant + tool messages) are kept intact.
+    Everything before that is summarised.
+    """
+    if max_context_tokens <= 0:
+        return messages
+    total = _token_count(messages, model)
+    threshold = int(max_context_tokens * 0.75)
+    if total <= threshold:
+        return messages  # no summarization needed
+
+    logger.info(
+        "context %.1f%% of %d — summarising older turns",
+        total / max_context_tokens * 100,
+        max_context_tokens,
+    )
+
+    # Find boundaries:
+    #   [system, user, assistant, tool, assistant, tool, ...]
+    # Keep system, then keep last 3 exchanges, summarise the rest.
+    system = messages[:1] if messages and messages[0]["role"] == "system" else []
+    body = messages[len(system) :]
+
+    # Walk backwards collecting up to 3 exchanges. An "exchange" is:
+    #   user | assistant  +  all subsequent tool messages that follow it.
+    # We keep the last 3 *complete* exchanges (assistant + its tool chain).
+    kept: list[dict] = []
+    i = len(body) - 1
+    exchange_count = 0
+    while i >= 0 and exchange_count < 3:
+        # Skip standalone tool messages (they belong to the exchange
+        # already captured by the assistant message ahead of them).
+        if body[i]["role"] == "tool":
+            i -= 1
+            continue
+        # Found an assistant or user message — this starts an exchange.
+        # Include it and any tool messages immediately before it.
+        end = i + 1
+        start = i
+        # Include preceding tool messages that belong to this exchange
+        while start > 0 and body[start - 1]["role"] == "tool":
+            start -= 1
+        # Insert this exchange block at the front of kept
+        kept[0:0] = body[start:end]
+        exchange_count += 1
+        i = start - 1
+
+    to_summarise = body[: len(body) - len(kept)]
+    if not to_summarise:
+        return messages
+
+    summary_text = await _summarize_turns(client, model, to_summarise)
+    if not summary_text:
+        # Summarisation failed — keep original messages unchanged
+        return messages
+
+    # Rebuild: system + summary (user) + kept messages
+    rebuilt = list(system)
+    rebuilt.append(
+        {
+            "role": "user",
+            "content": (
+                "[EARLIER RESEARCH SUMMARY]\n"
+                + summary_text
+                + "\n\n(Continue research using the full conversation below.)"
+            ),
+        }
+    )
+    rebuilt.extend(kept)
+    return rebuilt
+
+
 async def run_with_tools(
     client,  # openai.AsyncOpenAI
     messages: list[dict],
@@ -200,8 +364,13 @@ async def run_with_tools(
     model: str,
     max_turns: int = 10,
     extra: dict | None = None,
+    max_context_tokens: int = 131072,
 ) -> tuple[list[dict], list[Citation]]:
     """Run a chat-completions loop, dispatching any tool calls in parallel.
+
+    *max_context_tokens* — maximum model context window; when total tokens
+    reach 75 % of this value, older turns are summarised into a single
+    compressed message.
 
     Returns the final message list (including assistant + tool messages)
     and the union of all citations surfaced by tool calls.
@@ -209,6 +378,11 @@ async def run_with_tools(
     citations: list[Citation] = []
     messages = list(messages)
     extra = extra or {}
+
+    # Apply context management before the first turn too, in case the
+    # initial system + user prompt already fills a large portion of the
+    # context window.
+    messages = await _maybe_summarise(client, messages, model, max_context_tokens)
 
     for _turn in range(max_turns):
         turn_t0 = time.monotonic()
@@ -241,7 +415,9 @@ async def run_with_tools(
         if not msg.tool_calls:
             logger.debug(
                 "tool_loop turn %d/%d: llm=%.0fms; no tool calls — finishing",
-                _turn + 1, max_turns, llm_ms,
+                _turn + 1,
+                max_turns,
+                llm_ms,
             )
             return messages, citations
 
@@ -265,10 +441,13 @@ async def run_with_tools(
             tool_ms = (time.monotonic() - tool_t0) * 1000.0
             tool_names = ", ".join(t[0].function.name for t in tasks)
             logger.info(
-                "tool_loop turn %d/%d: llm=%.0fms tools=%.0fms "
-                "(%d call(s): %s)",
-                _turn + 1, max_turns, llm_ms, tool_ms,
-                len(tasks), tool_names,
+                "tool_loop turn %d/%d: llm=%.0fms tools=%.0fms (%d call(s): %s)",
+                _turn + 1,
+                max_turns,
+                llm_ms,
+                tool_ms,
+                len(tasks),
+                tool_names,
             )
         else:
             results = []
@@ -282,6 +461,9 @@ async def run_with_tools(
                     "content": result.to_json(),
                 }
             )
+
+        # Check context after tool results are appended
+        messages = await _maybe_summarise(client, messages, model, max_context_tokens)
 
     logger.warning("tool loop exceeded max_turns=%d", max_turns)
     return messages, citations

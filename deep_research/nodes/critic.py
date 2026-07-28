@@ -25,11 +25,7 @@ async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Criti
     # Render the current state for the prompt
     sections_blob = _render_sections_for_prompt(state)
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
-    prompt = (
-        prompt_template
-        .replace("{query}", state.query)
-        .replace("{sections}", sections_blob)
-    )
+    prompt = prompt_template.replace("{query}", state.query).replace("{sections}", sections_blob)
     try:
         resp = await client.chat.completions.create(
             model=model,
@@ -54,6 +50,9 @@ async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Criti
         raw_gaps = data.get("gaps") or []
         gaps: list[SubQuestion] = []
         for i, g in enumerate(raw_gaps):
+            if not isinstance(g, dict):
+                logger.warning("critic gap %d is not a dict: %r — skipping", i, type(g).__name__)
+                continue
             sid = str(g.get("id") or f"critic_gap_{i + 1}")
             hint = str(g.get("tool_hint") or "general-web")
             if hint not in _VALID_TOOL_HINTS:
@@ -83,12 +82,14 @@ async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Criti
             )
         return Critique(
             sufficient=False,
-            gaps=[SubQuestion(
-                id="critic_fallback_gap",
-                question=f"Re-analyze the research; critic LLM failed ({type(e).__name__})",
-                tool_hint="general-web",
-                rationale="critic failure forced a synthetic gap",
-            )],
+            gaps=[
+                SubQuestion(
+                    id="critic_fallback_gap",
+                    question=f"Re-analyze the research; critic LLM failed ({type(e).__name__})",
+                    tool_hint="general-web",
+                    rationale="critic failure forced a synthetic gap",
+                )
+            ],
             rationale=f"critic LLM call failed ({type(e).__name__}); synthetic gap added",
         )
 

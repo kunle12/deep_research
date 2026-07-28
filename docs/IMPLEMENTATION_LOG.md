@@ -1097,3 +1097,35 @@ $ uv run ruff check deep_research/ tests/
 - [x] `revise_strategy` does not create collector entries
 - [x] Backward compatible: 2-tuple returns from mocked researchers still accepted
 - [x] All 475 tests pass (17 new + 458 existing)
+
+---
+
+## Context Management & Checkpoint Resume
+
+### Done
+
+- [x] `llm/tool_loop.py` — added context management to `run_with_tools()`:
+  - `_encoding_for_model()` resolves tiktoken encoding (falls back to `cl100k_base` for custom models)
+  - `_token_count()` estimates total tokens per message list
+  - `_summarize_turns()` calls the LLM to compress older conversation turns into a short paragraph preserving findings, URLs, and sources
+  - `_maybe_summarise()` — async; checks if total tokens exceed 75% of `max_context_tokens`; if so, preserves the system message + last 3 exchanges, summarizes everything before that, and rebuilds the list with a summary user message prepended
+  - `run_with_tools()` accepts `max_context_tokens` (default 131072) and calls `_maybe_summarise` before the first turn and after each turn's tool results
+- [x] `nodes/researcher.py` — `research()` accepts `max_context_tokens` and passes it to `run_with_tools()`
+- [x] `paths/deep.py` — `_run_one_researcher_with_recall()` passes `config.llm.max_context_tokens` to `research()`
+- [x] `checkpoint.py` — new module: `save_checkpoint()` serializes `ResearchState` to `./.cache/research_checkpoints/<run_id>.json`; `load_checkpoint()` loads and validates; `discard_checkpoint()` removes on successful completion
+- [x] `paths/deep.py` — on startup, if `run_id` is set and a checkpoint exists, loads it and skips the planner; loop starts from saved `state.iteration`; saves checkpoint after each critic; discards checkpoint after writer succeeds; validates query match on resume
+
+### Verification
+
+```bash
+$ uv run ruff check deep_research/ tests/
+# (no lint issues)
+```
+
+### Design decisions
+
+- **Checkpoint at critic boundary**: saving after the critic (before break/continue) captures the most stable state — all researcher results are absorbed, refinements are flushed, and the next iteration's plan is finalised. No in-flight tool-call state to snapshot.
+- **JSON over pickle**: `ResearchState` is a pydantic `BaseModel`; `model_dump(mode="json")` produces portable, debuggable files. No binary compatibility concerns.
+- **Separate checkpoint dir**: `./.cache/research_checkpoints/` keeps checkpoints independent from the PDL SQLite store, avoiding schema migrations and keeping writes fast.
+- **Query validation on resume**: if a checkpoint's `query` doesn't match the current run, it's discarded automatically, preventing stale-state contamination.
+- **75% threshold**: triggers summarisation before the model hits its absolute limit, giving headroom for the summarised conversation to continue making progress.

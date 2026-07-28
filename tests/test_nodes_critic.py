@@ -17,6 +17,7 @@ import pytest
 
 from deep_research.nodes.critic import _render_sections_for_prompt, review
 from deep_research.state import (
+    Citation,
     Critique,
     ResearchPlan,
     ResearchState,
@@ -98,8 +99,6 @@ class TestRenderSectionsForPrompt:
         assert "(no draft produced)" in out
 
     def test_renders_citations(self) -> None:
-        from deep_research.state import Citation
-
         state = _state(sections={"sq1": [Citation(url="https://a", title="A", snippet="s")]})
         out = _render_sections_for_prompt(state)
         assert "https://a" in out
@@ -142,7 +141,12 @@ class TestReviewHappyPath:
             "sufficient": False,
             "rationale": "Missing depth on Q2.",
             "gaps": [
-                {"id": "gap1", "question": "What are the implications?", "tool_hint": "general-web", "rationale": "need more"},
+                {
+                    "id": "gap1",
+                    "question": "What are the implications?",
+                    "tool_hint": "general-web",
+                    "rationale": "need more",
+                },
             ],
         }
         client = _FakeAsyncOpenAI(json.dumps(payload))
@@ -175,6 +179,25 @@ class TestReviewHappyPath:
         state = _state(drafts={"sq1": "draft"})
         out = await review(state, client, "m")
         assert out.gaps[0].tool_hint == "general-web"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_gaps_are_skipped(self) -> None:
+        """LLM returns a list-of-lists instead of list-of-dicts for gaps."""
+        payload = {
+            "sufficient": False,
+            "rationale": "r",
+            "gaps": [
+                ["id1", "question1", "general-web", "rationale1"],  # list, not dict
+                {"id": "g2", "question": "Valid gap", "tool_hint": "general-web", "rationale": "r"},
+            ],
+        }
+        client = _FakeAsyncOpenAI(json.dumps(payload))
+        state = _state(drafts={"sq1": "draft"})
+        out = await review(state, client, "m")
+        # Only the dict gap should be kept
+        assert len(out.gaps) == 1
+        assert out.gaps[0].id == "g2"
+        assert out.gaps[0].question == "Valid gap"
 
 
 # ---------------------------------------------------------------------------
