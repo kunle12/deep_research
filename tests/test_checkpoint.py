@@ -19,6 +19,7 @@ import pytest
 from deep_research.checkpoint import (
     _checkpoint_path,
     discard_checkpoint,
+    find_checkpoint_for_query,
     load_checkpoint,
     save_checkpoint,
 )
@@ -148,3 +149,83 @@ def test_save_and_load_empty_state() -> None:
     assert len(loaded.drafts) == 0
     assert len(loaded.sections) == 0
     discard_checkpoint(run_id)
+
+
+def test_find_checkpoint_for_query_no_match() -> None:
+    """Returns None when no checkpoint matches the query."""
+    q = "nonexistent query"
+    run_id = "test_find_none_001"
+    save_checkpoint(ResearchState(query="other query"), run_id)
+    result = find_checkpoint_for_query(q)
+    assert result is None
+    discard_checkpoint(run_id)
+
+
+def test_find_checkpoint_for_query_single_match() -> None:
+    """Returns the matching checkpoint when one exists."""
+    q = "matching query"
+    run_id = "test_find_one_001"
+    state = ResearchState(query=q, iteration=3)
+    save_checkpoint(state, run_id)
+    result = find_checkpoint_for_query(q)
+    assert result is not None
+    loaded, meta = result
+    assert loaded.query == q
+    assert loaded.iteration == 3
+    assert meta["run_id"] == run_id
+    discard_checkpoint(run_id)
+
+
+def test_find_checkpoint_for_query_prefers_latest() -> None:
+    """When multiple checkpoints match the same query, picks the most recent by mtime."""
+    q = "latest query"
+    from time import sleep
+
+    run_id_old = "test_find_latest_old"
+    run_id_new = "test_find_latest_new"
+    save_checkpoint(ResearchState(query=q, iteration=1), run_id_old)
+    sleep(0.1)
+    save_checkpoint(ResearchState(query=q, iteration=5), run_id_new)
+    result = find_checkpoint_for_query(q)
+    assert result is not None
+    loaded, _ = result
+    # Should pick the one with higher iteration (written later)
+    assert loaded.iteration == 5
+    discard_checkpoint(run_id_old)
+    discard_checkpoint(run_id_new)
+
+
+def test_find_checkpoint_for_query_skips_corrupt_json() -> None:
+    """Skips unparseable checkpoint files without crashing."""
+    q = "robust query"
+    run_id = "test_find_corrupt_001"
+    # Write a valid checkpoint
+    save_checkpoint(ResearchState(query=q, iteration=2), run_id)
+    # Write a corrupt file in the same dir
+    import pathlib
+
+    corrupt = pathlib.Path("./.cache/research_checkpoints/corrupt_test.json")
+    corrupt.write_text("not json")
+    result = find_checkpoint_for_query(q)
+    assert result is not None
+    loaded, _ = result
+    assert loaded.query == q
+    assert loaded.iteration == 2
+    corrupt.unlink()
+    discard_checkpoint(run_id)
+
+
+def test_find_checkpoint_for_query_skips_missing_run_id() -> None:
+    """Skips checkpoint files that lack a run_id metadata key."""
+    q = "missing run_id query"
+    import json
+    import pathlib
+
+    # Manually write a checkpoint that has state matching q but no run_id
+    state = ResearchState(query=q, iteration=1)
+    payload = {"state": state.model_dump(mode="json")}  # no run_id key
+    p = pathlib.Path("./.cache/research_checkpoints/test_no_run_id.json")
+    p.write_text(json.dumps(payload))
+    result = find_checkpoint_for_query(q)
+    assert result is None
+    p.unlink()

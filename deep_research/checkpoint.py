@@ -70,3 +70,49 @@ def discard_checkpoint(run_id: str) -> None:
         logger.debug("checkpoint discarded: %s", path)
     except Exception as e:
         logger.warning("checkpoint discard failed: %s: %s", type(e).__name__, e)
+
+
+def find_checkpoint_for_query(query: str) -> tuple[ResearchState, dict[str, Any]] | None:
+    """Scan checkpoint directory for the latest checkpoint matching *query*.
+
+    Returns ``(state, metadata)`` or ``None`` if no matching checkpoint found.
+    The latest checkpoint is determined by file modification time (mtime).
+    """
+    if not _CHECKPOINT_DIR.exists():
+        return None
+
+    candidates: list[tuple[Path, float, dict[str, Any]]] = []
+    for f in _CHECKPOINT_DIR.iterdir():
+        if not f.is_file() or not f.name.endswith(".json"):
+            continue
+        try:
+            raw = json.loads(f.read_text())
+            state_raw = raw.get("state")
+            if state_raw is None:
+                continue
+            if state_raw.get("query") != query:
+                continue
+            run_id = raw.get("run_id")
+            if not run_id:
+                logger.debug("skipping checkpoint %s: missing run_id", f)
+                continue
+            candidates.append((f, f.stat().st_mtime, raw))
+        except Exception as e:
+            logger.warning("skipping unparseable checkpoint %s: %s", f, e)
+            continue
+
+    if not candidates:
+        return None
+
+    # Sort by mtime descending, pick the most recent
+    candidates.sort(key=lambda t: t[1], reverse=True)
+    _path, _mtime, raw = candidates[0]
+    logger.info("auto-detected checkpoint: %s", _path)
+
+    try:
+        state = ResearchState.model_validate(raw["state"])
+        extra = {k: v for k, v in raw.items() if k != "state"}
+        return state, extra
+    except Exception as e:
+        logger.warning("checkpoint load failed: %s: %s — starting fresh", type(e).__name__, e)
+        return None

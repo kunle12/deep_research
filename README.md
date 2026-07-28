@@ -154,6 +154,23 @@ uv run deep-research --academic "RLHF safety" --max-depth 2 --max-papers 20 --du
 uv run deep-research --url-source "https://example.com/foo.pdf" "verify its claims"
 ```
 
+### Checkpoint resume
+
+The deep research path saves a JSON checkpoint after every iteration. If the process
+is interrupted, rerunning the **same query** automatically detects the latest
+checkpoint and resumes from where it left off — the planner is skipped and
+already-completed sub-questions are not re-researched.
+
+```bash
+# Auto-resume: simply rerun the same query
+uv run deep-research --deep "compare transformer architectures"
+
+# Explicit run_id: resume a specific checkpoint (find the run_id in .cache/research_checkpoints/)
+uv run deep-research --deep "compare transformer architectures" --run-id abc123def456
+```
+
+Requires `pdl.enabled: true` in config.yaml (enabled by default).
+
 Output controls:
 
 ```bash

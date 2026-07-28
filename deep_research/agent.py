@@ -34,6 +34,7 @@ async def run_research(
     *,
     path_override: PathOverride | None = None,
     progress: ProgressReporter | None = None,
+    run_id: str = "",
 ) -> Report:
     """Top-level public entrypoint.
 
@@ -44,7 +45,6 @@ async def run_research(
 
     # LibraryWriter setup (optional, based on config)
     writer: LibraryWriter | NullLibraryWriter | None = None
-    run_id: str = ""
     if config.pdl.enabled:
         backend = None
         try:
@@ -52,7 +52,17 @@ async def run_research(
 
             backend = await get_backend(config)
             writer = LibraryWriter(backend, config.pdl.root_dir)
-            run_id = uuid.uuid4().hex[:16]
+            if not run_id:
+                # Auto-detect: if a checkpoint exists for this query, use its run_id
+                from deep_research.checkpoint import find_checkpoint_for_query
+
+                found = find_checkpoint_for_query(query)
+                if found is not None:
+                    _, meta = found
+                    run_id = meta.get("run_id", "")
+                    logger.info("auto-resuming from checkpoint run_id=%s", run_id)
+                else:
+                    run_id = uuid.uuid4().hex[:16]
             writer.set_run_id(run_id)
         except Exception as e:
             logger.warning(

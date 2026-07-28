@@ -168,6 +168,11 @@ def main(
         "--max-papers",
         help="Academic mode: cap total papers analyzed (overrides academic.max_papers)",
     ),
+    run_id: str = typer.Option(
+        "",
+        "--run-id",
+        help="Resume from a specific checkpoint run_id (auto-detects latest if omitted; requires pdl.enabled in config)",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
     quiet: bool = typer.Option(
         False,
@@ -214,6 +219,7 @@ def main(
                 config,
                 path_override=path_override,
                 progress=rich_reporter,
+                run_id=run_id,
             )
         )
         # Mark the live panel done (green styling, "— done" title) before
