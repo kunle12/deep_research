@@ -43,8 +43,7 @@ def _build_messages(
             f"({len(page_image_data_urls)} pages attached)\n"
         )
     prompt_text = (
-        prompt_template
-        .replace("{arxiv_id}", arxiv_id)
+        prompt_template.replace("{arxiv_id}", arxiv_id)
         .replace("{paper_text}", paper_text[:40000])  # guard context blowup
         .replace("{query}", query or "")
         .replace("{image_pages_section}", image_section)
@@ -113,7 +112,9 @@ async def analyze(
             analysis.key_references = []
         return analysis
     except Exception as e:
-        logger.warning("analyze_paper LLM call failed for %s: %s: %s", arxiv_id, type(e).__name__, e)
+        logger.warning(
+            "analyze_paper LLM call failed for %s: %s: %s", arxiv_id, type(e).__name__, e
+        )
         return PaperAnalysis(
             title=f"[error] {arxiv_id}",
             summary=f"LLM analysis failed: {type(e).__name__}: {e}",
@@ -137,7 +138,12 @@ def _list_of_str(v: Any) -> list[str]:
     return []
 
 
-def _coerce(arxiv_id: str, data: dict[str, Any]) -> PaperAnalysis:
+def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
+    if not isinstance(data, dict):
+        return PaperAnalysis(
+            title=f"[unparseable] {arxiv_id}",
+            summary=f"LLM returned a {type(data).__name__} instead of a JSON object",
+        )
     """Loose-coerce a JSON-decoded LLM payload into a strict `PaperAnalysis`.
 
     Drops `key_references` items that lack a usable arxiv_id; the academic

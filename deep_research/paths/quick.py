@@ -159,20 +159,25 @@ async def _synthesize(
         raw = resp.choices[0].message.content or ""
         try:
             data = json.loads(raw)
-            answer_md = str(data.get("answer", raw))
-            for c in data.get("citations", []) or []:
-                url = c.get("url")
-                if not url:
-                    continue
-                citations.append(
-                    Citation(
-                        url=url,
-                        title=str(c.get("title", "") or ""),
-                        snippet=str(c.get("snippet", "") or ""),
-                        confidence_score=float(c.get("confidence_score") or 0.6),
-                        source_type="web",
+            if not isinstance(data, dict):
+                answer_md = raw
+            else:
+                answer_md = str(data.get("answer", raw))
+                for c in data.get("citations", []) or []:
+                    if not isinstance(c, dict):
+                        continue
+                    url = c.get("url")
+                    if not url:
+                        continue
+                    citations.append(
+                        Citation(
+                            url=url,
+                            title=str(c.get("title", "") or ""),
+                            snippet=str(c.get("snippet", "") or ""),
+                            confidence_score=float(c.get("confidence_score") or 0.6),
+                            source_type="web",
+                        )
                     )
-                )
         except json.JSONDecodeError:
             answer_md = raw
     except Exception as e:
