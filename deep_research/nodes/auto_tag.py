@@ -58,7 +58,7 @@ async def auto_tag_report(
 
     try:
         data = json.loads(raw)
-        tags = data.get("tags", [])
+        tags = data.get("tags", []) if isinstance(data, dict) else []
         if not isinstance(tags, list):
             tags = []
     except json.JSONDecodeError:

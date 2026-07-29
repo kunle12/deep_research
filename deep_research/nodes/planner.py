@@ -58,7 +58,7 @@ async def plan(
         )
         raw = resp.choices[0].message.content or ""
         data = json.loads(raw)
-        raw_subs = data.get("sub_questions") or []
+        raw_subs = data.get("sub_questions") if isinstance(data, dict) else []
         sub_qs: list[SubQuestion] = []
         for i, sq in enumerate(raw_subs[:breadth]):
             sid = str(sq.get("id") or f"sq{i + 1}")

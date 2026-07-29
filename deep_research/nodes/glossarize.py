@@ -86,6 +86,8 @@ def parse_glossary_from_response(
     except json.JSONDecodeError:
         return []
 
+    if not isinstance(data, dict):
+        return []
     glossary_data = data.get("glossary")
     if not glossary_data or not isinstance(glossary_data, list):
         return []

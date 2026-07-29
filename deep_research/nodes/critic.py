@@ -55,7 +55,7 @@ async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Criti
         )
         raw = resp.choices[0].message.content or ""
         data = json.loads(raw)
-        raw_gaps = data.get("gaps") or []
+        raw_gaps = data.get("gaps") if isinstance(data, dict) else []
         gaps: list[SubQuestion] = []
         for i, g in enumerate(raw_gaps):
             if not isinstance(g, dict):
