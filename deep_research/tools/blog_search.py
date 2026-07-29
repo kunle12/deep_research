@@ -94,6 +94,8 @@ async def _tavily_blog_search(
     results = response.get("results") if isinstance(response, dict) else []
     citations: list[Citation] = []
     for r in results:
+        if not isinstance(r, dict):
+            continue
         citations.append(
             Citation(
                 url=r.get("url", ""),
