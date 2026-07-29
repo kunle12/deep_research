@@ -139,11 +139,6 @@ def _list_of_str(v: Any) -> list[str]:
 
 
 def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
-    if not isinstance(data, dict):
-        return PaperAnalysis(
-            title=f"[unparseable] {arxiv_id}",
-            summary=f"LLM returned a {type(data).__name__} instead of a JSON object",
-        )
     """Loose-coerce a JSON-decoded LLM payload into a strict `PaperAnalysis`.
 
     Drops `key_references` items that lack a usable arxiv_id; the academic
@@ -151,6 +146,11 @@ def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
     emits is filtered here. Field types are kept strict-compatible with the
     pydantic model (`extra="forbid"`).
     """
+    if not isinstance(data, dict):
+        return PaperAnalysis(
+            title=f"[unparseable] {arxiv_id}",
+            summary=f"LLM returned a {type(data).__name__} instead of a JSON object",
+        )
     cleaned_key_refs: list[dict[str, Any]] = []
     for ref in data.get("key_references") or []:
         if not isinstance(ref, dict):
