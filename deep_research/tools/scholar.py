@@ -208,7 +208,11 @@ async def _serper_search(
             f"serper scholar HTTP {resp.status_code}", request=resp.request, response=resp
         )
     data = resp.json() or {}
-    hits = data.get("organic") or data.get("results") or data.get("scholar") or []
+    hits = (
+        data.get("organic") or data.get("results") or data.get("scholar") or []
+        if isinstance(data, dict)
+        else []
+    )
     return [_serper_hit_to_citation(h) for h in hits if isinstance(h, dict)]
 
 
@@ -244,7 +248,7 @@ async def _searxng_search(
             f"searxng scholar HTTP {resp.status_code}", request=resp.request, response=resp
         )
     data = resp.json() or {}
-    hits = data.get("results") or []
+    hits = data.get("results") if isinstance(data, dict) else []
     citations: list[Citation] = []
     for h in hits[:max_results]:
         if not isinstance(h, dict):
@@ -309,14 +313,14 @@ async def _backoff_retry(rate_limiter, coro_factory, *args, retries: int = 1):
             status = e.response.status_code if e.response is not None else 0
             if status not in {429, 500, 502, 503, 504} or attempt >= retries:
                 raise
-            backoff = 2 ** attempt
+            backoff = 2**attempt
             logger.warning("scholar search HTTP %d, backing off %ds", status, backoff)
             await asyncio.sleep(backoff)
         except httpx.HTTPError as e:
             last_exc = e
             if attempt >= retries:
                 raise
-            await asyncio.sleep(2 ** attempt)
+            await asyncio.sleep(2**attempt)
     if last_exc is not None:
         raise last_exc
     raise RuntimeError("scholar search retry loop exited unexpectedly")
@@ -352,15 +356,24 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         async def _primary():
             async with httpx.AsyncClient(timeout=cfg.serper.timeout_s) as client:
                 return await _serper_search(
-                    client, cfg.serper.endpoint, primary_key or "",
-                    query, max_results, cfg.year_from, cfg.year_to,
+                    client,
+                    cfg.serper.endpoint,
+                    primary_key or "",
+                    query,
+                    max_results,
+                    cfg.year_from,
+                    cfg.year_to,
                 )
 
         async def _fallback():
             async with httpx.AsyncClient(timeout=cfg.searxng.timeout_s) as client:
                 return await _searxng_search(
-                    client, cfg.searxng.url, query, max_results,
-                    cfg.year_from, cfg.year_to,
+                    client,
+                    cfg.searxng.url,
+                    query,
+                    max_results,
+                    cfg.year_from,
+                    cfg.year_to,
                 )
 
         # Pick ordered backends
@@ -388,21 +401,28 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             try:
                 if name == "serper":
                     async with _serper_call_lock:
-                        if _serper_max_calls is not None and _serper_call_count >= _serper_max_calls:
+                        if (
+                            _serper_max_calls is not None
+                            and _serper_call_count >= _serper_max_calls
+                        ):
                             logger.info(
                                 "Serper call quota exhausted (%d >= %d), falling back",
-                                _serper_call_count, _serper_max_calls,
+                                _serper_call_count,
+                                _serper_max_calls,
                             )
                             continue
                         _serper_call_count += 1
                 rate_limiter = serper_limiter if name == "serper" else searxng_limiter
                 citations = await _backoff_retry(rate_limiter, factory)
                 if citations:
-                    logger.info("scholar_search %s -> %d results (via %s)",
-                                repr(query), len(citations), name)
+                    logger.info(
+                        "scholar_search %s -> %d results (via %s)",
+                        repr(query),
+                        len(citations),
+                        name,
+                    )
                     break
-                logger.info("scholar_search %s -> 0 hits via %s (no fallback)",
-                            repr(query), name)
+                logger.info("scholar_search %s -> 0 hits via %s (no fallback)", repr(query), name)
                 break
             except Exception as e:
                 last_err = f"{type(e).__name__}: {e}"

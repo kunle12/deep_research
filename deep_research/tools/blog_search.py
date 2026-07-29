@@ -62,11 +62,28 @@ async def _tavily_blog_search(
 ) -> list[Citation]:
     """Search blogs via Tavily site: queries."""
     from tavily import AsyncTavilyClient
+
     client = AsyncTavilyClient(api_key=tavily_key)
 
-    # Build site: filter from known domains
-    site_filter = " OR ".join(f"site:{d}" for d in (domains or _KNOWN_DOMAINS))
-    site_query = f"{query} ({site_filter})"
+    # Build site: filter from known domains, keeping total query ≤ 400 chars
+    domain_list = domains or _KNOWN_DOMAINS
+    max_site_len = 400 - len(query) - len(" ()")  # room for the wrapper
+    if max_site_len < 0:
+        site_filter = ""
+    else:
+        # Include as many domains as fit
+        parts: list[str] = []
+        running = 0
+        for d in domain_list:
+            candidate = f"site:{d}"
+            added = len(candidate) + (len(" OR ") if parts else 0)
+            if running + added <= max_site_len:
+                parts.append(candidate)
+                running += added
+            else:
+                break
+        site_filter = " OR ".join(parts)
+    site_query = f"{query} ({site_filter})" if site_filter else query
 
     response = await client.search(
         query=site_query,
@@ -74,7 +91,7 @@ async def _tavily_blog_search(
         search_depth="basic",
         include_answer=False,
     )
-    results = response.get("results") or []
+    results = response.get("results") if isinstance(response, dict) else []
     citations: list[Citation] = []
     for r in results:
         citations.append(
@@ -118,7 +135,12 @@ async def _direct_domain_fetch(
             return []
 
         html = resp.text
-        text = trafilatura.extract(html, url=url, output_format="txt", include_comments=False, favor_recall=True) or ""
+        text = (
+            trafilatura.extract(
+                html, url=url, output_format="txt", include_comments=False, favor_recall=True
+            )
+            or ""
+        )
 
         # Simple title matching: find lines that contain query terms
         text_lines = [ln for ln in text.split("\n") if ln.strip()]
@@ -141,7 +163,7 @@ async def _direct_domain_fetch(
 
         return domain_cits[:3]  # Cap per domain
 
-    tasks = [_fetch_domain(d, i) for i, d in enumerate(domains[:max_results * 2])]
+    tasks = [_fetch_domain(d, i) for i, d in enumerate(domains[: max_results * 2])]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for res in results:
         if isinstance(res, list):
@@ -179,12 +201,11 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 logger.warning("blog_search tavily failed: %s", e)
 
         # Direct-domain fallback
-        if cfg.use_domains_fallback and (
-            cfg.primary in ("direct", "both") or not citations
-        ):
+        if cfg.use_domains_fallback and (cfg.primary in ("direct", "both") or not citations):
             try:
                 direct_cits = await _direct_domain_fetch(
-                    query, max_results,
+                    query,
+                    max_results,
                     domains=cfg.known_domains,
                     user_agent=config.fetch_page.user_agent,
                     min_spacing_ms=cfg.domain_fallback_min_spacing_ms,
@@ -206,19 +227,26 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
 
         if not deduped:
             return ToolResult(
-                content=json.dumps({
-                    "hits": [],
-                    "backend_used": "none",
-                    "note": "No blog posts found. Tavily may be unconfigured or domains returned empty.",
-                }),
+                content=json.dumps(
+                    {
+                        "hits": [],
+                        "backend_used": "none",
+                        "note": "No blog posts found. Tavily may be unconfigured or domains returned empty.",
+                    }
+                ),
                 error=None,
             )
 
         return ToolResult(
-            content=json.dumps({
-                "hits": [{"url": c.url, "title": c.title, "confidence": c.confidence_score} for c in deduped],
-                "backend_used": cfg.primary,
-            }),
+            content=json.dumps(
+                {
+                    "hits": [
+                        {"url": c.url, "title": c.title, "confidence": c.confidence_score}
+                        for c in deduped
+                    ],
+                    "backend_used": cfg.primary,
+                }
+            ),
             citations=deduped,
         )
 

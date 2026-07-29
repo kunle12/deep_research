@@ -63,7 +63,7 @@ async def _tavily_search(
         timeout=30.0,
     )
     # Response shape: {"results": [{"url","title","content","score"}], "answer": "..."}
-    results = response.get("results") or []
+    results = response.get("results") if isinstance(response, dict) else []
     citations: list[Citation] = []
     for r in results:
         citations.append(
@@ -147,14 +147,14 @@ async def _searxng_search(
         resp = await client.get(searxng_url, params=params, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-    results = data.get("results") or []
+    results = data.get("results") if isinstance(data, dict) else []
     citations: list[Citation] = []
     for r in results[:max_results]:
         citations.append(
             Citation(
-                url=r.get("url", ""),
-                title=r.get("title", "") or "",
-                snippet=r.get("content", "") or "",
+                url=r.get("url", "") if isinstance(r, dict) else "",
+                title=r.get("title", "") if isinstance(r, dict) else "",
+                snippet=r.get("content", "") if isinstance(r, dict) else "",
                 source_type="web",
                 # SearXNG doesn't return a score; assign uniform confidence
                 confidence_score=0.5,

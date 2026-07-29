@@ -257,6 +257,8 @@ async def _summarize_turns(
     parts: list[str] = []
     budget = _MAX_SUMMARY_INPUT_CHARS
     for m in messages_to_summarize:
+        if not isinstance(m, dict):
+            continue
         content = m.get("content", "(no text)") or "(no text)"
         if isinstance(content, list):
             content = " ".join(
