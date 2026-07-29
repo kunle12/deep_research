@@ -208,11 +208,10 @@ async def _serper_search(
             f"serper scholar HTTP {resp.status_code}", request=resp.request, response=resp
         )
     data = resp.json() or {}
-    hits = (
-        data.get("organic") or data.get("results") or data.get("scholar") or []
-        if isinstance(data, dict)
-        else []
-    )
+    if isinstance(data, dict):
+        hits = data.get("organic") or data.get("results") or data.get("scholar") or []
+    else:
+        hits = []
     return [_serper_hit_to_citation(h) for h in hits if isinstance(h, dict)]
 
 
