@@ -81,7 +81,7 @@ class AgentConfig(BaseModel):
     # single slow tool (hung fetch_page, browser_navigate on a JS-heavy page)
     # from monopolising the researcher's overall time budget. Set to 0 to
     # disable (fall back to no per-call guard).
-    tool_timeout_s: float = 120.0
+    tool_timeout_s: float = 300.0
     max_refinement_depth: int = 2
     max_refinement_per_researcher: int = 3
     max_total_refinements_per_iteration: int = 6

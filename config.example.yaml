@@ -15,7 +15,7 @@ agent:
   max_concurrent_tools: 8        # asyncio.Semaphore bound on parallel tool dispatch
   researcher_timeout_s: 3600     # per-researcher wall-clock cap (PDF fetch + LLM turns)
   researcher_max_turns: 12       # per-researcher tool-loop turn budget (must fit researcher_timeout_s with headroom)
-  tool_timeout_s: 120.0         # hard per-tool-call timeout; 0 disables (not recommended)
+  tool_timeout_s: 300.0         # hard per-tool-call timeout; 0 disables (not recommended)
   classifier:
     enabled: true
     force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"
