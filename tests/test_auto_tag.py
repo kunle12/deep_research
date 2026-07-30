@@ -58,7 +58,7 @@ async def test_auto_tag_calls_llm_and_tags():
     # Create an artifact to tag
     from datetime import UTC, datetime
 
-    from deep_research.library.storage.rows import ArtifactRow
+    from deep_research.library.storage.rows import ArtifactRow, ReportRow
 
     now = datetime.now(UTC).isoformat()
     art = ArtifactRow(
@@ -72,6 +72,9 @@ async def test_auto_tag_calls_llm_and_tags():
         last_touched_at=now,
     )
     await backend.upsert_artifact(art)
+    # Insert a report row so the FK constraint on applied_in_run is satisfied
+    report = ReportRow(run_id="test_run", started_at=now, markdown="# Report")
+    await backend.insert_report(report)
 
     writer = LibraryWriter(backend, str(root))
 

@@ -321,6 +321,28 @@ class PostgresStorageBackend:
             analysis.relevance_to_query,
             analysis.analyzed_at,
         )
+        return analysis.analysis_id
+
+    async def get_analysis(self, analysis_id: str) -> AnalysisRow | None:
+        await self._ensure_conn()
+        row = await self._fetchone("SELECT * FROM analyses WHERE analysis_id = $1", analysis_id)
+        if row is None:
+            return None
+        return AnalysisRow(
+            analysis_id=row[0],
+            artifact_id=row[1],
+            run_id=row[2],
+            analyzer=row[3],
+            summary=row[4],
+            key_findings=row[5],
+            methodology=row[6],
+            limitations=row[7],
+            gaps=row[8],
+            follow_ups=row[9],
+            key_references=row[10],
+            relevance_to_query=row[11],
+            analyzed_at=row[12],
+        )
 
     async def get_analyses_for_artifact(self, artifact_id: str) -> list[AnalysisRow]:
         await self._ensure_conn()
@@ -579,6 +601,37 @@ class PostgresStorageBackend:
             scope_value,
         )
         return job_id
+
+    async def get_refresh_job(self, job_id: str) -> Any | None:
+        await self._ensure_conn()
+        row = await self._fetchone("SELECT * FROM refresh_jobs WHERE job_id = $1", job_id)
+        if row is None:
+            return None
+        from dataclasses import dataclass
+
+        @dataclass
+        class RefreshJob:
+            job_id: str
+            started_at: str
+            completed_at: str | None
+            scope_kind: str
+            scope_value: str
+            artifacts_considered: int | None
+            artifacts_refreshed: int | None
+            status: str
+            error: str | None
+
+        return RefreshJob(
+            job_id=row[0],
+            started_at=row[1],
+            completed_at=row[2],
+            scope_kind=row[3],
+            scope_value=row[4],
+            artifacts_considered=row[5],
+            artifacts_refreshed=row[6],
+            status=row[7],
+            error=row[8],
+        )
 
     async def complete_refresh_job(
         self,

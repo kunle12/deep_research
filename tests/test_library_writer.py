@@ -135,7 +135,7 @@ async def test_tag(writer):
     # First create an artifact
     from datetime import UTC, datetime
 
-    from deep_research.library.storage.rows import ArtifactRow
+    from deep_research.library.storage.rows import ArtifactRow, ReportRow
 
     now = datetime.now(UTC).isoformat()
     art = ArtifactRow(
@@ -149,6 +149,9 @@ async def test_tag(writer):
         last_touched_at=now,
     )
     await writer.storage.upsert_artifact(art)
+    # Insert a report row so the FK constraint on applied_in_run is satisfied
+    report = ReportRow(run_id="test_run", started_at=now, markdown="# Report")
+    await writer.storage.insert_report(report)
 
     await writer.tag("art1", ["test-tag", "another-tag"], run_id="test_run")
     tags = await writer.storage.get_tags_for_artifact("art1")

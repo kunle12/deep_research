@@ -61,7 +61,7 @@ def patch_run_research(monkeypatch, stub_report):
     """
     captured: dict = {}
 
-    async def _fake_run_research(query, config, *, path_override=None, progress=None):
+    async def _fake_run_research(query, config, *, path_override=None, progress=None, run_id=""):
         captured["query"] = query
         captured["path_override"] = path_override
         captured["progress_sent"] = progress is not None
@@ -101,9 +101,7 @@ class TestPathFlags:
         assert patch_run_research["path_override"] == "academic"
 
     def test_url_source_flag_picks_url_source_path(self, runner, patch_run_research) -> None:
-        res = runner.invoke(app, [
-            "--url-source", "https://arxiv.org/abs/2401.12345 foo"
-        ])
+        res = runner.invoke(app, ["--url-source", "https://arxiv.org/abs/2401.12345 foo"])
         assert res.exit_code == 0
         assert patch_run_research["path_override"] == "url_source"
 
@@ -125,9 +123,7 @@ class TestPathFlags:
 
 
 class TestProgressPlumbing:
-    def test_progress_reporter_always_plumbed_through(
-        self, runner, patch_run_research
-    ) -> None:
+    def test_progress_reporter_always_plumbed_through(self, runner, patch_run_research) -> None:
         """The CLI must always pass a non-None progress reporter to run_research
         so the live panel works even when --quiet is set. --quiet only toggles
         whether the panel is actually *rendered*."""
@@ -135,9 +131,7 @@ class TestProgressPlumbing:
         assert res.exit_code == 0
         assert patch_run_research["progress_sent"] is True
 
-    def test_quiet_flag_does_not_break_run(
-        self, runner, patch_run_research
-    ) -> None:
+    def test_quiet_flag_does_not_break_run(self, runner, patch_run_research) -> None:
         res = runner.invoke(app, ["--quiet", "any query"])
         assert res.exit_code == 0
         assert patch_run_research["progress_sent"] is True
@@ -170,9 +164,7 @@ class TestValidation:
         combined = res.stdout + (res.stderr or "")
         assert "Invalid" in combined or "must be" in combined
 
-    def test_invalid_format_exits_with_code_2(
-        self, runner, patch_run_research
-    ) -> None:
+    def test_invalid_format_exits_with_code_2(self, runner, patch_run_research) -> None:
         res = runner.invoke(app, ["--format", "xml", "any query"])
         assert res.exit_code == 2
         combined = res.stdout + (res.stderr or "")
@@ -194,9 +186,7 @@ class TestOutput:
         assert "Stub" in res.stdout
         assert "report body" in res.stdout
 
-    def test_writes_markdown_to_out_file(
-        self, runner, patch_run_research, tmp_path: Path
-    ) -> None:
+    def test_writes_markdown_to_out_file(self, runner, patch_run_research, tmp_path: Path) -> None:
         out_path = tmp_path / "report.md"
         res = runner.invoke(app, ["--out", str(out_path), "any query"])
         assert res.exit_code == 0
@@ -208,10 +198,7 @@ class TestOutput:
         assert "Stub" in content
         assert "report body" in content
 
-    def test_json_format_emits_valid_json(
-        self, runner, patch_run_research, stub_report
-    ) -> None:
-
+    def test_json_format_emits_valid_json(self, runner, patch_run_research, stub_report) -> None:
         res = runner.invoke(app, ["--format", "json", "any query"])
         assert res.exit_code == 0
         # The JSON renderer is used; output should round-trip via json.loads.
@@ -252,9 +239,7 @@ class TestSideFileDumps:
             PaperNode(arxiv_id="2401.12345", title="Stub", depth=0, rationale="seed")
         )
         graph_path = tmp_path / "refs.bib"
-        res = runner.invoke(
-            app, ["--dump-graph", str(graph_path), "any query"]
-        )
+        res = runner.invoke(app, ["--dump-graph", str(graph_path), "any query"])
         assert res.exit_code == 0
         assert graph_path.exists()
         bib = graph_path.read_text(encoding="utf-8")
@@ -266,9 +251,7 @@ class TestSideFileDumps:
         self, runner, patch_run_research, stub_report, tmp_path: Path
     ) -> None:
         graph_path = tmp_path / "empty.bib"
-        res = runner.invoke(
-            app, ["--dump-graph", str(graph_path), "any query"]
-        )
+        res = runner.invoke(app, ["--dump-graph", str(graph_path), "any query"])
         assert res.exit_code == 0
         # No file should be written when the graph is empty.
         assert not graph_path.exists()
@@ -282,10 +265,8 @@ class TestSideFileDumps:
 
 
 class TestErrorHandling:
-    def test_run_research_raises_prints_error_exits_1(
-        self, runner, monkeypatch
-    ) -> None:
-        async def _boom(query, config, *, path_override=None, progress=None):
+    def test_run_research_raises_prints_error_exits_1(self, runner, monkeypatch) -> None:
+        async def _boom(query, config, *, path_override=None, progress=None, run_id=""):
             raise RuntimeError("kaboom")
 
         monkeypatch.setattr(cli_mod, "run_research", _boom)
@@ -298,10 +279,8 @@ class TestErrorHandling:
         assert "Error:" in combined
         assert "kaboom" in combined
 
-    def test_verbose_drops_rich_traceback_on_error(
-        self, runner, monkeypatch
-    ) -> None:
-        async def _boom(query, config, *, path_override=None, progress=None):
+    def test_verbose_drops_rich_traceback_on_error(self, runner, monkeypatch) -> None:
+        async def _boom(query, config, *, path_override=None, progress=None, run_id=""):
             raise RuntimeError("kaboom")
 
         monkeypatch.setattr(cli_mod, "run_research", _boom)

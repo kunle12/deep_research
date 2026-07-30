@@ -57,6 +57,7 @@ async def deep_research(
 
     # 1. Plan (or resume from checkpoint)
     state = ResearchState(query=original_query)
+    _checkpoint_discarded = False
     if run_id:
         loaded = load_checkpoint(run_id)
         if loaded is not None:
@@ -72,6 +73,7 @@ async def deep_research(
                     candidate.query,
                 )
                 discard_checkpoint(run_id)
+                _checkpoint_discarded = True
     if not state.plan.sub_questions:
         # No plan yet — run planner (fresh start or discarded checkpoint)
         reporter.phase("deep.plan", f"decomposing (breadth ≤ {breadth})")
@@ -90,6 +92,9 @@ async def deep_research(
         pending = [sq for sq in state.plan.sub_questions if not state.is_covered(sq)]
         if not pending:
             logger.info("no pending sub-questions after iteration %d", iteration)
+            # Save checkpoint before breaking so resume can pick up the final state
+            if run_id:
+                save_checkpoint(state, run_id)
             break
 
         reporter.phase(
@@ -197,8 +202,9 @@ async def deep_research(
         reverse=True,
     )
 
-    # Clean up checkpoint — research completed successfully
-    if run_id:
+    # Clean up checkpoint — research completed successfully.
+    # Skip if already discarded earlier (e.g. stale checkpoint on resume).
+    if run_id and not _checkpoint_discarded:
         discard_checkpoint(run_id)
 
     reporter.phase("deep.done", f"{len(all_citations)} citations")

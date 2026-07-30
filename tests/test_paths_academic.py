@@ -107,9 +107,7 @@ def _classified(**overrides: Any) -> ClassifiedQuery:
     return ClassifiedQuery.model_validate(defaults)
 
 
-def _citation(
-    arxiv_id: str, title: str = "", authors: list[str] | None = None
-) -> Citation:
+def _citation(arxiv_id: str, title: str = "", authors: list[str] | None = None) -> Citation:
     return Citation(
         url=f"https://arxiv.org/abs/{arxiv_id}",
         title=title or arxiv_id,
@@ -278,9 +276,7 @@ class TestFetchPaperText:
         async def _extract(**_: Any) -> ToolResult:
             return ToolResult(content="extracted body")
 
-        reg = _registry(
-            {"arxiv_download_pdf": _download, "pdf_extract_text": _extract}
-        )
+        reg = _registry({"arxiv_download_pdf": _download, "pdf_extract_text": _extract})
         text, pdf_path = await _fetch_paper_text("2401.1", reg)
         assert text == "extracted body"
         assert pdf_path is not None
@@ -294,7 +290,11 @@ class TestFetchPaperText:
             return ToolResult(content="metadata-only content")
 
         reg = _registry(
-            {"arxiv_download_pdf": _download, "pdf_extract_text": _noop_tool, "arxiv_resolve": _resolve}
+            {
+                "arxiv_download_pdf": _download,
+                "pdf_extract_text": _noop_tool,
+                "arxiv_resolve": _resolve,
+            }
         )
         out, _pdf_path = await _fetch_paper_text("2401.1", reg)
         assert out == "metadata-only content"
@@ -327,15 +327,14 @@ class TestFetchPaperText:
     async def test_download_returns_non_path_passthrough(self) -> None:
         """If arxiv_download_pdf returns non-path content (e.g. an error
         message string), it's returned as-is rather than crashing pdf_extract_text."""
+
         async def _download(**_: Any) -> ToolResult:
             return ToolResult(content="error: not a path")
 
         async def _extract(**_: Any) -> ToolResult:
             raise AssertionError("should not be called for non-path content")
 
-        reg = _registry(
-            {"arxiv_download_pdf": _download, "pdf_extract_text": _extract}
-        )
+        reg = _registry({"arxiv_download_pdf": _download, "pdf_extract_text": _extract})
         out, _pdf_path = await _fetch_paper_text("2401.1", reg)
         assert out == "error: not a path"
 
@@ -415,7 +414,10 @@ class TestRenderPaperPages:
             return ToolResult(content=str(pdf_path))
 
         async def _render(**_: Any) -> ToolResult:
-            payload = {"pages": ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"], "count": 2}
+            payload = {
+                "pages": ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"],
+                "count": 2,
+            }
             return ToolResult(content=json.dumps(payload))
 
         reg = _registry({"arxiv_download_pdf": _download, "pdf_render_pages": _render})
@@ -526,6 +528,7 @@ def _patch_analyze(monkeypatch, analyses_by_id: dict[str, PaperAnalysis]) -> dic
         model: str,
         page_image_data_urls: list[str] | None = None,
         text_source: str = "pdf",
+        max_context_tokens: int = 131072,
     ) -> PaperAnalysis:
         calls["n"] += 1
         if arxiv_id in analyses_by_id:
@@ -559,7 +562,9 @@ def _tools_for(
         return ToolResult(content="paper body text")
 
     async def _pdf_render(**kwargs: Any) -> ToolResult:
-        return ToolResult(content=json.dumps({"pages": ["data:image/jpeg;base64,AAAA"], "count": 1}))
+        return ToolResult(
+            content=json.dumps({"pages": ["data:image/jpeg;base64,AAAA"], "count": 1})
+        )
 
     return _registry(
         {
@@ -670,7 +675,9 @@ class TestAcademicResearchE2E:
         assert report.iterations <= 3
         # The graph may have more nodes (enqueued children) but analyzed
         # nodes must be <= max_papers
-        analyzed_count = sum(1 for n in report.citation_graph.nodes.values() if n.arxiv_id in analyses)
+        analyzed_count = sum(
+            1 for n in report.citation_graph.nodes.values() if n.arxiv_id in analyses
+        )
         assert analyzed_count <= 3
 
     @pytest.mark.asyncio
@@ -724,7 +731,13 @@ class TestAcademicResearchE2E:
             captured.update(kwargs)
             return ToolResult(content="", citations=[_citation("2401.1")])
 
-        reg = _registry({"arxiv_search": _search, "arxiv_download_pdf": _noop_tool, "pdf_extract_text": _noop_tool})
+        reg = _registry(
+            {
+                "arxiv_search": _search,
+                "arxiv_download_pdf": _noop_tool,
+                "pdf_extract_text": _noop_tool,
+            }
+        )
         _patch_analyze(monkeypatch, {"2401.1": _analysis("2401.1")})
         client = _FakeAsyncOpenAI("# x\n")
         await academic_research(classified, "ignored original", client, reg, cfg)

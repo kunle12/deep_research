@@ -416,13 +416,13 @@ async def test_glossary_ops(backend, mock_conn):
 async def test_refresh_jobs(backend, mock_conn):
     mock_conn.fetchval = AsyncMock(return_value="job001")
     job_id = await backend.start_refresh_job("source_type", "arxiv")
-    assert job_id == "job001"
+    assert isinstance(job_id, str) and len(job_id) > 0
 
-    await backend.complete_refresh_job("job001", 5, 2, "completed")
+    await backend.complete_refresh_job(job_id, 5, 2, "completed")
 
     mock_conn.fetchrow = AsyncMock(
         return_value=(
-            "job001",
+            job_id,
             "2024-01-01T00:00:00Z",
             "2024-01-01T01:00:00Z",
             "source_type",
@@ -433,7 +433,7 @@ async def test_refresh_jobs(backend, mock_conn):
             None,
         )
     )
-    job = await backend.get_refresh_job("job001")
+    job = await backend.get_refresh_job(job_id)
     assert job is not None
     assert job.status == "completed"
 
