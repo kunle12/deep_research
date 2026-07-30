@@ -297,6 +297,7 @@ async def academic_research(
                 model=config.llm.text_model,
                 page_image_data_urls=page_urls or None,
                 text_source=text_source,
+                max_context_tokens=config.llm.max_context_tokens,
             )
 
             # Relevance gate: an off-topic paper (e.g. one that merely shares a

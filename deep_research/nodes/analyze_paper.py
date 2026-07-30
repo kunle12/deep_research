@@ -19,11 +19,21 @@ from typing import Any, Literal
 
 from openai import AsyncOpenAI
 
+from deep_research.llm.tokens import count_text_tokens
 from deep_research.state import PaperAnalysis
 
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "analyze_paper.txt"
+
+# Rough tokens per image (base64 data URL). Conservative estimate for
+# medium-resolution rendered PDF pages.
+_TOKENS_PER_IMAGE = 1100
+# Reserve for system prompt, JSON schema instructions, and response.
+_RESERVED_TOKENS = 4096
+# Hard cap on paper text chars to prevent context blowup even with large
+# context windows. ~40k chars ≈ 10k tokens.
+_MAX_PAPER_CHARS = 40000
 
 
 def _build_messages(
@@ -31,20 +41,65 @@ def _build_messages(
     paper_text: str,
     query: str,
     page_image_data_urls: list[str] | None,
+    model: str = "gpt-4",
+    max_context_tokens: int = 131072,
 ) -> list[dict[str, Any]]:
     """Construct the chat messages list. When image data URLs are supplied,
     the user message is multi-content with one image_url block per page.
+
+    Paper text is truncated based on token budget to avoid exceeding the
+    model's context window. Images are also limited when context is tight.
     """
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
+
+    # Limit images based on context budget. Each base64 image can be 100s of KB;
+    # be conservative and allow ~1 image per 8k tokens of context.
+    max_images = max(0, (max_context_tokens - _RESERVED_TOKENS) // 8000)
+    if page_image_data_urls and len(page_image_data_urls) > max_images:
+        logger.info(
+            "analyze_paper %s: limiting images from %d to %d (context=%d tokens)",
+            arxiv_id,
+            len(page_image_data_urls),
+            max_images,
+            max_context_tokens,
+        )
+        page_image_data_urls = page_image_data_urls[:max_images]
+
+    n_images = len(page_image_data_urls) if page_image_data_urls else 0
     image_section = ""
     if page_image_data_urls:
         image_section = (
             "\n## Page images (rendered PDF pages sent via image_url content blocks):\n"
-            f"({len(page_image_data_urls)} pages attached)\n"
+            f"({n_images} pages attached)\n"
         )
+
+    # Calculate token budget for paper text
+    image_tokens = n_images * _TOKENS_PER_IMAGE
+    base_prompt_tokens = count_text_tokens(
+        prompt_template.replace("{arxiv_id}", arxiv_id)
+        .replace("{paper_text}", "")
+        .replace("{query}", query or "")
+        .replace("{image_pages_section}", image_section),
+        model,
+    )
+    available_tokens = max_context_tokens - _RESERVED_TOKENS - image_tokens - base_prompt_tokens
+    # Convert token budget to chars (rough: 1 token ≈ 4 chars), capped at hard limit
+    max_paper_chars = min(_MAX_PAPER_CHARS, max(1000, available_tokens * 4))
+
+    if len(paper_text) > max_paper_chars:
+        logger.debug(
+            "analyze_paper %s: truncating paper_text from %d to %d chars "
+            "(budget=%d tokens, images=%d)",
+            arxiv_id,
+            len(paper_text),
+            max_paper_chars,
+            available_tokens,
+            n_images,
+        )
+
     prompt_text = (
         prompt_template.replace("{arxiv_id}", arxiv_id)
-        .replace("{paper_text}", paper_text[:40000])  # guard context blowup
+        .replace("{paper_text}", paper_text[:max_paper_chars])
         .replace("{query}", query or "")
         .replace("{image_pages_section}", image_section)
     )
@@ -73,6 +128,7 @@ async def analyze(
     model: str,
     page_image_data_urls: list[str] | None = None,
     text_source: Literal["pdf", "abstract", "html"] = "pdf",
+    max_context_tokens: int = 131072,
 ) -> PaperAnalysis:
     """Make the LLM call and parse the JSON into a `PaperAnalysis`.
 
@@ -89,7 +145,9 @@ async def analyze(
     """
     if text_source in ("abstract", "html"):
         paper_text = "[ABSTRACT-ONLY]\n" + paper_text
-    messages = _build_messages(arxiv_id, paper_text, query, page_image_data_urls)
+    messages = _build_messages(
+        arxiv_id, paper_text, query, page_image_data_urls, model, max_context_tokens
+    )
     try:
         resp = await client.chat.completions.create(
             model=model,
