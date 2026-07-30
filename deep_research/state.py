@@ -178,6 +178,10 @@ class PaperAnalysis(BaseModel):
     summary: str
     key_findings: list[str] = Field(default_factory=list)
     relevance_to_query: str = ""
+    # LLM-scored 0..1: how directly the paper is about the query's topic.
+    # Default 1.0 so papers that predate the field (or error fallbacks that
+    # omit it) are kept; the academic gate excludes only explicitly-low scores.
+    relevance_score: float = Field(default=1.0, ge=0.0, le=1.0)
     methodology: str = ""
     limitations: list[str] = Field(default_factory=list)
     is_key_reference: bool = False

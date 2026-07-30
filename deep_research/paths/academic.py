@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +62,113 @@ from deep_research.tools.pdf_utils import parse_pdf_path, parse_rendered_pages
 logger = logging.getLogger(__name__)
 
 
+# Request boilerplate that carries no topical signal but dilutes keyword-based
+# search backends (arxiv/scholar do relevance matching on the raw query string).
+# Matched as whole phrases, case-insensitively, longest-first.
+_FILLER_PHRASES: list[str] = sorted(
+    [
+        "i need",
+        "i want",
+        "i would like",
+        "i'd like",
+        "please",
+        "can you",
+        "could you",
+        "give me",
+        "show me",
+        "find me",
+        "provide me",
+        "generate",
+        "a comprehensive",
+        "comprehensive",
+        "a detailed",
+        "detailed",
+        "an in-depth",
+        "in-depth",
+        "thorough",
+        "extensive",
+        "deep dive into",
+        "literature survey and reviews of",
+        "literature review of",
+        "literature survey of",
+        "literature review on",
+        "literature survey on",
+        "a literature review",
+        "a literature survey",
+        "and reviews of",
+        "survey of",
+        "surveys of",
+        "review of",
+        "reviews of",
+        "review on",
+        "survey on",
+        "overview of",
+        "summary of",
+        "synthesis of",
+        "the state of the art",
+        "state of the art",
+        "the state of art",
+        "state of art",
+        "state-of-the-art",
+        "about",
+        "regarding",
+        "concerning",
+        "on the topic of",
+        "in the field of",
+        "from the beginning",
+        "from scratch",
+        "to learn",
+        "i want to learn",
+        "up to date",
+        "to date",
+        "as of now",
+        "as of today",
+        "today is",
+        "currently",
+        "recent",
+        "latest",
+        "today",
+    ],
+    key=len,
+    reverse=True,
+)
+
+# Date / time-range phrases: "up to July 2026", bare years, and full numeric
+# dates (29/09/2026, 29-09-26). The numeric branch requires THREE components so
+# it does not eat version numbers or ranges like "3.5", "0.7", "10-20".
+_DATE_RX = re.compile(
+    r"\b(?:up to|until|as of|before|after|since|from|to)\s+"
+    r"(?:january|february|march|april|may|june|july|august|september|october|november|december)"
+    r"\s*\d{4}\b"
+    r"|\b(?:19|20)\d{2}\b"
+    r"|\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_search_query(query: str) -> str:
+    """Strip request boilerplate and date ranges from a natural-language query
+    so keyword search backends match on topical terms.
+
+    Conservative: if cleaning leaves fewer than two words, fall back to the
+    original query (dates removed) rather than risk over-stripping signal.
+    """
+    text = _DATE_RX.sub(" ", query)
+    for phrase in _FILLER_PHRASES:  # longest-first
+        text = re.sub(rf"\b{re.escape(phrase)}\b", " ", text, flags=re.IGNORECASE)
+    # Keep dots and hyphens so technical tokens survive (GPT-3.5, v2.0,
+    # state-of-the-art); other punctuation becomes a separator.
+    text = re.sub(r"[^\w\s\-.]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    # Drop sentence punctuation stranded at the edges (e.g. a trailing period
+    # left behind after a date range was removed).
+    text = re.sub(r"^[.,;:]+|[.,;:]+$", "", text).strip()
+    if len(text.split()) < 2:
+        fallback = re.sub(r"\s+", " ", _DATE_RX.sub(" ", query)).strip()
+        return fallback or query
+    return text
+
+
 async def academic_research(
     classified: ClassifiedQuery,
     original_query: str,
@@ -85,6 +193,7 @@ async def academic_research(
     graph = CitationGraph()
     analyses: dict[str, Any] = {}  # arxiv_id -> PaperAnalysis
     processed: set[str] = set()  # version-stripped ids we've already analyzed
+    excluded: set[str] = set()  # ids gated out as off-topic (kept out of report)
     processed_count: int = 0  # atomic counter for max_papers cap
     seeds_citations: list[Citation] = []
 
@@ -189,6 +298,23 @@ async def academic_research(
                 page_image_data_urls=page_urls or None,
                 text_source=text_source,
             )
+
+            # Relevance gate: an off-topic paper (e.g. one that merely shares a
+            # keyword like "adversarial" while living in another field) must not
+            # pollute the synthesis digest nor seed recursive reference mining.
+            # Mirrors the "no extractable text" skip path below.
+            if analysis.relevance_score < cfg.key_reference_threshold:
+                logger.info(
+                    "arxiv=%s off-topic (relevance %.2f < %.2f); excluding from report",
+                    base,
+                    analysis.relevance_score,
+                    cfg.key_reference_threshold,
+                )
+                excluded.add(base)
+                graph.analyses[base] = None
+                analyses[base] = None
+                return
+
             graph.analyses[base] = analysis
             analyses[base] = analysis
 
@@ -306,6 +432,8 @@ async def academic_research(
     # sparse for un-resolved child refs but the URL is still valid).
     citations: list[Citation] = []
     for aid, node in graph.nodes.items():
+        if aid in excluded:
+            continue  # off-topic paper gated out — keep it out of the bibliography
         a = analyses.get(aid)
         node_url = node.url or (
             f"https://arxiv.org/abs/{aid}" if not aid.startswith("scholar:") else aid
@@ -381,9 +509,13 @@ async def _gather_seeds(
     """
     cfg = config.academic
     seed_count = cfg.seed_count
-    search_query = classified.search_hint or original_query
-    if not search_query.strip():
+    raw_query = classified.search_hint or original_query
+    if not raw_query.strip():
         return []
+    # Strip request boilerplate / dates so arxiv & scholar match on topic terms.
+    search_query = _clean_search_query(raw_query)
+    if search_query != raw_query:
+        logger.info("academic seed query cleaned: %r -> %r", raw_query, search_query)
 
     backends = cfg.seed_backends  # e.g. ["arxiv"] or ["arxiv", "scholar"]
     has_arxiv = "arxiv_search" in tools.names()
@@ -661,7 +793,7 @@ async def _synthesize_markdown(
         if a is None:
             continue
         digest_lines.append(
-            f"### Paper {i}: arxiv:{aid} — {a.title}\n"
+            f"### Paper {i}: arxiv:{aid} — {a.title} (relevance {a.relevance_score:.2f})\n"
             f"Summary: {a.summary}\n"
             f"Key findings: {'; '.join(a.key_findings) if a.key_findings else 'N/A'}\n"
             f"Methodology: {a.methodology or 'N/A'}\n"
@@ -687,6 +819,10 @@ async def _synthesize_markdown(
         "You are an academic synthesis writer. Given a set of analyses of "
         "discovered academic papers (with recursively-mined citations), write "
         "a 2-4 section markdown report answering the user's research query. "
+        "Stay strictly on the query's topic: use only the analyses that are "
+        "genuinely relevant (higher `relevance` score), and DO NOT mention, "
+        "summarize, or cite any paper that is off-topic or only shares a "
+        "superficial keyword with the query — even if it appears in the digest. "
         "Cite each paper inline using the bare-URL form "
         "([arxiv:ID](https://arxiv.org/abs/ID))."
     )

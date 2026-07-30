@@ -134,8 +134,15 @@ def _bool_coerce(v: Any) -> bool:
 
 def _list_of_str(v: Any) -> list[str]:
     if isinstance(v, list):
-        return [str(x) for x in v if isinstance(x, (str, int, float))]
+        return [str(x) for x in v if isinstance(x, str | int | float)]
     return []
+
+
+def _float_coerce(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
 
 
 def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
@@ -167,7 +174,7 @@ def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
         rationale = str(ref.get("rationale", "") or "")
         authors_raw = ref.get("authors") or []
         authors = (
-            [str(a) for a in authors_raw if isinstance(a, (str, int, float))]
+            [str(a) for a in authors_raw if isinstance(a, str | int | float)]
             if isinstance(authors_raw, list)
             else []
         )
@@ -180,11 +187,28 @@ def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
             }
         )
 
+    # Relevance gate input. Default 1.0 (keep) when the field is missing/invalid
+    # so a schema-drift response never silently empties the report — but warn,
+    # because a model that never emits the field makes the academic relevance
+    # gate inert and the user should know.
+    raw_rel = data.get("relevance_score")
+    rel_score = _float_coerce(raw_rel, -1.0)
+    if rel_score < 0.0:
+        logger.warning(
+            "analyze_paper %s: missing/invalid relevance_score (%r); defaulting to "
+            "1.0 — the relevance gate will NOT exclude this paper",
+            arxiv_id,
+            raw_rel,
+        )
+        rel_score = 1.0
+    rel_score = max(0.0, min(1.0, rel_score))
+
     payload = {
         "title": str(data.get("title", "") or f"(unknown title) {arxiv_id}"),
         "summary": str(data.get("summary", "") or ""),
         "key_findings": _list_of_str(data.get("key_findings")),
         "relevance_to_query": str(data.get("relevance_to_query", "") or ""),
+        "relevance_score": rel_score,
         "methodology": str(data.get("methodology", "") or ""),
         "limitations": _list_of_str(data.get("limitations")),
         "is_key_reference": _bool_coerce(data.get("is_key_reference", False)),

@@ -256,7 +256,10 @@ class AcademicConfig(BaseModel):
     max_depth: int = 2
     max_papers: int = 15
     concurrency: int = 3  # parallel paper processing
-    key_reference_threshold: float = 0.7  # 0..1 — LLM-scored gating
+    # 0..1 — LLM-scored relevance gate. Papers the analyzer scores below this
+    # are treated as off-topic: excluded from the synthesis digest, the
+    # bibliography, and recursive reference mining (prevents topic drift).
+    key_reference_threshold: float = 0.7
     always_extract_text: bool = True
     seed_count: int = 5
     output_citation_graph: bool = True
