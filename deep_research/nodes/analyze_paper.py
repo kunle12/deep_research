@@ -182,9 +182,20 @@ async def analyze(
         paper_text = "[ABSTRACT-ONLY]\n" + paper_text
 
     # Reduction ladder: (max_images_override, max_paper_chars_override).
-    # First attempt uses the budget-derived defaults (None); subsequent attempts
-    # drop images entirely and halve the paper text until it fits.
+    # First attempt uses the budget-derived defaults (None, None).
+    # Subsequent attempts: halve images each step, then drop images entirely
+    # and halve paper text each step.
     reduction_steps: list[tuple[int | None, int | None]] = [(None, None)]
+    n = len(page_image_data_urls) if page_image_data_urls else 0
+    # Image reduction: half, quarter, 1, then 0
+    for divisor in (2, 4):
+        img_cap = max(1, n // divisor)
+        if img_cap < n:
+            reduction_steps.append((img_cap, None))
+    if n > 0:
+        reduction_steps.append((1, None))
+        reduction_steps.append((0, None))
+    # Text reduction (no images): halve each step
     fallback_chars = _MAX_PAPER_CHARS
     for _ in range(4):
         fallback_chars = max(2000, fallback_chars // 2)
