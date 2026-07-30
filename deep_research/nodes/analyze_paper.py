@@ -1,12 +1,16 @@
 """analyze_paper node - structured LLM analysis of an arxiv paper (academic mode).
 
-P7: implemented. Single chat-completions call with `prompts/analyze_paper.txt`
-returns a `PaperAnalysis` (summary, key_findings, methodology, limitations,
-key_references w/ arxiv_ids for recursion, figure_descriptions).
+P7: implemented. Multi-stage vision-aware analysis:
 
-Supports optional vision image_url content blocks (rendered PDF pages) for
-figure / table comprehension — attached when the caller passes
-`page_image_data_urls` (P6 wires them via the pdf_render_pages tool).
+  1. If images fit in a single call → single-shot analysis (existing fast path).
+  2. If too many images → adaptive batching:
+       - Compute batch_size from context budget.
+       - Process each batch sequentially; if a batch fails with a
+         tokenization error, halve the batch size for the remaining images.
+       - Merge per-batch figure_descriptions + extraction_text.
+       - Final synthesis call (no images) with full paper text + all
+         per-batch results → complete PaperAnalysis.
+  3. If no images → single-shot text-only analysis.
 """
 
 from __future__ import annotations
@@ -25,6 +29,9 @@ from deep_research.state import PaperAnalysis
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "analyze_paper.txt"
+_IMAGE_BATCH_PROMPT_FILE = (
+    Path(__file__).resolve().parent.parent / "prompts" / "analyze_paper_images.txt"
+)
 
 # Rough tokens per image (base64 data URL). Conservative estimate for
 # medium-resolution rendered PDF pages.
@@ -34,6 +41,439 @@ _RESERVED_TOKENS = 4096
 # Hard cap on paper text chars to prevent context blowup even with large
 # context windows. ~40k chars ≈ 10k tokens.
 _MAX_PAPER_CHARS = 40000
+
+_CONTEXT_ERROR_MARKERS = (
+    "tokenize",
+    "context length",
+    "context_length",
+    "maximum context",
+    "too long",
+    "too many tokens",
+    "reduce the length",
+    "prompt is too",
+)
+
+
+def _is_context_overflow_error(exc: Exception) -> bool:
+    """Heuristic: does this exception look like a prompt-too-long / tokenization
+    overflow from the server?"""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _CONTEXT_ERROR_MARKERS)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_system() -> dict[str, Any]:
+    return {
+        "role": "system",
+        "content": (
+            "You are an academic paper analyst. Respond with a SINGLE JSON object and "
+            "NOTHING ELSE - no markdown fences, no surrounding text."
+        ),
+    }
+
+
+def _call(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    use_json: bool,
+) -> Any:
+    """Thin wrapper around `client.chat.completions.create` — returns the raw
+    response so the caller can inspect it."""
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.0,
+    }
+    if use_json:
+        kwargs["response_format"] = {"type": "json_object"}
+    return client.chat.completions.create(**kwargs)
+
+
+def _compute_batch_size(
+    paper_text: str,
+    query: str,
+    max_context_tokens: int,
+    model: str,
+) -> int:
+    """Return the max number of images that can fit in a single LLM call
+    alongside the paper text and prompt overhead.
+
+    Uses the same token-budget logic as _build_messages.
+    """
+    prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
+    base_prompt_tokens = count_text_tokens(
+        prompt_template.replace("{arxiv_id}", "")
+        .replace("{paper_text}", "")
+        .replace("{query}", query or "")
+        .replace("{image_pages_section}", ""),
+        model,
+    )
+    paper_tokens = count_text_tokens(paper_text[: _MAX_PAPER_CHARS * 2], model)
+    available = max_context_tokens - _RESERVED_TOKENS - base_prompt_tokens - paper_tokens
+    return max(1, min(5, available // _TOKENS_PER_IMAGE))
+
+
+# ---------------------------------------------------------------------------
+# Per-batch image analysis
+# ---------------------------------------------------------------------------
+
+
+async def _analyze_image_batch(
+    arxiv_id: str,
+    paper_text: str,
+    query: str,
+    image_batch: list[str],
+    client: AsyncOpenAI,
+    model: str,
+    max_context_tokens: int,
+) -> dict[str, Any]:
+    """Process a single batch of page images. Returns a JSON dict with
+    `figure_descriptions` and `extraction_text` for this batch."""
+    prompt_template = _IMAGE_BATCH_PROMPT_FILE.read_text(encoding="utf-8")
+    n = len(image_batch)
+    image_section = (
+        f"\n## Page images (rendered PDF pages — {n} pages attached):\n({n} pages attached)\n"
+    )
+
+    # Token budget for paper text in this batch call
+    base_tokens = count_text_tokens(
+        prompt_template.replace("{arxiv_id}", arxiv_id)
+        .replace("{paper_text}", "")
+        .replace("{query}", query or "")
+        .replace("{image_pages_section}", image_section),
+        model,
+    )
+    image_tokens = n * _TOKENS_PER_IMAGE
+    available = max_context_tokens - _RESERVED_TOKENS - image_tokens - base_tokens
+    max_chars = min(_MAX_PAPER_CHARS, max(1000, available * 4))
+
+    prompt_text = (
+        prompt_template.replace("{arxiv_id}", arxiv_id)
+        .replace("{paper_text}", paper_text[:max_chars])
+        .replace("{query}", query or "")
+        .replace("{image_pages_section}", image_section)
+    )
+
+    messages: list[dict[str, Any]] = [
+        _build_system(),
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": prompt_text}]
+            + [{"type": "image_url", "image_url": {"url": url}} for url in image_batch],
+        },
+    ]
+
+    logger.debug(
+        "analyze_paper %s batch(%d images): ~%d chars",
+        arxiv_id,
+        n,
+        len(str(messages)),
+    )
+
+    try:
+        resp = await _call(client, model, messages, use_json=True)
+        raw = (resp.choices[0].message.content or "").strip()
+        if not raw:
+            return {"figure_descriptions": [], "extraction_text": ""}
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {"figure_descriptions": [], "extraction_text": ""}
+        return {
+            "figure_descriptions": _list_of_str(data.get("figure_descriptions")),
+            "extraction_text": str(data.get("extraction_text", "") or ""),
+        }
+    except Exception as e:
+        if _is_context_overflow_error(e):
+            # Re-raise so the caller can retry with smaller batches
+            raise
+        logger.warning(
+            "analyze_paper %s batch(%d images) failed: %s: %s",
+            arxiv_id,
+            n,
+            type(e).__name__,
+            e,
+        )
+        # Non-fatal for non-context errors — return empty so the final
+        # synthesis still runs
+        return {"figure_descriptions": [], "extraction_text": ""}
+
+
+# ---------------------------------------------------------------------------
+# Final synthesis (no images)
+# ---------------------------------------------------------------------------
+
+
+async def _synthesize_final(
+    arxiv_id: str,
+    paper_text: str,
+    query: str,
+    merged_figure_descriptions: list[str],
+    merged_extraction_text: str,
+    client: AsyncOpenAI,
+    model: str,
+    max_context_tokens: int,
+    text_source: Literal["pdf", "abstract", "html"],
+) -> PaperAnalysis:
+    """Final synthesis call with full paper text + all per-batch figure
+    descriptions. No images — full context budget is available for text."""
+    prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
+
+    # Inject pre-extracted figure descriptions into the prompt
+    fig_section = (
+        "\n## Previously extracted figure descriptions (from all pages):\n"
+        + "\n".join(f"  - {d}" for d in merged_figure_descriptions)
+        + "\n\n"
+        if merged_figure_descriptions
+        else ""
+    )
+    extra_section = (
+        "\n## Previously extracted relevant text (from page images):\n"
+        + merged_extraction_text
+        + "\n\n"
+        if merged_extraction_text
+        else ""
+    )
+
+    # No images → no image_section. Use full budget for paper text.
+    base_tokens = count_text_tokens(
+        prompt_template.replace("{arxiv_id}", arxiv_id)
+        .replace("{paper_text}", "")
+        .replace("{query}", query or "")
+        .replace("{image_pages_section}", ""),
+        model,
+    )
+    available = max_context_tokens - _RESERVED_TOKENS - base_tokens
+    # No hard cap — use full available budget for paper text
+    max_chars = max(1000, available * 4)
+
+    prompt_text = (
+        prompt_template.replace("{arxiv_id}", arxiv_id)
+        .replace("{paper_text}", paper_text[:max_chars] + fig_section + extra_section)
+        .replace("{query}", query or "")
+        .replace("{image_pages_section}", "")
+    )
+
+    messages = [
+        _build_system(),
+        {"role": "user", "content": prompt_text},
+    ]
+
+    logger.debug(
+        "analyze_paper %s final synthesis: ~%d chars, %d pre-extracted figures",
+        arxiv_id,
+        len(str(messages)),
+        len(merged_figure_descriptions),
+    )
+
+    try:
+        resp = await _call(client, model, messages, use_json=True)
+        raw = resp.choices[0].message.content or ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return PaperAnalysis(
+                title=f"[unparseable] {arxiv_id}",
+                summary=raw[:3000],
+            )
+        analysis = _coerce(arxiv_id, data)
+        if text_source in ("abstract", "html"):
+            analysis.key_references = []
+        return analysis
+    except Exception as e:
+        if _is_context_overflow_error(e):
+            # Retry once with halved text if the synthesis itself overflows
+            logger.warning(
+                "analyze_paper %s final synthesis too long; retrying with halved text: %s",
+                arxiv_id,
+                e,
+            )
+            half_chars = max(2000, max_chars // 2)
+            prompt_text2 = (
+                prompt_template.replace("{arxiv_id}", arxiv_id)
+                .replace(
+                    "{paper_text}",
+                    paper_text[:half_chars] + fig_section + extra_section,
+                )
+                .replace("{query}", query or "")
+                .replace("{image_pages_section}", "")
+            )
+            messages2 = [
+                _build_system(),
+                {"role": "user", "content": prompt_text2},
+            ]
+            try:
+                resp2 = await _call(client, model, messages2, use_json=False)
+                raw2 = resp2.choices[0].message.content or ""
+                try:
+                    data2 = json.loads(raw2)
+                except json.JSONDecodeError:
+                    return PaperAnalysis(
+                        title=f"[unparseable] {arxiv_id}",
+                        summary=raw2[:3000],
+                    )
+                analysis2 = _coerce(arxiv_id, data2)
+                if text_source in ("abstract", "html"):
+                    analysis2.key_references = []
+                return analysis2
+            except Exception as e2:
+                logger.warning(
+                    "analyze_paper %s final synthesis (retry) also failed: %s: %s",
+                    arxiv_id,
+                    type(e2).__name__,
+                    e2,
+                )
+                return PaperAnalysis(
+                    title=f"[error] {arxiv_id}",
+                    summary=f"LLM analysis failed: {type(e2).__name__}: {e2}",
+                )
+
+        logger.warning(
+            "analyze_paper %s final synthesis failed: %s: %s",
+            arxiv_id,
+            type(e).__name__,
+            e,
+        )
+        return PaperAnalysis(
+            title=f"[error] {arxiv_id}",
+            summary=f"LLM analysis failed: {type(e).__name__}: {e}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Adaptive batching orchestration
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+
+async def analyze(
+    arxiv_id: str,
+    paper_text: str,
+    query: str,
+    client: AsyncOpenAI,
+    model: str,
+    page_image_data_urls: list[str] | None = None,
+    text_source: Literal["pdf", "abstract", "html"] = "pdf",
+    max_context_tokens: int = 131072,
+) -> PaperAnalysis:
+    """Analyze an arXiv paper with adaptive vision batching.
+
+    When `page_image_data_urls` is provided and the images fit in a single
+    LLM call, uses the fast single-shot path.  If they don't fit, splits
+    images into adaptive batches, processes each batch, merges results,
+    then does a final no-image synthesis with full paper text + all
+    per-batch figure descriptions.
+
+    Degrades cleanly on invalid JSON / LLM exceptions by returning a
+    `PaperAnalysis` with a marker title so the academic loop keeps running.
+    """
+    if text_source in ("abstract", "html"):
+        paper_text = "[ABSTRACT-ONLY]\n" + paper_text
+
+    n_images = len(page_image_data_urls) if page_image_data_urls else 0
+
+    # --- Text-only path: no images ---
+    if n_images == 0:
+        return await _synthesize_final(
+            arxiv_id,
+            paper_text,
+            query,
+            [],
+            "",
+            client,
+            model,
+            max_context_tokens,
+            text_source,
+        )
+
+    # --- Multi-batch path: always process images in adaptive batches ---
+    # The single-shot estimate is unreliable because _TOKENS_PER_IMAGE assumes
+    # vision encoding, but most servers tokenize base64 as text (~100KB per
+    # image).  Always batch when images are present.
+    #
+
+    # Adaptive batching: start with computed batch_size, halve on failure
+    batch_size = _compute_batch_size(paper_text, query, max_context_tokens, model)
+    batch_size = max(1, min(batch_size, n_images))
+    logger.info(
+        "analyze_paper %s: adaptive batching with initial batch_size=%d, %d images total",
+        arxiv_id,
+        batch_size,
+        n_images,
+    )
+
+    all_figures: list[str] = []
+    all_extractions: list[str] = []
+    remaining = list(page_image_data_urls)
+
+    while remaining:
+        batch = remaining[:batch_size]
+        try:
+            result = await _analyze_image_batch(
+                arxiv_id,
+                paper_text,
+                query,
+                batch,
+                client,
+                model,
+                max_context_tokens,
+            )
+            figs = result.get("figure_descriptions", [])
+            ext = result.get("extraction_text", "")
+            all_figures.extend(figs)
+            if ext:
+                all_extractions.append(ext)
+            remaining = remaining[batch_size:]
+        except Exception as e:
+            if _is_context_overflow_error(e) and batch_size > 1:
+                logger.info(
+                    "analyze_paper %s batch(%d images) overflow; halving batch "
+                    "size to %d and retrying same images: %s",
+                    arxiv_id,
+                    batch_size,
+                    max(1, batch_size // 2),
+                    e,
+                )
+                batch_size = max(1, batch_size // 2)
+                # Do NOT advance — retry same images with smaller batch
+                continue
+            else:
+                logger.warning(
+                    "analyze_paper %s batch(%d images) non-overflow error; advancing: %s: %s",
+                    arxiv_id,
+                    batch_size,
+                    type(e).__name__,
+                    e,
+                )
+                remaining = remaining[batch_size:]
+
+    # Final synthesis with all per-batch results
+    merged_extraction = "\n\n".join(all_extractions) if all_extractions else ""
+    return await _synthesize_final(
+        arxiv_id,
+        paper_text,
+        query,
+        all_figures,
+        merged_extraction,
+        client,
+        model,
+        max_context_tokens,
+        text_source,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy helpers (preserved for backward compat and test coverage)
+# ---------------------------------------------------------------------------
 
 
 def _build_messages(
@@ -46,19 +486,9 @@ def _build_messages(
     max_images_override: int | None = None,
     max_paper_chars_override: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Construct the chat messages list. When image data URLs are supplied,
-    the user message is multi-content with one image_url block per page.
-
-    Paper text is truncated based on token budget to avoid exceeding the
-    model's context window. Images are also limited when context is tight.
-    `max_images_override` / `max_paper_chars_override` force explicit caps
-    (used by the retry-with-reduction fallback when the server reports the
-    prompt is too long).
-    """
+    """Legacy message builder — kept for backward compat and single-shot path."""
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
 
-    # Limit images based on context budget. Each base64 image can be 100s of KB;
-    # be conservative and allow ~1 image per 8k tokens of context.
     if max_images_override is not None:
         max_images = max_images_override
     else:
@@ -81,7 +511,6 @@ def _build_messages(
             f"({n_images} pages attached)\n"
         )
 
-    # Calculate token budget for paper text
     image_tokens = n_images * _TOKENS_PER_IMAGE
     base_prompt_tokens = count_text_tokens(
         prompt_template.replace("{arxiv_id}", arxiv_id)
@@ -91,7 +520,6 @@ def _build_messages(
         model,
     )
     available_tokens = max_context_tokens - _RESERVED_TOKENS - image_tokens - base_prompt_tokens
-    # Convert token budget to chars (rough: 1 token ≈ 4 chars), capped at hard limit
     if max_paper_chars_override is not None:
         max_paper_chars = max_paper_chars_override
     else:
@@ -131,156 +559,6 @@ def _build_messages(
     return [system, {"role": "user", "content": prompt_text}]
 
 
-_CONTEXT_ERROR_MARKERS = (
-    "tokenize",
-    "context length",
-    "context_length",
-    "maximum context",
-    "too long",
-    "too many tokens",
-    "reduce the length",
-    "prompt is too",
-)
-
-
-def _is_context_overflow_error(exc: Exception) -> bool:
-    """Heuristic: does this exception look like a prompt-too-long / tokenization
-    overflow from the server? Used to trigger retry-with-reduction."""
-    msg = str(exc).lower()
-    return any(marker in msg for marker in _CONTEXT_ERROR_MARKERS)
-
-
-async def analyze(
-    arxiv_id: str,
-    paper_text: str,
-    query: str,
-    client: AsyncOpenAI,
-    model: str,
-    page_image_data_urls: list[str] | None = None,
-    text_source: Literal["pdf", "abstract", "html"] = "pdf",
-    max_context_tokens: int = 131072,
-) -> PaperAnalysis:
-    """Make the LLM call and parse the JSON into a `PaperAnalysis`.
-
-    `text_source` controls how the paper_text is consumed:
-      - "pdf" — full PDF text, standard prompt.
-      - "abstract" — abstract-only text (paywalled / unavailable). The prompt
-        is prefixed with `[ABSTRACT-ONLY]` so the LLM knows to limit claims to
-        visible content. `key_references` are forced empty — abstract-only
-        papers are leaf nodes and never enqueued for recursion.
-      - "html" — HTML page text, same treatment as abstract for now.
-
-    If the server rejects the prompt as too long (a tokenization / context
-    overflow error), retries with progressively smaller content: first dropping
-    all images, then halving the paper text each attempt. This guards against a
-    server whose real context window is smaller than the configured value.
-
-    Degrades cleanly on invalid JSON / LLM exceptions by returning a
-    `PaperAnalysis` with a marker title so the academic loop keeps running.
-    """
-    if text_source in ("abstract", "html"):
-        paper_text = "[ABSTRACT-ONLY]\n" + paper_text
-
-    # Reduction ladder: (max_images_override, max_paper_chars_override).
-    # First attempt uses the budget-derived defaults (None, None).
-    # Subsequent attempts: halve images each step, then drop images entirely
-    # and halve paper text each step.
-    reduction_steps: list[tuple[int | None, int | None]] = [(None, None)]
-    n = len(page_image_data_urls) if page_image_data_urls else 0
-    # Image reduction: half, quarter, 1, then 0
-    for divisor in (2, 4):
-        img_cap = max(1, n // divisor)
-        if img_cap < n:
-            reduction_steps.append((img_cap, None))
-    if n > 0:
-        reduction_steps.append((1, None))
-        reduction_steps.append((0, None))
-    # Text reduction (no images): halve each step
-    fallback_chars = _MAX_PAPER_CHARS
-    for _ in range(4):
-        fallback_chars = max(2000, fallback_chars // 2)
-        reduction_steps.append((0, fallback_chars))
-
-    last_exc: Exception | None = None
-    for attempt, (img_cap, char_cap) in enumerate(reduction_steps):
-        messages = _build_messages(
-            arxiv_id,
-            paper_text,
-            query,
-            page_image_data_urls,
-            model,
-            max_context_tokens,
-            max_images_override=img_cap,
-            max_paper_chars_override=char_cap,
-        )
-        # Log the size of what we're about to send
-        user_content = messages[1]["content"]
-        total_chars = len(str(messages))
-        n_img = (
-            len([b for b in user_content if isinstance(b, dict) and b.get("type") == "image_url"])
-            if isinstance(user_content, list)
-            else 0
-        )
-        logger.debug(
-            "analyze_paper %s attempt %d: %d images, ~%d chars total",
-            arxiv_id,
-            attempt + 1,
-            n_img,
-            total_chars,
-        )
-        try:
-            # On the final fallback attempt, drop response_format in case the
-            # server doesn't support it (some llama.cpp builds reject it).
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "temperature": 0.0,
-            }
-            if attempt < len(reduction_steps) - 1:
-                kwargs["response_format"] = {"type": "json_object"}
-            resp = await client.chat.completions.create(**kwargs)
-            raw = resp.choices[0].message.content or ""
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                return PaperAnalysis(
-                    title=f"[unparseable] {arxiv_id}",
-                    summary=raw[:3000],
-                )
-            # Coerce into PaperAnalysis. Filter out references with no arxiv_id.
-            analysis = _coerce(arxiv_id, data)
-            # Abstract-only / HTML nodes are leaf nodes — force no recursion.
-            if text_source in ("abstract", "html"):
-                analysis.key_references = []
-            return analysis
-        except Exception as e:
-            last_exc = e
-            if _is_context_overflow_error(e) and attempt < len(reduction_steps) - 1:
-                logger.warning(
-                    "analyze_paper %s: prompt too long (attempt %d); retrying with "
-                    "reduced content (images_cap=%s, chars_cap=%s): %s",
-                    arxiv_id,
-                    attempt + 1,
-                    reduction_steps[attempt + 1][0],
-                    reduction_steps[attempt + 1][1],
-                    e,
-                )
-                continue
-            break
-
-    assert last_exc is not None
-    logger.warning(
-        "analyze_paper LLM call failed for %s: %s: %s",
-        arxiv_id,
-        type(last_exc).__name__,
-        last_exc,
-    )
-    return PaperAnalysis(
-        title=f"[error] {arxiv_id}",
-        summary=f"LLM analysis failed: {type(last_exc).__name__}: {last_exc}",
-    )
-
-
 _ARXIV_RX = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")
 
 
@@ -306,13 +584,6 @@ def _float_coerce(v: Any, default: float = 0.0) -> float:
 
 
 def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
-    """Loose-coerce a JSON-decoded LLM payload into a strict `PaperAnalysis`.
-
-    Drops `key_references` items that lack a usable arxiv_id; the academic
-    loop relies on those to enqueue follow-up papers, so any garbage the LLM
-    emits is filtered here. Field types are kept strict-compatible with the
-    pydantic model (`extra="forbid"`).
-    """
     if not isinstance(data, dict):
         return PaperAnalysis(
             title=f"[unparseable] {arxiv_id}",
@@ -347,10 +618,6 @@ def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
             }
         )
 
-    # Relevance gate input. Default 1.0 (keep) when the field is missing/invalid
-    # so a schema-drift response never silently empties the report — but warn,
-    # because a model that never emits the field makes the academic relevance
-    # gate inert and the user should know.
     raw_rel = data.get("relevance_score")
     rel_score = _float_coerce(raw_rel, -1.0)
     if rel_score < 0.0:
@@ -380,11 +647,6 @@ def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
 
 
 def extract_key_reference_arxiv_ids(analysis: PaperAnalysis) -> list[str]:
-    """Return the arxiv_ids of `key_references` worth recursing into.
-
-    The LLM flag has already filtered out non-key refs by the time `analyze`
-    returns; here we just collect the ids, dropping empty/garbage ones.
-    """
     out: list[str] = []
     for ref in analysis.key_references:
         aid = (ref.arxiv_id or "").strip()

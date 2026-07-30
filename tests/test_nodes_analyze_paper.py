@@ -2,8 +2,11 @@
 
 Covers the LLM-call wrapper fully offline:
   - analyze(): valid JSON parse, invalid JSON -> unparseable marker, LLM
-    exception -> error marker, vision image_url blocks attached when
-    `page_image_data_urls` supplied.
+    exception -> error marker.
+  - Text-only path (0 images): single synthesis call.
+  - Multi-batch path with images: adaptive batching, per-batch analysis,
+    final synthesis with merged results.
+  - Tokenization overflow: adaptive batch-size halving.
   - _coerce(): filters references lacking arxiv_id, extracts arxiv_id from
     adjacent text when missing, coerces scalar authors lists, booleans,
     list-of-str fields.
@@ -19,14 +22,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deep_research.nodes.analyze_paper import (
+    _analyze_image_batch,
     _coerce,
+    _is_context_overflow_error,
+    _synthesize_final,
     analyze,
     extract_key_reference_arxiv_ids,
 )
 from deep_research.state import PaperAnalysis
 
 # ---------------------------------------------------------------------------
-# AsyncOpenAI doubles (mirrors test_paths_url_source_analyze.py style)
+# Helpers
 # ---------------------------------------------------------------------------
 
 
@@ -46,25 +52,32 @@ class _FakeResponse:
         self.choices = [_FakeChoice(content)]
 
 
-class _FakeAsyncOpenAI:
-    def __init__(self, content: str) -> None:
-        self.chat = MagicMock()
-        self.chat.completions = MagicMock()
-        self.chat.completions.create = AsyncMock(return_value=_FakeResponse(content))
-
-
 def _raising_client(exc: Exception) -> MagicMock:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(side_effect=exc)
     return client
 
 
+def _capture_client() -> tuple[MagicMock, list[dict[str, Any]]]:
+    """Return (client, call_list) where call_list captures each invocation's
+    kwargs so the test can inspect messages."""
+    captured: list[dict[str, Any]] = []
+
+    async def _capture(**kwargs: Any) -> Any:
+        captured.append(kwargs)
+        return _FakeResponse(json.dumps({"title": "t", "summary": "s"}))
+
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=_capture)
+    return client, captured
+
+
 # ---------------------------------------------------------------------------
-# analyze() — happy path JSON, invalid JSON, exception
+# Text-only path (0 images)
 # ---------------------------------------------------------------------------
 
 
-class TestAnalyze:
+class TestTextOnly:
     @pytest.mark.asyncio
     async def test_parses_valid_json(self) -> None:
         payload = {
@@ -111,51 +124,282 @@ class TestAnalyze:
         assert "RuntimeError" in out.summary
 
     @pytest.mark.asyncio
-    async def test_vision_blocks_present_when_images_supplied(self) -> None:
-        captured: dict[str, Any] = {}
-
-        async def _capture(**kwargs: Any) -> Any:
-            captured["messages"] = kwargs.get("messages")
-            return _FakeResponse(json.dumps({"title": "t", "summary": "s"}))
-
-        client = MagicMock()
-        client.chat.completions.create = AsyncMock(side_effect=_capture)
-
-        await analyze(
-            "2402.54321",
-            "text",
-            "q",
-            client,
-            "m",
-            page_image_data_urls=["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"],
-        )
-        msgs = captured["messages"]
+    async def test_no_images_yields_plain_string_user_content(self) -> None:
+        client, calls = _capture_client()
+        await analyze("2402.54321", "text", "q", client, "m")
+        # Text-only path makes exactly 1 call (synthesis)
+        assert len(calls) == 1
+        msgs = calls[0]["messages"]
         assert msgs[0]["role"] == "system"
         user_msg = msgs[1]
         assert user_msg["role"] == "user"
-        # Multi-content user message when images supplied
-        assert isinstance(user_msg["content"], list)
-        text_blocks = [b for b in user_msg["content"] if b.get("type") == "text"]
-        image_blocks = [b for b in user_msg["content"] if b.get("type") == "image_url"]
-        assert len(text_blocks) == 1
-        assert len(image_blocks) == 2
-        assert image_blocks[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+        assert isinstance(user_msg["content"], str)
+        assert "2402.54321" in user_msg["content"]
 
     @pytest.mark.asyncio
-    async def test_no_images_yields_plain_string_user_content(self) -> None:
-        captured: dict[str, Any] = {}
+    async def test_long_paper_text_uses_full_budget(self) -> None:
+        """Text-only path uses the full context budget for paper text (no
+        hard 40k cap)."""
+        client, calls = _capture_client()
+        long_text = "A" * 100_000
+        await analyze("2402.54321", long_text, "q", client, "m")
+        assert len(calls) == 1
+        user_msg = calls[0]["messages"][1]
+        # Content should include the full paper text (no truncation to 40k)
+        content = user_msg["content"]
+        assert isinstance(content, str)
+        # The full 100k text should be present
+        assert len(content) > 90_000
+        assert "2402.54321" in content
 
-        async def _capture(**kwargs: Any) -> Any:
-            captured["messages"] = kwargs.get("messages")
+
+# ---------------------------------------------------------------------------
+# Multi-batch path with images
+# ---------------------------------------------------------------------------
+
+
+class TestMultiBatch:
+    @pytest.mark.asyncio
+    async def test_images_below_batch_size_use_single_batch(self) -> None:
+        """≤5 images → 1 batch call + 1 final synthesis = 2 LLM calls."""
+        client, calls = _capture_client()
+        images = [f"data:image/jpeg;base64,{i}" for i in range(3)]
+        await analyze("2402.54321", "text", "q", client, "m", page_image_data_urls=images)
+        # 1 batch + 1 synthesis = 2 calls
+        assert len(calls) == 2, f"expected 2 calls, got {len(calls)}"
+
+        # Batch call: should have image_url blocks
+        batch_msgs = calls[0]["messages"]
+        batch_uc = batch_msgs[1]["content"]
+        assert isinstance(batch_uc, list)
+        img_blocks = [b for b in batch_uc if b.get("type") == "image_url"]
+        assert len(img_blocks) == 3
+
+        # Synthesis call: no images, plain string content
+        syn_msgs = calls[1]["messages"]
+        syn_uc = syn_msgs[1]["content"]
+        assert isinstance(syn_uc, str)
+        assert "2402.54321" in syn_uc
+
+    @pytest.mark.asyncio
+    async def test_many_images_split_into_multiple_batches(self) -> None:
+        """10 images → 2 batches of 5 + 1 synthesis = 3 LLM calls."""
+        client, calls = _capture_client()
+        images = [f"data:image/jpeg;base64,{i}" for i in range(10)]
+        await analyze("2402.54321", "text", "q", client, "m", page_image_data_urls=images)
+        # 2 batches + 1 synthesis = 3 calls
+        assert len(calls) == 3, f"expected 3 calls, got {len(calls)}"
+
+        # Both batch calls should have 5 images
+        for i in range(2):
+            msgs = calls[i]["messages"]
+            uc = msgs[1]["content"]
+            assert isinstance(uc, list)
+            img_blocks = [b for b in uc if b.get("type") == "image_url"]
+            assert len(img_blocks) == 5, f"batch {i} expected 5 images, got {len(img_blocks)}"
+
+        # Synthesis call: no images
+        syn_uc = calls[2]["messages"][1]["content"]
+        assert isinstance(syn_uc, str)
+
+    @pytest.mark.asyncio
+    async def test_adaptive_halving_on_tokenization_overflow(self) -> None:
+        """When a batch fails with a tokenization error, batch size is halved
+        and the same images are retried."""
+        call_log: list[int] = []
+
+        class _FakeErr(Exception):
+            pass
+
+        async def _overflow_on_5(**kwargs: Any) -> Any:
+            msgs = kwargs["messages"]
+            uc = msgs[1]["content"]
+            nimg = (
+                len([b for b in uc if isinstance(b, dict) and b.get("type") == "image_url"])
+                if isinstance(uc, list)
+                else 0
+            )
+            call_log.append(nimg)
+            if nimg == 5:
+                raise _FakeErr("Failed to tokenize prompt")
+            return _FakeResponse(
+                json.dumps({"figure_descriptions": [f"fig_{nimg}"], "extraction_text": f"t{nimg}"})
+            )
+
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=_overflow_on_5)
+
+        images = [f"data:image/jpeg;base64,{i}" for i in range(10)]
+        out = await analyze("2402.54321", "text", "q", client, "m", page_image_data_urls=images)
+        # Should succeed after adaptive halving
+        assert isinstance(out, PaperAnalysis)
+        # Call log: first batch of 5 fails → halved to 2, then 5 batches of 2
+        # + 1 final synthesis
+        batch_calls = [n for n in call_log if n > 0]
+        assert len(batch_calls) == 6  # 1 failed(5) + 5 succeeded(2)
+        assert batch_calls[0] == 5  # first attempt with 5
+        assert all(n == 2 for n in batch_calls[1:])  # all retries with 2
+
+    @pytest.mark.asyncio
+    async def test_batch_non_context_error_is_non_fatal(self) -> None:
+        """A batch that fails with a non-context error (e.g. server error)
+        returns empty results and advances — the final synthesis still runs."""
+        call_log: list[int] = []
+
+        async def _fail_on_5(**kwargs: Any) -> Any:
+            msgs = kwargs["messages"]
+            uc = msgs[1]["content"]
+            nimg = (
+                len([b for b in uc if isinstance(b, dict) and b.get("type") == "image_url"])
+                if isinstance(uc, list)
+                else 0
+            )
+            call_log.append(nimg)
+            if nimg == 5:
+                raise RuntimeError("server error")
+            return _FakeResponse(
+                json.dumps({"figure_descriptions": [f"fig_{nimg}"], "extraction_text": f"t{nimg}"})
+            )
+
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=_fail_on_5)
+
+        images = [f"data:image/jpeg;base64,{i}" for i in range(10)]
+        out = await analyze("2402.54321", "text", "q", client, "m", page_image_data_urls=images)
+        # Should still produce a result (non-fatal error → empty batch → advance)
+        assert isinstance(out, PaperAnalysis)
+
+
+# ---------------------------------------------------------------------------
+# _analyze_image_batch
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeImageBatch:
+    @pytest.mark.asyncio
+    async def test_returns_figure_descriptions_and_text(self) -> None:
+        payload = {
+            "figure_descriptions": ["fig A", "fig B"],
+            "extraction_text": "visible text",
+        }
+        client = _FakeAsyncOpenAI(json.dumps(payload))
+        result = await _analyze_image_batch(
+            "2402.54321", "text", "q", ["data:img;jpg;b64,AAA"], client, "m", 131072
+        )
+        assert result["figure_descriptions"] == ["fig A", "fig B"]
+        assert result["extraction_text"] == "visible text"
+
+    @pytest.mark.asyncio
+    async def test_empty_response_on_invalid_json(self) -> None:
+        client = _FakeAsyncOpenAI("not json")
+        result = await _analyze_image_batch(
+            "2402.54321", "text", "q", ["data:img;jpg;b64,AAA"], client, "m", 131072
+        )
+        assert result["figure_descriptions"] == []
+        assert result["extraction_text"] == ""
+
+    @pytest.mark.asyncio
+    async def test_propagates_context_overflow(self) -> None:
+        """Context overflow errors must propagate so the caller can halve
+        batch size."""
+        client = _raising_client(RuntimeError("Failed to tokenize prompt"))
+        with pytest.raises(RuntimeError, match="tokenize"):
+            await _analyze_image_batch(
+                "2402.54321", "text", "q", ["data:img;jpg;b64,AAA"], client, "m", 131072
+            )
+
+
+# ---------------------------------------------------------------------------
+# _synthesize_final
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizeFinal:
+    @pytest.mark.asyncio
+    async def test_merges_figure_descriptions_into_prompt(self) -> None:
+        client, calls = _capture_client()
+        await _synthesize_final(
+            "2402.54321",
+            "text",
+            "q",
+            ["fig A", "fig B"],
+            "extra text",
+            client,
+            "m",
+            131072,
+            "pdf",
+        )
+        assert len(calls) == 1
+        content = calls[0]["messages"][1]["content"]
+        assert isinstance(content, str)
+        assert "fig A" in content
+        assert "fig B" in content
+        assert "extra text" in content
+
+    @pytest.mark.asyncio
+    async def test_retries_with_halved_text_on_context_overflow(self) -> None:
+        call_log: list[int] = []
+
+        async def _overflow_then_ok(**kwargs: Any) -> Any:
+            call_log.append(1)
+            if len(call_log) == 1:
+                raise RuntimeError("Failed to tokenize prompt")
             return _FakeResponse(json.dumps({"title": "t", "summary": "s"}))
 
         client = MagicMock()
-        client.chat.completions.create = AsyncMock(side_effect=_capture)
-        await analyze("2402.54321", "text", "q", client, "m")
-        user_msg = captured["messages"][1]
-        # When no images, user content is a plain string
-        assert isinstance(user_msg["content"], str)
-        assert "2402.54321" in user_msg["content"]
+        client.chat.completions.create = AsyncMock(side_effect=_overflow_then_ok)
+
+        out = await _synthesize_final(
+            "2402.54321",
+            "A" * 100_000,
+            "q",
+            ["fig"],
+            "",
+            client,
+            "m",
+            131072,
+            "pdf",
+        )
+        assert isinstance(out, PaperAnalysis)
+        assert len(call_log) == 2  # 1 overflow + 1 retry
+
+    @pytest.mark.asyncio
+    async def test_fails_cleanly_on_persistent_overflow(self) -> None:
+        async def _always_overflow(**kwargs: Any) -> Any:
+            raise RuntimeError("Failed to tokenize prompt")
+
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=_always_overflow)
+
+        out = await _synthesize_final(
+            "2402.54321",
+            "text",
+            "q",
+            [],
+            "",
+            client,
+            "m",
+            131072,
+            "pdf",
+        )
+        assert out.title.startswith("[error]")
+
+
+# ---------------------------------------------------------------------------
+# _is_context_overflow_error
+# ---------------------------------------------------------------------------
+
+
+class TestIsContextOverflow:
+    def test_matches_tokenize_error(self) -> None:
+        assert _is_context_overflow_error(RuntimeError("Failed to tokenize prompt"))
+
+    def test_matches_context_length(self) -> None:
+        assert _is_context_overflow_error(RuntimeError("context length exceeded"))
+
+    def test_does_not_match_other_errors(self) -> None:
+        assert not _is_context_overflow_error(RuntimeError("connection refused"))
+        assert not _is_context_overflow_error(RuntimeError("rate limit"))
 
 
 # ---------------------------------------------------------------------------
@@ -179,25 +423,15 @@ class TestCoerce:
         assert out.key_references[0].arxiv_id == "2401.11111"
 
     def test_extracts_arxiv_id_from_title_text(self) -> None:
-        """When arxiv_id is missing, the regex searches the title (first
-        truthy of title|rationale) for an arxiv-id-shaped substring.
-
-        NOTE: the impl uses `ref.get("title","") or ref.get("rationale","")`,
-        so if a non-empty title has no id but the rationale does, the regex
-        still searches the title and the ref is dropped. This test exercises
-        the title-extraction happy path.
-        """
         data = {
             "title": "T",
             "summary": "S",
             "key_references": [
                 {
-                    # arxiv_id missing — title contains a valid id
                     "title": "Cited as arXiv:2403.14159 in the bibliography",
                     "rationale": "important methodology",
                 },
                 {
-                    # arxiv_id missing — title contains an id with version
                     "title": "Builds on 2305.98765v3 for theory",
                     "rationale": "no id here",
                 },
@@ -209,21 +443,17 @@ class TestCoerce:
         assert out.key_references[1].arxiv_id == "2305.98765v3"
 
     def test_ref_dropped_when_id_only_in_rationale_but_title_nonempty(self) -> None:
-        """Documents the `or` short-circuit in _coerce: when a non-empty title
-        has no id but the rationale does, the regex searches only the title,
-        so the ref is dropped. Future contributors may want to search both."""
         data = {
             "title": "T",
             "summary": "S",
             "key_references": [
                 {
                     "title": "no id in title",
-                    "rationale": "but 2305.98765v3 is in rationale",  # exercise-only
+                    "rationale": "but 2305.98765v3 is in rationale",
                 },
             ],
         }
         out = _coerce("2402.22222", data)
-        # Title was non-empty but had no arxiv_id -> regex doesn't check rationale -> dropped
         assert len(out.key_references) == 0
 
     def test_coerce_authors_list(self) -> None:
@@ -235,13 +465,13 @@ class TestCoerce:
                     "arxiv_id": "2401.1",
                     "title": "t",
                     "rationale": "r",
-                    "authors": ["Alice", 42],  # mixed; ints are kept as str
+                    "authors": ["Alice", 42],
                 },
                 {
                     "arxiv_id": "2401.2",
                     "title": "t2",
                     "rationale": "r2",
-                    "authors": "not a list",  # invalid -> empty
+                    "authors": "not a list",
                 },
             ],
         }
@@ -255,8 +485,8 @@ class TestCoerce:
             "summary": "S",
             "key_findings": "should be coerced to empty-list (not a list)",
             "limitations": "also not a list",
-            "is_key_reference": "true",  # string -> True
-            "methodology": None,  # None -> empty string (strict-safe)
+            "is_key_reference": "true",
+            "methodology": None,
         }
         out = _coerce("2402.22222", data)
         assert out.key_findings == []
@@ -265,25 +495,17 @@ class TestCoerce:
         assert out.methodology == ""
 
     def test_coerce_falls_back_title_for_unknown(self) -> None:
-        data = {"summary": "S"}  # no title at all
+        data = {"summary": "S"}
         out = _coerce("2402.99", data)
         assert "2402.99" in out.title
         assert out.summary == "S"
 
     def test_old_style_slash_arxiv_id_matched_by_regex(self) -> None:
-        r"""Verifies that the `\b[a-z-]+(?:\.[A-Z]{2})?/\d{7}\b` alternative
-        matches `cs.LG/0702001` (old-style arxiv id with subcategory).
-
-        Old-style format: `category[.subcat]/identifier` (7 digits).
-        Both `cs.LG/0702001` and plain `cs/0702001` are now captured.
-        New-style ids like `0704.0001` are still matched.
-        """
         import re
 
         rx = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")
         assert rx.search("See cs.LG/0702001 for early work").group(0) == "cs.LG/0702001"
         assert rx.search("cs/0702001").group(0) == "cs/0702001"
-        # New-style IDs match
         assert rx.search("arXiv:0704.0001").group(0) == "0704.0001"
 
 
@@ -301,7 +523,7 @@ class TestExtractKeyReferenceArxivIds:
             summary="S",
             key_references=[
                 PaperNode(arxiv_id="2401.11111", title="a"),
-                PaperNode(arxiv_id="", title="b"),  # dropped
+                PaperNode(arxiv_id="", title="b"),
                 PaperNode(arxiv_id="2309.99999v3", title="c"),
             ],
         )
@@ -324,30 +546,23 @@ class TestExtractKeyReferenceArxivIds:
 
 
 # ---------------------------------------------------------------------------
-# Paper text truncation guard
+# _FakeAsyncOpenAI helper (used by multiple tests)
 # ---------------------------------------------------------------------------
 
 
-class TestPromptTruncation:
-    @pytest.mark.asyncio
-    async def test_long_paper_text_is_truncated_to_40k_chars(self) -> None:
-        captured: dict[str, Any] = {}
-
-        async def _capture(**kwargs: Any) -> Any:
-            captured["messages"] = kwargs.get("messages")
-            return _FakeResponse(json.dumps({"title": "t", "summary": "s"}))
-
-        client = MagicMock()
-        client.chat.completions.create = AsyncMock(side_effect=_capture)
-
-        long_text = "A" * 100_000
-        await analyze("2402.54321", long_text, "q", client, "m")
-        user_msg = captured["messages"][1]
-        # The prompt substitution truncates paper_text to 40000 chars before
-        # embedding it — so the user content must be strictly less than 100k.
-        assert len(user_msg["content"]) < 100_000
-        # And the prompt should still contain the arxiv_id marker
-        assert "2402.54321" in user_msg["content"]
+class _FakeAsyncOpenAI:
+    def __init__(self, content: str) -> None:
+        self.chat = MagicMock()
+        self.chat.completions = MagicMock()
+        self.chat.completions.create = AsyncMock(return_value=_FakeResponse(content))
 
 
-__all__ = ["TestAnalyze", "TestCoerce", "TestExtractKeyReferenceArxivIds", "TestPromptTruncation"]
+__all__ = [
+    "TestAnalyzeImageBatch",
+    "TestCoerce",
+    "TestExtractKeyReferenceArxivIds",
+    "TestIsContextOverflow",
+    "TestMultiBatch",
+    "TestSynthesizeFinal",
+    "TestTextOnly",
+]

@@ -1,0 +1,15 @@
+You are analyzing a batch of rendered PDF pages for an academic paper (arxiv id: {arxiv_id}). For each page image visible below, describe any significant figure, table, equation, or diagram you see, and transcribe any visible text that improves upon the extracted plaintext (especially equations, table data, and figure captions).
+
+The paper's extracted text is provided below for context — use it to understand which part of the paper these pages belong to.
+
+Paper text (may be truncated):
+<<{paper_text}>>
+
+Return JSON only (no markdown fences):
+{{
+  "figure_descriptions": ["<one-sentence description per visible figure/table>"],
+  "extraction_text": "<relevant visible text, especially equations, table cells, and captions that were not captured well by text extraction>"
+}}
+
+Page images:
+<<{image_pages_section}>>
