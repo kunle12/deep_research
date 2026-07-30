@@ -43,18 +43,26 @@ def _build_messages(
     page_image_data_urls: list[str] | None,
     model: str = "gpt-4",
     max_context_tokens: int = 131072,
+    max_images_override: int | None = None,
+    max_paper_chars_override: int | None = None,
 ) -> list[dict[str, Any]]:
     """Construct the chat messages list. When image data URLs are supplied,
     the user message is multi-content with one image_url block per page.
 
     Paper text is truncated based on token budget to avoid exceeding the
     model's context window. Images are also limited when context is tight.
+    `max_images_override` / `max_paper_chars_override` force explicit caps
+    (used by the retry-with-reduction fallback when the server reports the
+    prompt is too long).
     """
     prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
 
     # Limit images based on context budget. Each base64 image can be 100s of KB;
     # be conservative and allow ~1 image per 8k tokens of context.
-    max_images = max(0, (max_context_tokens - _RESERVED_TOKENS) // 8000)
+    if max_images_override is not None:
+        max_images = max_images_override
+    else:
+        max_images = max(0, (max_context_tokens - _RESERVED_TOKENS) // 8000)
     if page_image_data_urls and len(page_image_data_urls) > max_images:
         logger.info(
             "analyze_paper %s: limiting images from %d to %d (context=%d tokens)",
@@ -84,7 +92,10 @@ def _build_messages(
     )
     available_tokens = max_context_tokens - _RESERVED_TOKENS - image_tokens - base_prompt_tokens
     # Convert token budget to chars (rough: 1 token ≈ 4 chars), capped at hard limit
-    max_paper_chars = min(_MAX_PAPER_CHARS, max(1000, available_tokens * 4))
+    if max_paper_chars_override is not None:
+        max_paper_chars = max_paper_chars_override
+    else:
+        max_paper_chars = min(_MAX_PAPER_CHARS, max(1000, available_tokens * 4))
 
     if len(paper_text) > max_paper_chars:
         logger.debug(
@@ -120,6 +131,25 @@ def _build_messages(
     return [system, {"role": "user", "content": prompt_text}]
 
 
+_CONTEXT_ERROR_MARKERS = (
+    "tokenize",
+    "context length",
+    "context_length",
+    "maximum context",
+    "too long",
+    "too many tokens",
+    "reduce the length",
+    "prompt is too",
+)
+
+
+def _is_context_overflow_error(exc: Exception) -> bool:
+    """Heuristic: does this exception look like a prompt-too-long / tokenization
+    overflow from the server? Used to trigger retry-with-reduction."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _CONTEXT_ERROR_MARKERS)
+
+
 async def analyze(
     arxiv_id: str,
     paper_text: str,
@@ -140,43 +170,104 @@ async def analyze(
         papers are leaf nodes and never enqueued for recursion.
       - "html" — HTML page text, same treatment as abstract for now.
 
+    If the server rejects the prompt as too long (a tokenization / context
+    overflow error), retries with progressively smaller content: first dropping
+    all images, then halving the paper text each attempt. This guards against a
+    server whose real context window is smaller than the configured value.
+
     Degrades cleanly on invalid JSON / LLM exceptions by returning a
     `PaperAnalysis` with a marker title so the academic loop keeps running.
     """
     if text_source in ("abstract", "html"):
         paper_text = "[ABSTRACT-ONLY]\n" + paper_text
-    messages = _build_messages(
-        arxiv_id, paper_text, query, page_image_data_urls, model, max_context_tokens
-    )
-    try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.0,
-            response_format={"type": "json_object"},
+
+    # Reduction ladder: (max_images_override, max_paper_chars_override).
+    # First attempt uses the budget-derived defaults (None); subsequent attempts
+    # drop images entirely and halve the paper text until it fits.
+    reduction_steps: list[tuple[int | None, int | None]] = [(None, None)]
+    fallback_chars = _MAX_PAPER_CHARS
+    for _ in range(4):
+        fallback_chars = max(2000, fallback_chars // 2)
+        reduction_steps.append((0, fallback_chars))
+
+    last_exc: Exception | None = None
+    for attempt, (img_cap, char_cap) in enumerate(reduction_steps):
+        messages = _build_messages(
+            arxiv_id,
+            paper_text,
+            query,
+            page_image_data_urls,
+            model,
+            max_context_tokens,
+            max_images_override=img_cap,
+            max_paper_chars_override=char_cap,
         )
-        raw = resp.choices[0].message.content or ""
+        # Log the size of what we're about to send
+        user_content = messages[1]["content"]
+        total_chars = len(str(messages))
+        n_img = (
+            len([b for b in user_content if isinstance(b, dict) and b.get("type") == "image_url"])
+            if isinstance(user_content, list)
+            else 0
+        )
+        logger.debug(
+            "analyze_paper %s attempt %d: %d images, ~%d chars total",
+            arxiv_id,
+            attempt + 1,
+            n_img,
+            total_chars,
+        )
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return PaperAnalysis(
-                title=f"[unparseable] {arxiv_id}",
-                summary=raw[:3000],
-            )
-        # Coerce into PaperAnalysis. Filter out references with no arxiv_id.
-        analysis = _coerce(arxiv_id, data)
-        # Abstract-only / HTML nodes are leaf nodes — force no recursion.
-        if text_source in ("abstract", "html"):
-            analysis.key_references = []
-        return analysis
-    except Exception as e:
-        logger.warning(
-            "analyze_paper LLM call failed for %s: %s: %s", arxiv_id, type(e).__name__, e
-        )
-        return PaperAnalysis(
-            title=f"[error] {arxiv_id}",
-            summary=f"LLM analysis failed: {type(e).__name__}: {e}",
-        )
+            # On the final fallback attempt, drop response_format in case the
+            # server doesn't support it (some llama.cpp builds reject it).
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.0,
+            }
+            if attempt < len(reduction_steps) - 1:
+                kwargs["response_format"] = {"type": "json_object"}
+            resp = await client.chat.completions.create(**kwargs)
+            raw = resp.choices[0].message.content or ""
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                return PaperAnalysis(
+                    title=f"[unparseable] {arxiv_id}",
+                    summary=raw[:3000],
+                )
+            # Coerce into PaperAnalysis. Filter out references with no arxiv_id.
+            analysis = _coerce(arxiv_id, data)
+            # Abstract-only / HTML nodes are leaf nodes — force no recursion.
+            if text_source in ("abstract", "html"):
+                analysis.key_references = []
+            return analysis
+        except Exception as e:
+            last_exc = e
+            if _is_context_overflow_error(e) and attempt < len(reduction_steps) - 1:
+                logger.warning(
+                    "analyze_paper %s: prompt too long (attempt %d); retrying with "
+                    "reduced content (images_cap=%s, chars_cap=%s): %s",
+                    arxiv_id,
+                    attempt + 1,
+                    reduction_steps[attempt + 1][0],
+                    reduction_steps[attempt + 1][1],
+                    e,
+                )
+                continue
+            break
+
+    assert last_exc is not None
+    logger.warning(
+        "analyze_paper LLM call failed for %s: %s: %s",
+        arxiv_id,
+        type(last_exc).__name__,
+        last_exc,
+    )
+    return PaperAnalysis(
+        title=f"[error] {arxiv_id}",
+        summary=f"LLM analysis failed: {type(last_exc).__name__}: {last_exc}",
+    )
 
 
 _ARXIV_RX = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")
