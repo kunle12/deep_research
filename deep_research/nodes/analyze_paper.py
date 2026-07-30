@@ -2,15 +2,14 @@
 
 P7: implemented. Multi-stage vision-aware analysis:
 
-  1. If images fit in a single call → single-shot analysis (existing fast path).
-  2. If too many images → adaptive batching:
-       - Compute batch_size from context budget.
-       - Process each batch sequentially; if a batch fails with a
-         tokenization error, halve the batch size for the remaining images.
+  1. If no images → direct text-only synthesis (single call).
+  2. If images are present → adaptive batching:
+       - Process all images in batches (batch_size ≤ 5).
+       - If a batch fails with a tokenization error, halve the batch size
+         and retry the same images.
        - Merge per-batch figure_descriptions + extraction_text.
        - Final synthesis call (no images) with full paper text + all
          per-batch results → complete PaperAnalysis.
-  3. If no images → single-shot text-only analysis.
 """
 
 from __future__ import annotations
@@ -76,15 +75,14 @@ def _build_system() -> dict[str, Any]:
     }
 
 
-def _call(
+async def _call(
     client: AsyncOpenAI,
     model: str,
     messages: list[dict[str, Any]],
     *,
     use_json: bool,
 ) -> Any:
-    """Thin wrapper around `client.chat.completions.create` — returns the raw
-    response so the caller can inspect it."""
+    """Thin wrapper around `client.chat.completions.create`."""
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -92,7 +90,7 @@ def _call(
     }
     if use_json:
         kwargs["response_format"] = {"type": "json_object"}
-    return client.chat.completions.create(**kwargs)
+    return await client.chat.completions.create(**kwargs)
 
 
 def _compute_batch_size(
@@ -240,7 +238,8 @@ async def _synthesize_final(
         else ""
     )
 
-    # No images → no image_section. Use full budget for paper text.
+    # No images → no image_section. Use full budget for paper text, but
+    # subtract the tokens that fig_section + extra_section will consume.
     base_tokens = count_text_tokens(
         prompt_template.replace("{arxiv_id}", arxiv_id)
         .replace("{paper_text}", "")
@@ -248,7 +247,8 @@ async def _synthesize_final(
         .replace("{image_pages_section}", ""),
         model,
     )
-    available = max_context_tokens - _RESERVED_TOKENS - base_tokens
+    fig_extra_tokens = count_text_tokens(fig_section + extra_section, model)
+    available = max_context_tokens - _RESERVED_TOKENS - base_tokens - fig_extra_tokens
     # No hard cap — use full available budget for paper text
     max_chars = max(1000, available * 4)
 
