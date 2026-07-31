@@ -20,13 +20,14 @@ async def build_tool_registry(config: AgentTopConfig) -> ToolRegistry:
 
     Tools that are disabled by config (e.g., `reddit.enabled: false`) are
     *not* registered, so they are invisible to the LLM.
-
-    Stubs register with TODO behavior so we know the wiring is correct.
     """
     reg = ToolRegistry()
     reg.set_concurrency(config.agent.max_concurrent_tools)
-    if config.agent.tool_timeout_s and config.agent.tool_timeout_s > 0:
+    if config.agent.tool_timeout_s > 0:
         reg.set_tool_timeout(config.agent.tool_timeout_s)
+    else:
+        # 0 = disable the per-tool-call guard entirely
+        reg.set_tool_timeout(float("inf"))
 
     # Order matters only for log readability. Each tool registers its own schema.
 

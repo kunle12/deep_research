@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -89,17 +90,10 @@ class LibraryWriter:
         if not path.exists():
             logger.warning("archive_pdf: file not found %s", path)
             return ""
-        pdf_bytes = path.read_bytes()
-        sha = _content_sha256(pdf_bytes)
         rel_dir = self._root / "artifacts" / "pdf"
-        rel_dir.mkdir(parents=True, exist_ok=True)
-        slug_base = (arxiv_id or sha) + "-" + (title or "untitled").replace("/", "_")[:32]
-        slug = re.sub(r"[^A-Za-z0-9._-]", "_", slug_base).strip() or "unknown"
-        dest = rel_dir / f"{slug}.pdf"
-        if not dest.exists():
-            import shutil
-
-            shutil.copy2(str(path), str(dest))
+        dest, size, sha = await asyncio.to_thread(
+            _copy_pdf_to_store, path, rel_dir, arxiv_id, title
+        )
 
         artifact = ArtifactRow(
             artifact_id=sha,
@@ -110,7 +104,7 @@ class LibraryWriter:
             discovered_by="arxiv" if arxiv_id else "fetch_page",
             arxiv_id=arxiv_id,
             bytes_path=str(dest.relative_to(self._root)),
-            bytes_size=len(pdf_bytes),
+            bytes_size=size,
             first_seen_at=_now_iso(),
             last_touched_at=_now_iso(),
             refresh_after_at=_compute_refresh_after(source_type, self._refresh_policy),
@@ -122,11 +116,9 @@ class LibraryWriter:
         sha = _content_sha256(html.encode("utf-8"))
         if pdf_bytes:
             pdf_sha = _content_sha256(pdf_bytes)
-            rel_dir = self._root / "artifacts" / "pdf"
-            rel_dir.mkdir(parents=True, exist_ok=True)
-            dest = rel_dir / f"{pdf_sha}-blog.pdf"
-            if not dest.exists():
-                dest.write_bytes(pdf_bytes)
+            dest, size = await asyncio.to_thread(
+                _write_blog_pdf_to_store, self._root, pdf_sha, pdf_bytes
+            )
 
             artifact = ArtifactRow(
                 artifact_id=pdf_sha,
@@ -134,7 +126,7 @@ class LibraryWriter:
                 source_url=url,
                 source_type="blog",
                 bytes_path=str(dest.relative_to(self._root)),
-                bytes_size=len(pdf_bytes),
+                bytes_size=size,
                 first_seen_at=_now_iso(),
                 last_touched_at=_now_iso(),
                 refresh_after_at=_compute_refresh_after("blog", self._refresh_policy),
@@ -142,11 +134,9 @@ class LibraryWriter:
             await self._storage.upsert_artifact(artifact)
             return pdf_sha
         else:
-            rel_dir = self._root / "artifacts" / "html"
-            html_dir = rel_dir / sha
-            html_dir.mkdir(parents=True, exist_ok=True)
-            (html_dir / "page.html").write_text(html)
-            (html_dir / "meta.json").write_text(json.dumps({"url": url}, indent=2))
+            html_dir, size = await asyncio.to_thread(
+                _write_html_to_store, self._root, sha, url, html
+            )
 
             artifact = ArtifactRow(
                 artifact_id=sha,
@@ -154,7 +144,7 @@ class LibraryWriter:
                 source_url=url,
                 source_type="html",
                 bytes_path=str(html_dir.relative_to(self._root)),
-                bytes_size=len(html.encode("utf-8")),
+                bytes_size=size,
                 first_seen_at=_now_iso(),
                 last_touched_at=_now_iso(),
                 refresh_after_at=_compute_refresh_after("html", self._refresh_policy),
@@ -170,10 +160,9 @@ class LibraryWriter:
         ymd_dir = reports_dir / f"{now.year}" / f"{now.month:02d}" / f"{now.day:02d}"
         ymd_dir.mkdir(parents=True, exist_ok=True)
 
-        md_path = ymd_dir / f"{run_id}.md"
-        md_path.write_text(report.markdown)
-
-        pdf_bytes = await _render_pdf(report.markdown, ymd_dir / f"{run_id}.pdf")
+        md_path, pdf_bytes = await asyncio.to_thread(
+            _write_report_files, ymd_dir, run_id, report.markdown
+        )
         artifact_id = None
         if pdf_bytes:
             sha = _content_sha256(pdf_bytes)
@@ -345,7 +334,62 @@ class LibraryWriter:
         }
 
 
-async def _render_pdf(markdown_text: str, pdf_path: Path) -> bytes | None:
+def _copy_pdf_to_store(
+    src: Path, dest_dir: Path, arxiv_id: str | None, title: str | None
+) -> tuple[Path, int, str]:
+    """Sync: copy a PDF into the artifact store, returning (dest, size, sha).
+
+    The destination slug is derived from the content sha (plus arxiv_id when
+    present) so distinct PDFs can never collide on the same file even when
+    they share a title. This mirrors the pre-refactor behavior.
+    """
+    import shutil
+
+    pdf_bytes = src.read_bytes()
+    sha = _content_sha256(pdf_bytes)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    slug_base = (arxiv_id or sha) + "-" + (title or "untitled").replace("/", "_")[:32]
+    slug = re.sub(r"[^A-Za-z0-9._-]", "_", slug_base).strip() or "unknown"
+    dest = dest_dir / f"{slug}.pdf"
+    if not dest.exists():
+        shutil.copy2(str(src), str(dest))
+    return dest, len(pdf_bytes), sha
+
+
+def _write_blog_pdf_to_store(root: Path, pdf_sha: str, pdf_bytes: bytes) -> tuple[Path, int]:
+    """Sync: write a blog PDF artifact, returning (dest, size)."""
+    dest_dir = root / "artifacts" / "pdf"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{pdf_sha}-blog.pdf"
+    if not dest.exists():
+        dest.write_bytes(pdf_bytes)
+    return dest, len(pdf_bytes)
+
+
+def _write_html_to_store(root: Path, sha: str, url: str, html: str) -> tuple[Path, int]:
+    """Sync: write an HTML artifact directory, returning (html_dir, byte size)."""
+    html_dir = root / "artifacts" / "html" / sha
+    html_dir.mkdir(parents=True, exist_ok=True)
+    (html_dir / "page.html").write_text(html)
+    (html_dir / "meta.json").write_text(json.dumps({"url": url}, indent=2))
+    return html_dir, len(html.encode("utf-8"))
+
+
+def _write_report_files(
+    ymd_dir: Path, run_id: str, markdown_text: str
+) -> tuple[Path, bytes | None]:
+    """Sync: write the markdown file and render the PDF, returning (md_path, pdf_bytes).
+
+    PDF rendering (weasyprint/xhtml2pdf) is CPU-heavy and blocking, so this
+    whole unit runs via asyncio.to_thread from archive_report.
+    """
+    md_path = ymd_dir / f"{run_id}.md"
+    md_path.write_text(markdown_text)
+    pdf_bytes = _render_pdf(markdown_text, ymd_dir / f"{run_id}.pdf")
+    return md_path, pdf_bytes
+
+
+def _render_pdf(markdown_text: str, pdf_path: Path) -> bytes | None:
     import markdown
 
     html = markdown.markdown(markdown_text, extensions=["extra"])

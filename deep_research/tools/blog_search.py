@@ -11,6 +11,7 @@ import trafilatura
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.state import Citation, ToolName
+from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ async def _tavily_blog_search(
                 title=r.get("title", "") or "",
                 snippet=r.get("content", "") or "",
                 source_type="blog",
-                confidence_score=float(r.get("score") or 0.6),
+                confidence_score=coerce_float(r.get("score"), 0.6),
                 discovered_by=ToolName.web_search,
             )
         )
@@ -138,8 +139,13 @@ async def _direct_domain_fetch(
 
         html = resp.text
         text = (
-            trafilatura.extract(
-                html, url=url, output_format="txt", include_comments=False, favor_recall=True
+            await asyncio.to_thread(
+                trafilatura.extract,
+                html,
+                url=url,
+                output_format="txt",
+                include_comments=False,
+                favor_recall=True,
             )
             or ""
         )
@@ -171,12 +177,15 @@ async def _direct_domain_fetch(
         if isinstance(res, list):
             citations.extend(res)
 
-    # Dedup and limit
-    seen = set()
+    # Dedup and limit. Distinct matched lines on the same index page share the
+    # page URL, so key on (url, title) to keep multiple posts from one domain
+    # rather than collapsing them to a single citation.
+    seen: set[tuple[str, str]] = set()
     deduped: list[Citation] = []
     for c in sorted(citations, key=lambda x: x.confidence_score, reverse=True):
-        if c.url not in seen and len(deduped) < max_results:
-            seen.add(c.url)
+        key = (c.url, c.title)
+        if key not in seen and len(deduped) < max_results:
+            seen.add(key)
             deduped.append(c)
     return deduped
 

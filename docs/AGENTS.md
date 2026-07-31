@@ -8,7 +8,7 @@ changes.
 
 ## Architecture Overview
 
-- **Language**: Python 3.12+, async-first, `uv` package manager
+- **Language**: Python 3.11–3.13, async-first, `uv` package manager
 - **Orchestration**: raw `asyncio` — no LangGraph/LangChain/AutoGen
 - **Entrypoint**: `await run_research(query, config) -> Report` in `agent.py`
 - **CLI**: thin typer shell in `cli/app.py`
@@ -30,6 +30,7 @@ changes.
 | `paths/deep.py` | Deep research path (planner→researcher→critic→writer); checkpoint resume |
 | `paths/academic.py` | Academic citation-graph path |
 | `checkpoint.py` | JSON checkpoint save/load for crash recovery of deep research state |
+| `util.py` | Shared tiny helpers: `coerce_float()` (tolerant float parsing for LLM/API output) + `strip_arxiv_version()`. Import these — do NOT copy the body into new modules |
 | `nodes/auto_tag.py` | Post-synthesis LLM call — extracts 3-5 topic tags from query + report |
 | `prompts/auto_tag.txt` | Prompt template for auto-tag extraction |
 | `prompts/glossary_extract.txt` | Prompt template for glossary extraction |
@@ -68,6 +69,11 @@ actions: `drill_deeper` (new sub-question), `chase_reference` (follow a URL),
 - **Three-level cap hierarchy**: `max_refinement_per_researcher` (per call),
   `max_total_refinements_per_iteration` (per iteration, in `flush_refinements`),
   `max_refinement_depth` (recursive nesting).
+- **The per-iteration cap is soft**: `flush_refinements()` moves up to
+  `max_total` refinements into the plan and keeps the overflow `pending` for
+  the next iteration — capped-out refinements are never dropped.
+- **Refinements are researched even if the critic says "sufficient"**: the
+  deep loop only stops when there is no pending refinement work left.
 - **Normalized dedup**: `absorb_refinements` compares `.strip().lower()` question
   text to catch case/whitespace variants.
 - **`research()` returns a 3-tuple**: `(answer_md, citations, refinements)`.
@@ -105,9 +111,18 @@ Both `web_search.py` and `scholar.py` use the same fallback pattern:
 
 All use `asyncio.Semaphore(concurrency)` + spacing delay between calls.
 
-**Module-level globals for call counting:**
-- `web_search.py`: `_tavily_call_count` — reset via fixture in tests
-- `scholar.py`: `_serper_call_count` — local `nonlocal` inside `register()`
+**Call-count quota state:**
+Both `web_search.py` and `scholar.py` keep their per-backend call counters as
+**closure locals inside `register()`** (created fresh on every registry build),
+not module-level globals:
+- `web_search.py`: `_tavily_call_count` — `nonlocal` in `_call`; decremented on
+  failure so only executed calls count against the quota
+- `scholar.py`: `_serper_call_count` — `nonlocal` in `_search`; decremented on
+  failure like Tavily
+
+Because they are closure locals, there is no cross-test/module pollution to
+reset — do not reintroduce module-level counters for this. (The old
+`_reset_web_search_globals` fixture was a no-op and has been removed.)
 
 ---
 
@@ -130,6 +145,10 @@ All use `asyncio.Semaphore(concurrency)` + spacing delay between calls.
 ## Browser Tool
 
 - Playwright MCP spawned lazily on first call (expensive ~1-3s warm-up)
+- **Lazy spawn is serialized under an `asyncio.Lock`** in `_ensure_mcp()` — the
+  tool loop batches tool calls, and without the lock two concurrent browser
+  calls could each spawn a subprocess and orphan one of them. Keep the
+  double-checked-lock pattern if you touch this
 - Headless mode via `--headless` flag in `mcp_args` (default)
 - Tool subset: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_evaluate`
 - Graceful degradation: startup failures return `ToolResult(error=...)`, never crash
@@ -146,6 +165,10 @@ All use `asyncio.Semaphore(concurrency)` + spacing delay between calls.
 - Prompt: `prompts/auto_tag.txt` — expects `{"tags": ["tag1", "tag2"]}` JSON response
 - Called in `agent.py` after glossary extraction and archiving, using the returned `artifact_id`
 - Tags persisted via `writer.tag(artifact_id, tags, run_id=run_id)` — same FK rules apply (report must exist)
+- **Post-synthesis steps are non-fatal**: glossary extraction and auto-tagging
+  are wrapped in `try/except` in `agent.py`. A bad LLM float or a storage error
+  logs a warning and the finished `Report` is still returned — never discard a
+  completed report because of an enrichment step
 
 ### Tag CLI commands
 - `deep-research-library tag <artifact_id> <tag_name>` — add
@@ -180,8 +203,11 @@ Tags are batch-fetched via `get_tags_for_artifacts()` to avoid N+1 queries.
 
 ## Common Pitfalls for AI Agents
 
-1. **Module-level globals**: `_tavily_call_count` persists across tests — always add
-   an `autouse` fixture to reset it when adding new module-level state
+1. **Module-level globals**: if you add genuinely module-level mutable state,
+   always add an `autouse` fixture to reset it between tests. Note the
+   `web_search`/`scholar` call counters are deliberately NOT module-level —
+   they are closure locals inside `register()`, so each registry build starts
+   at zero (see Call-count quota state)
 2. **Tool error propagation**: Never raise from a tool callable — always return
    `ToolResult(error=...)`. The LLM loop catches exceptions but prefers structured errors
 3. **Config env vars**: API keys are resolved in `config.py` via `_env()` — don't read
@@ -195,9 +221,10 @@ Tags are batch-fetched via `get_tags_for_artifacts()` to avoid N+1 queries.
    have a much lower effective limit for combined text+image payloads than their
    advertised `n_ctx`. A server advertising 131k context may fail at ~8k chars
    text + 1 image. Never stuff large text alongside images — cap text in image
-   batch calls (`_MAX_IMAGE_BATCH_TEXT_CHARS`) and reserve full text for
-   text-only synthesis. "Failed to tokenize prompt" does NOT mean "no vision
-   support" — test with minimal payloads before concluding a capability is missing.
+   batch calls (`MAX_TEXT_CHARS_WITH_IMAGES` in `llm/vision.py`) and reserve
+   full text for text-only synthesis. "Failed to tokenize prompt" does NOT mean
+   "no vision support" — test with minimal payloads before concluding a
+   capability is missing.
 
 ---
 
@@ -213,14 +240,22 @@ async with _tavily_call_lock:
     _tavily_call_count += 1
 ```
 
-### Atomic max-papers cap (academic.py)
-Use a plain `int` counter with `nonlocal` in closures. Python GIL makes `+= 1` atomic:
+### Atomic max-papers claim (academic.py)
+`_analyze_and_recurse` claims a paper's slot under an `asyncio.Lock`, and
+**re-checks membership inside the lock**. The pre-check (`if base in processed`)
+runs before the lock, so two tasks for the same paper (e.g. the same reference
+enqueued by two parents in one batch) can both pass it; the in-lock re-check is
+what actually prevents a double-claim:
 ```python
-processed_count: int = 0
-# inner function:
-    nonlocal processed_count
-    if processed_count >= max_papers:
+base = _strip_version(node.arxiv_id)
+if base in processed:
+    return
+async with claim_lock:
+    if base in processed:            # re-check — closes the pre-check TOCTOU
         return
+    if processed_count >= cfg.max_papers:
+        return
+    processed.add(base)
     processed_count += 1
 ```
 
@@ -244,26 +279,28 @@ logger.warning("researcher for %s raised (%s): %s", sq.id, rtype, msg)
 ```
 
 ### Per-tool-call hard timeout (ToolRegistry)
-`ToolRegistry.call` wraps each tool invocation in `asyncio.timeout(config.agent.tool_timeout_s)`
-(default 120s). This is the *inner* guarantee: a single hung tool (e.g.
-`fetch_page` on a non-responding server, or `pdf_render_pages` stuck in
-`pdf2image`) cannot eat the researcher's whole budget — it surfaces as a
-clean `ToolResult.error` instead. Disable via `reg.set_tool_timeout(float("inf"))`
-in tests, or set `agent.tool_timeout_s` to a large value in config to widen
-the budget for a particular deployment — `build_tool_registry()` only applies
-the override when the value is `> 0`, so `0` is treated as "use the registry's
-built-in 120s default" (set an explicit large value to actually widen it).
-Inner timeouts are what make the outer `wait_for` cancellation actually
-unblock: without them, sync work via `run_in_executor` on a non-cancellable
-blocker would outlive the `wait_for` deadline. In this codebase, the heavy
-sync blockers (`_sync_extract` in `tools/pdf.py`) use `asyncio.to_thread`,
-which honours cancellation; the inner `asyncio.timeout` is belt-and-braces.
+`ToolRegistry.call` wraps each tool invocation in `asyncio.wait_for(..., timeout=...)`
+so the inner task is actually **cancelled** when the deadline passes (no orphaned
+tool calls). The timeout value is `config.agent.tool_timeout_s` (default `300.0`)
+applied by `build_tool_registry()`. This is the *inner* guarantee: a single hung
+tool (e.g. `fetch_page` on a non-responding server, or `pdf_render_pages` stuck
+in `pdf2image`) cannot eat the researcher's whole budget — it surfaces as a
+clean `ToolResult.error` instead.
+
+**`0` disables the guard**: `build_tool_registry()` treats `tool_timeout_s <= 0`
+as "no per-call timeout" (`set_tool_timeout(float("inf"))`). Disable per-call
+timeouts in tests with `reg.set_tool_timeout(float("inf"))`.
+
+Inner timeouts are what make the outer `wait_for` cancellation actually unblock.
+Heavy sync blockers (`_sync_extract` in `tools/pdf.py`, `trafilatura.extract`,
+diskcache, file writes in `library/writer.py`) run via `asyncio.to_thread`, so a
+blocked call never stalls the event loop.
 
 ### Vision rendering budget (academic path)
 `_analyze_and_recurse` in `paths/academic.py` passes PDF pages to vision
 rendering (`pdf_render_pages`) inside the same per-paper wall-clock budget
-as the text fetch + LLM analysis. Both `_fetch_paper_text` (180s per
-sub-step) and `_render_paper_pages` (300s total) have their own inner
+as the text fetch + LLM analysis. `_download_pdf_once` and `_extract_text`
+(180s each) and `_render_pages` (300s total) have their own inner
 `asyncio.timeout` boundaries so a slow render cannot eat the researcher's
 overall budget. Vision failure is non-fatal: a `TimeoutError` from the
 render path returns `[]` and the analysis downgrades to text-only mode.
@@ -273,30 +310,35 @@ The `analyze_paper` node uses a two-phase approach for papers with images:
 
 1. **Image batch calls** (`_analyze_image_batch`): processes page images in
    adaptive batches to extract figure descriptions and visible text. Paper
-   text included alongside images is capped at `_MAX_IMAGE_BATCH_TEXT_CHARS`
-   (4000 chars) — just enough context to locate figures. This is critical
-   because VLM servers have a much lower effective context limit for combined
-   text+image payloads than for text alone (e.g. llama.cpp with native vision
-   encoding fails at ~8k chars text + 1 image, despite advertising 131k context).
+   text included alongside images is capped at `MAX_TEXT_CHARS_WITH_IMAGES`
+   (4000 chars, in `llm/vision.py`) — just enough context to locate figures.
+   This is critical because VLM servers have a much lower effective context
+   limit for combined text+image payloads than for text alone (e.g. llama.cpp
+   with native vision encoding fails at ~8k chars text + 1 image, despite
+   advertising 131k context).
 
 2. **Text-only synthesis** (`_synthesize_final`): merges all per-batch figure
-   descriptions with the FULL paper text (up to `_MAX_PAPER_CHARS` = 40k chars)
-   for the final structured analysis. No images — full context budget available.
+   descriptions with the FULL paper text for the final structured analysis. No
+   images — full context budget available. (The text budget is derived from
+   `max_context_tokens`; the legacy `_MAX_PAPER_CHARS` cap only lives in the
+   deprecated `_build_messages` path.)
 
 **Adaptive batching:**
-- `_compute_batch_size` estimates how many images fit using `_TOKENS_PER_IMAGE`
+- `_compute_batch_size` estimates how many images fit using `TOKENS_PER_IMAGE`
   (1500 tokens/image for native vision encoding) plus the capped text budget.
 - On context overflow: halve batch size → retry same images.
-- On single-image overflow: degrade image resolution via `_IMAGE_DEGRADE_LADDER`
-  (512px/q60 → 256px/q40) → skip image if all steps fail.
+- On single-image overflow: degrade the current image's resolution via
+  `IMAGE_DEGRADE_LADDER` (512px/q60 → 256px/q40). The ladder is **per-image** —
+  it resets when an image is skipped, so one oversized page cannot consume every
+  degradation step for the remaining pages. Skip the image only after all steps
+  fail.
 - Non-context errors (server 500, etc.) are non-fatal: skip batch, continue.
 
-**Key constants:**
-- `_TOKENS_PER_IMAGE = 1500` — per-image cost for servers with native vision
+**Key constants (all in `llm/vision.py`):**
+- `TOKENS_PER_IMAGE = 1500` — per-image cost for servers with native vision
   encoding (NOT base64-as-text; most VLM servers encode images as fixed-size
   vision tokens regardless of base64 length).
-- `_MAX_IMAGE_BATCH_TEXT_CHARS = 4000` — text cap in image batch calls.
-- `_MAX_PAPER_CHARS = 40000` — text cap in text-only synthesis.
+- `MAX_TEXT_CHARS_WITH_IMAGES = 4000` — text cap in image batch calls.
 
 **Model selection:** `academic.py` passes `config.llm.vision_model` when images
 are present, `config.llm.text_model` otherwise. Both default to the same model
@@ -327,9 +369,12 @@ turns are summarised into a single compressed "user" message.
   tokens/message) plus content tokens from both top-level string fields and
   nested `tool_calls` dicts.
 - **Exchange-aware truncation**: walks backwards from the end of the message
-  list, grouping assistant/user messages with their preceding tool-message
-  chains into proper exchanges. Keeps the last 3 complete exchanges; summarises
-  everything before that.
+  list. An "exchange" is an assistant/user message **plus every tool message
+  that follows it** (a tool response belongs to the assistant directly before
+  it — keeping them together is what keeps the history valid for the OpenAI
+  API). Keeps the last 3 complete exchanges; summarises everything before that.
+  Do NOT revert to pairing an assistant with its *preceding* tools — that
+  orphans tool responses and drops unanswered `tool_calls`.
 - **Summarisation is async and non-fatal**: `_summarize_turns()` calls the LLM
   with a dedicated summarisation prompt. If it fails (timeout, API error), the
   original messages are kept unchanged — the loop continues without context
@@ -345,17 +390,21 @@ turns are summarised into a single compressed "user" message.
 
 ## Checkpoint Resume Pattern (checkpoint.py + deep.py)
 
-The deep research loop saves a JSON checkpoint after each critic invocation so
-a crashed run can resume from where it left off.
+The deep research loop saves a JSON checkpoint once per iteration so a crashed
+run can resume from where it left off.
 
-**Checkpoint save points (`deep.py` line 159):**
+**Checkpoint save points (`deep.py`):**
 ```
-planner → iteration(N) researchers → critic → save checkpoint → break/continue
+planner → iteration(N) researchers → critic → flush refinements + enqueue gaps → save checkpoint → next iteration
+                                                       ↘ (sufficient / force-stop) → save checkpoint → break
 ```
-Saved after the critic but before the loop decides to break or add gaps. This
-captures all absorbed researcher results and flushed refinements.
+The checkpoint is saved **after** all state mutations for the iteration — i.e.
+after refinements are flushed into the plan and critic gaps are enqueued, or
+immediately before a `break`. Saving before the flush would strand
+`pending_refinements` outside `plan.sub_questions`; on resume the top-of-loop
+`if not pending: break` would silently drop them.
 
-**Resume flow (`deep.py` line 59-86):**
+**Resume flow (`deep.py`, top of `deep_research()`):**
 1. On startup, if `run_id` is set, calls `load_checkpoint(run_id)`
 2. If a checkpoint exists and its `query` matches the current run, loads it and
    skips the planner entirely
@@ -388,10 +437,23 @@ captures all absorbed researcher results and flushed refinements.
 ## Security Patterns
 
 ### Path traversal sanitization (library/writer.py)
-Always sanitize user-controllable strings before using them as file paths:
+Always sanitize user-controllable strings before using them as file paths. The
+PDF artifact slug is derived from the content `sha` (plus `arxiv_id` when
+present) so distinct PDFs can never collide on the same file:
 ```python
-slug_base = (arxiv_id or sha) + "-" + title[:32]
+# in _copy_pdf_to_store()
+slug_base = (arxiv_id or sha) + "-" + (title or "untitled").replace("/", "_")[:32]
 slug = re.sub(r"[^A-Za-z0-9._-]", "_", slug_base).strip() or "unknown"
+```
+
+### Config-path containment (microservice.py)
+The `/research` endpoint accepts a `config_path`. Verify the *resolved* path is
+contained in the allowed directory with `is_relative_to` — a `startswith` prefix
+check is fooled by sibling dirs (e.g. cwd `/proj` vs `/proj_evil`):
+```python
+config_file = Path(request.config_path).resolve()
+if not config_file.is_relative_to(_ALLOWED_CONFIG_DIR):   # _ALLOWED_CONFIG_DIR is .resolve()d
+    raise HTTPException(status_code=400, detail="config_path outside allowed directory")
 ```
 
 ### Citation URL validation (researcher.py)
@@ -408,6 +470,9 @@ if not url or not url.startswith(("http://", "https://", "ftp://")):
 
 ## Cache TTL Clock
 
-Always use `time.monotonic()` for cache expiry checks, never `time.time()`, to
-avoid spurious expiry or indefinite retention on NTP/system-time jumps
-(fetch_page.py:75).
+`fetch_page`'s `_PageCache` uses wall-clock `time.time()` timestamps (persisted
+in the diskcache value) rather than `time.monotonic()`, because the cache must
+survive process restarts — `monotonic()` resets on reboot and would make every
+entry look infinitely old. The known tradeoff: NTP/system-time jumps can cause
+spurious expiry or indefinite retention. Only switch to `monotonic()` for
+in-process caches that don't need to persist.

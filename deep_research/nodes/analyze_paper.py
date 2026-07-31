@@ -31,6 +31,7 @@ from deep_research.llm.vision import (
     is_context_overflow,
 )
 from deep_research.state import PaperAnalysis
+from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +449,12 @@ async def analyze(
                         quality,
                         e,
                     )
-                    remaining = [degrade_image(url, max_dim, quality) for url in remaining]
+                    # Degrade only the current image (batch_size == 1). The
+                    # ladder is per-image: resetting only on skip means one
+                    # oversized image can no longer consume every degradation
+                    # step for all remaining pages.
+                    degraded = [degrade_image(url, max_dim, quality) for url in batch]
+                    remaining[:batch_size] = degraded
                     degrade_idx += 1
                     continue
                 else:
@@ -459,6 +465,7 @@ async def analyze(
                         e,
                     )
                     remaining = remaining[1:]
+                    degrade_idx = 0
             else:
                 logger.warning(
                     "analyze_paper %s batch(%d images) non-overflow error; advancing: %s: %s",
@@ -589,13 +596,6 @@ def _list_of_str(v: Any) -> list[str]:
     return []
 
 
-def _float_coerce(v: Any, default: float = 0.0) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
-
-
 def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
     if not isinstance(data, dict):
         return PaperAnalysis(
@@ -632,7 +632,7 @@ def _coerce(arxiv_id: str, data: dict[str, Any] | list) -> PaperAnalysis:
         )
 
     raw_rel = data.get("relevance_score")
-    rel_score = _float_coerce(raw_rel, -1.0)
+    rel_score = coerce_float(raw_rel, -1.0)
     if rel_score < 0.0:
         logger.warning(
             "analyze_paper %s: missing/invalid relevance_score (%r); defaulting to "

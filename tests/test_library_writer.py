@@ -51,6 +51,29 @@ async def test_archive_pdf(writer, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_archive_pdf_distinct_content_no_collision(writer, tmp_path):
+    """Two different PDFs without an arxiv_id but with the same title must not
+    collide on the same on-disk file (dest is sha-derived)."""
+    pdf1 = tmp_path / "one.pdf"
+    pdf2 = tmp_path / "two.pdf"
+    pdf1.write_bytes(b"%PDF first")
+    pdf2.write_bytes(b"%PDF second")
+
+    aid1 = await writer.archive_pdf(pdf1, title="Same Title", source_type="pdf")
+    aid2 = await writer.archive_pdf(pdf2, title="Same Title", source_type="pdf")
+    assert aid1 and aid2 and aid1 != aid2
+
+    art1 = await writer.storage.get_artifact(aid1)
+    art2 = await writer.storage.get_artifact(aid2)
+    assert art1 is not None and art2 is not None
+    assert art1.bytes_path != art2.bytes_path
+    # Each stored file must actually contain its own content.
+    root = writer.root_dir
+    assert (root / art1.bytes_path).read_bytes() == b"%PDF first"
+    assert (root / art2.bytes_path).read_bytes() == b"%PDF second"
+
+
+@pytest.mark.asyncio
 async def test_archive_report(writer):
     report = Report(
         markdown="# Test Report\n\nContent",

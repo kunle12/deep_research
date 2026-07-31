@@ -321,25 +321,30 @@ async def _maybe_summarise(
     system = messages[:1] if messages and messages[0]["role"] == "system" else []
     body = messages[len(system) :]
 
-    # Walk backwards collecting up to 3 exchanges. An "exchange" is:
-    #   user | assistant  +  all subsequent tool messages that follow it.
-    # We keep the last 3 *complete* exchanges (assistant + its tool chain).
+    # Walk backwards collecting up to 3 exchanges. An "exchange" is an
+    # assistant (or user) message plus *every tool message that follows it*
+    # — a tool message responds to the tool_calls of the assistant directly
+    # before it, so it must always be kept together with that assistant for
+    # the message list to remain valid for the API. Walking backwards, we
+    # skip trailing tool messages (they belong to the nearest preceding
+    # assistant) and, when we hit an assistant/user message, scan forward to
+    # gather all of its tool responses.
     kept: list[dict] = []
     i = len(body) - 1
     exchange_count = 0
     while i >= 0 and exchange_count < 3:
-        # Skip standalone tool messages (they belong to the exchange
-        # already captured by the assistant message ahead of them).
+        # Standalone tool messages belong to the assistant that precedes
+        # them; skip until we reach that assistant.
         if body[i]["role"] == "tool":
             i -= 1
             continue
-        # Found an assistant or user message — this starts an exchange.
-        # Include it and any tool messages immediately before it.
-        end = i + 1
+        # body[i] is an assistant or user message — this starts an exchange.
+        # The exchange extends forward to include every following tool
+        # message (they respond to this assistant's tool_calls).
         start = i
-        # Include preceding tool messages that belong to this exchange
-        while start > 0 and body[start - 1]["role"] == "tool":
-            start -= 1
+        end = i + 1
+        while end < len(body) and body[end]["role"] == "tool":
+            end += 1
         # Insert this exchange block at the front of kept
         kept[0:0] = body[start:end]
         exchange_count += 1

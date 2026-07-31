@@ -236,6 +236,10 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     # mutate it without `nonlocal` declarations.
     mcp_holder: list[_MCPClientCtx | None] = [None]
     startup_error: list[str] = []
+    # Serializes lazy MCP spawn: the tool loop batches tool calls, so two
+    # concurrent browser calls could otherwise each spawn a subprocess and
+    # orphan one of them.
+    _mcp_spawn_lock = asyncio.Lock()
 
     async def _ensure_mcp() -> _MCPClientCtx | None:
         if mcp_holder[0] is not None:
@@ -245,27 +249,35 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             # (A subsequent run will get a fresh register() call.)
             return None
 
-        # Pre-flight: is the npx command even on PATH? Otherwise the spawn
-        # failure will be unwind-friendly.
-        if not shutil.which(command):
-            msg = (
-                f"`{command}` not found on PATH. The browser tool requires "
-                "Node.js + npx. See README's browser setup section."
-            )
-            startup_error.append(msg)
-            logger.warning("browser tool: %s", msg)
-            return None
+        async with _mcp_spawn_lock:
+            # Re-check after acquiring: another caller may have spawned
+            # (or failed) while we waited.
+            if mcp_holder[0] is not None:
+                return mcp_holder[0]
+            if startup_error:
+                return None
 
-        try:
-            mcp = _MCPClientCtx(command, args)
-            await mcp.__aenter__()
-        except _MCPStartupError as e:
-            startup_error.append(str(e))
-            logger.warning("browser tool disabled: %s", e)
-            # _MCPClientCtx.__aenter__ already cleaned up its partial state.
-            return None
-        mcp_holder[0] = mcp
-        return mcp
+            # Pre-flight: is the npx command even on PATH? Otherwise the spawn
+            # failure will be unwind-friendly.
+            if not shutil.which(command):
+                msg = (
+                    f"`{command}` not found on PATH. The browser tool requires "
+                    "Node.js + npx. See README's browser setup section."
+                )
+                startup_error.append(msg)
+                logger.warning("browser tool: %s", msg)
+                return None
+
+            try:
+                mcp = _MCPClientCtx(command, args)
+                await mcp.__aenter__()
+            except _MCPStartupError as e:
+                startup_error.append(str(e))
+                logger.warning("browser tool disabled: %s", e)
+                # _MCPClientCtx.__aenter__ already cleaned up its partial state.
+                return None
+            mcp_holder[0] = mcp
+            return mcp
 
     async def _invoke(mcp_name: str, arguments: dict[str, Any]) -> ToolResult:
         mcp = await _ensure_mcp()

@@ -26,6 +26,7 @@ from deep_research.nodes.recall import format_recall_context
 from deep_research.nodes.recall import recall as recall_run
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import Citation, ClassifiedQuery, Report
+from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ async def _synthesize(
                             url=url,
                             title=str(c.get("title", "") or ""),
                             snippet=str(c.get("snippet", "") or ""),
-                            confidence_score=float(c.get("confidence_score") or 0.6),
+                            confidence_score=coerce_float(c.get("confidence_score"), 0.6),
                             source_type="web",
                         )
                     )

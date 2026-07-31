@@ -214,6 +214,89 @@ class TestMaybeSummarise:
         assert len(result) == len(msgs)
         mod._summarize_turns = original
 
+    @staticmethod
+    def _assert_api_valid(messages: list[dict]) -> None:
+        """A rebuilt history must be sendable to the chat API:
+        - every tool message's tool_call_id was declared by a *preceding*
+          assistant message (no orphaned tool responses);
+        - every declared tool_call_id is satisfied by exactly one following
+          tool message (no assistant tool_calls left unanswered).
+        """
+        declared: dict[str, int] = {}
+        answered: dict[str, int] = {}
+        for m in messages:
+            if m["role"] == "assistant" and "tool_calls" in m:
+                for tc in m["tool_calls"]:
+                    declared[tc["id"]] = declared.get(tc["id"], 0) + 1
+            elif m["role"] == "tool":
+                tid = m.get("tool_call_id", "")
+                assert tid in declared, f"tool response {tid!r} precedes its requesting assistant"
+                answered[tid] = answered.get(tid, 0) + 1
+        assert declared == answered, f"tool_calls mismatch: declared={declared} answered={answered}"
+
+    @pytest.mark.asyncio
+    async def test_rebuilt_history_is_api_valid_mid_loop(self) -> None:
+        """Mid-loop summarisation (messages end with a tool response) must not
+        orphan a tool message or drop an assistant's tool responses."""
+        import deep_research.llm.tool_loop as mod
+
+        original = mod._summarize_turns
+        mod._summarize_turns = AsyncMock(return_value="summarised content")
+
+        big = "x" * 2000
+        msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "u1 " + big}]
+        for k in range(6):
+            msgs.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"c{k}",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                }
+            )
+            msgs.append({"role": "tool", "tool_call_id": f"c{k}", "content": f"r{k} " + big})
+
+        result = await _maybe_summarise(None, msgs, "gpt-4", max_context_tokens=1000)
+        self._assert_api_valid(result)
+        mod._summarize_turns = original
+
+    @pytest.mark.asyncio
+    async def test_rebuilt_history_is_api_valid_post_exchange(self) -> None:
+        """Summarisation after a completed exchange (messages end with a final
+        assistant answer) must keep each assistant together with its tools."""
+        import deep_research.llm.tool_loop as mod
+
+        original = mod._summarize_turns
+        mod._summarize_turns = AsyncMock(return_value="summarised content")
+
+        big = "x" * 2000
+        msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "u1 " + big}]
+        for k in range(6):
+            msgs.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"c{k}",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                }
+            )
+            msgs.append({"role": "tool", "tool_call_id": f"c{k}", "content": f"r{k} " + big})
+        msgs.append({"role": "assistant", "content": "final answer " + big})
+
+        result = await _maybe_summarise(None, msgs, "gpt-4", max_context_tokens=1000)
+        self._assert_api_valid(result)
+        mod._summarize_turns = original
+
 
 # ---------------------------------------------------------------------------
 # Integration: run_with_tools calls _maybe_summarise

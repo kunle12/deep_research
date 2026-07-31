@@ -1,7 +1,8 @@
 """Refresh scheduler — long-running process that periodically refreshes library artifacts.
 
-P12(b): implemented. Uses apscheduler + croniter for cron-based scheduling.
-Daemonized entrypoint: `python -m deep_research.scheduler`.
+P12(b): implemented as a fixed-interval loop (default every 6 hours, see
+`_DEFAULT_CHECK_INTERVAL_HOURS`). Daemonized entrypoint:
+`python -m deep_research.scheduler`.
 """
 
 from __future__ import annotations

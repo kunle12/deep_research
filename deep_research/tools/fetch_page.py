@@ -25,6 +25,7 @@ triggering a useless browser_navigate fallback.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
@@ -115,6 +116,14 @@ class _PageCache:
         with contextlib.suppress(Exception):
             self._cache.set(url, (kind, html, text, time.time()))
 
+    async def aget(self, url: str) -> tuple[str, str, str] | None:
+        """Non-blocking variant of `get` (diskcache I/O runs in a thread)."""
+        return await asyncio.to_thread(self.get, url)
+
+    async def aset(self, url: str, kind: str, html: str, text: str) -> None:
+        """Non-blocking variant of `set` (diskcache I/O runs in a thread)."""
+        await asyncio.to_thread(self.set, url, kind, html, text)
+
 
 async def _fetch(
     url: str,
@@ -134,7 +143,7 @@ async def _fetch(
 
 
 def _extract(html: str, url: str) -> str:
-    """Run trafilatura extraction."""
+    """Run trafilatura extraction (sync — call via asyncio.to_thread)."""
     if not html:
         return ""
     return (
@@ -188,7 +197,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         if not url or not url.startswith(("http://", "https://")):
             return ToolResult(content="", error=f"invalid url: {url!r}")
 
-        cached = page_cache.get(url)
+        cached = await page_cache.aget(url)
         if cached is not None:
             kind, html, text = cached
             logger.info("fetch_page cache hit (%s): %s", kind, url)
@@ -241,7 +250,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             if _is_pdf(ctype, url):
                 # Save bytes to disk and dispatch to pdf_extract_text.
                 try:
-                    pdf_path = _save_pdf_bytes(url, resp.content, cfg.cache_dir)
+                    pdf_path = await asyncio.to_thread(
+                        _save_pdf_bytes, url, resp.content, cfg.cache_dir
+                    )
                 except Exception as e:
                     return ToolResult(
                         content="",
@@ -269,7 +280,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         pdf_path,
                     )
 
-                page_cache.set(url, "pdf", "", text)
+                await page_cache.aset(url, "pdf", "", text)
 
                 cit = Citation(
                     url=url,
@@ -309,8 +320,8 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
 
             # HTML path — decode and run trafilatura.
             html = resp.text
-            text = _extract(html, url)
-            page_cache.set(url, "html", html, text)
+            text = await asyncio.to_thread(_extract, html, url)
+            await page_cache.aset(url, "html", html, text)
 
         # --- HTML low-yield + browser fallback (existing P4 logic) ----------
         min_chars = max(cfg.min_content_chars_for_browser_fallback, 100)

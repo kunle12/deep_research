@@ -21,6 +21,42 @@ from deep_research.library.storage.rows import (
 )
 
 
+class _Acquire:
+    """Async context manager yielding a connection (asyncpg pool semantics)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
+class _FakePool:
+    """Minimal stand-in for an asyncpg connection pool.
+
+    asyncpg's `Pool.acquire()` returns an object that is *both* awaitable and
+    an async context manager; the backend only uses the `async with` form, so
+    a plain async-CM return value is sufficient here.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    # `create_pool` is a coroutine; `await create_pool(...)` yields the pool.
+    def __await__(self):
+        yield
+        return self
+
+    def acquire(self):
+        return _Acquire(self._conn)
+
+    async def close(self) -> None:
+        pass
+
+
 @pytest.fixture
 def mock_conn():
     """Create a mocked asyncpg connection with common defaults."""
@@ -29,14 +65,15 @@ def mock_conn():
     conn.fetchval = AsyncMock(return_value=None)
     conn.fetchrow = AsyncMock(return_value=None)
     conn.fetch = AsyncMock(return_value=[])
+    conn.transaction = lambda: _Acquire(conn)
     return conn
 
 
 @pytest.fixture
 def backend(mock_conn):
-    with patch("asyncpg.connect", return_value=mock_conn):
+    with patch("asyncpg.create_pool", return_value=_FakePool(mock_conn)):
         be = PostgresStorageBackend(dsn="postgres://localhost/test")
-        be._conn = mock_conn
+        be._pool = _FakePool(mock_conn)
         yield be
 
 
@@ -48,8 +85,9 @@ async def test_connect_and_schema():
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.transaction = lambda: _Acquire(mock_conn)
 
-    with patch("asyncpg.connect", return_value=mock_conn):
+    with patch("asyncpg.create_pool", return_value=_FakePool(mock_conn)):
         backend = PostgresStorageBackend(dsn="postgres://localhost/test")
         await backend.connect()
         await backend.ensure_schema()

@@ -80,7 +80,8 @@ class AgentConfig(BaseModel):
     # Hard per-tool-call timeout applied by ToolRegistry.call. Prevents a
     # single slow tool (hung fetch_page, browser_navigate on a JS-heavy page)
     # from monopolising the researcher's overall time budget. Set to 0 to
-    # disable (fall back to no per-call guard).
+    # disable the per-call guard entirely (tools may then run until the
+    # researcher's own wall-clock timeout).
     tool_timeout_s: float = 300.0
     max_refinement_depth: int = 2
     max_refinement_per_researcher: int = 3

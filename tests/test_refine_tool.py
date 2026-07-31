@@ -369,8 +369,12 @@ class TestFlushRefinements:
             )
         flushed = state.flush_refinements(max_total=3)
         assert len(flushed) == 3
-        assert len(state.pending_refinements) == 0
         assert len(state.plan.sub_questions) == 3
+        # Overflow must NOT be dropped — it stays pending for the next round.
+        assert len(state.pending_refinements) == 7
+        # The overflow is the tail, in order, so the next flush continues where
+        # this one left off.
+        assert [r.id for r in state.pending_refinements] == [f"r{i}" for i in range(3, 10)]
 
     def test_flush_without_cap(self) -> None:
         state = ResearchState(query="q")
@@ -380,6 +384,8 @@ class TestFlushRefinements:
             )
         flushed = state.flush_refinements()
         assert len(flushed) == 5
+        assert len(state.pending_refinements) == 0
+        assert len(state.plan.sub_questions) == 5
 
 
 # ---------------------------------------------------------------------------

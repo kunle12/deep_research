@@ -15,10 +15,10 @@ _venv_site = _venv_paths.get("purelib")
 if _venv_site and _venv_site in sys.path:
     sys.path.insert(0, sys.path.pop(sys.path.index(_venv_site)))
 
-from deep_research.agent import run_research
-from deep_research.config import AgentTopConfig, BlogSearchConfig, PDLConfig
-from deep_research.library.writer import LibraryWriter, NullLibraryWriter
-from deep_research.state import (
+from deep_research.agent import run_research  # noqa: E402  (imports after sys.path fixup)
+from deep_research.config import AgentTopConfig, BlogSearchConfig, PDLConfig  # noqa: E402
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter  # noqa: E402
+from deep_research.state import (  # noqa: E402
     AcademicState,
     Citation,
     CitationGraph,

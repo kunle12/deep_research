@@ -1189,3 +1189,88 @@ dozens of API calls per paper.
 "model is text-only". It means the total prompt exceeds the server's processing
 limit. Always test the endpoint directly with minimal payloads before concluding
 a capability is unsupported.
+
+---
+
+## Code review hardening pass (July 2026)
+
+A deep-dive review + fix pass across the whole codebase (see also the
+"deep code review" commit that preceded it). Focus: logic fallacies, threading
+safety, and robustness regressions.
+
+### P0 — correctness fixes
+
+- **`tools/web_search.py`** — restored the `nonlocal _tavily_call_count`
+  declaration removed in the earlier review commit; without it every Tavily call
+  raised `UnboundLocalError` and fell through to SearXNG (3 tests caught this).
+- **`llm/tool_loop.py` `_maybe_summarise()`** — rewrote the exchange grouping.
+  The old code paired an assistant with its *preceding* tool messages, which
+  produced orphaned `tool` messages and assistant `tool_calls` left unanswered —
+  both invalid for the OpenAI API, so the next LLM call failed mid-run. Exchanges
+  are now `assistant/user + its following tool responses`, and the rebuilt
+  history is guaranteed API-valid.
+- **`paths/academic.py`** — closed a TOCTOU in the max-papers claim: the
+  in-lock claim now re-checks `base in processed`, so the same paper enqueued
+  twice in one batch (common for shared references) is analyzed once, not twice.
+- **SQLite glossary FTS** — `glossary_fts` was a content-backed FTS5 table that
+  was never populated, so `glossary_search` always returned empty. Added the
+  canonical sync triggers + a one-time backfill rebuild in `ensure_schema()`;
+  glossary upserts now use `ON CONFLICT DO UPDATE` so `term_id`/rowid stays
+  stable and `first_seen_*` provenance is preserved (both backends).
+- **SQLite `INSERT OR REPLACE` → `ON CONFLICT DO UPDATE`** for artifacts,
+  reports, and analyses. REPLACE deletes+reinserts and tripped FK constraints
+  when re-archiving an artifact that already had dependent rows (or when a
+  resumed run re-inserted a report that analyses referenced).
+
+### P1 — concurrency & robustness
+
+- **`postgres_backend.py`** — switched from a single shared `asyncpg` connection
+  (unsafe under the academic path's concurrent writers) to an
+  `asyncpg.create_pool`; multi-statement deletes run inside one transaction.
+- **`agent.py`** — glossary extraction and auto-tagging are now guarded: a bad
+  LLM float or storage error can no longer discard a finished report. Also fixed
+  a backend-connection leak on the empty-query / missing-URL early returns.
+- **Blocking I/O moved off the event loop**: weasyprint/xhtml2pdf PDF rendering
+  + file writes (`library/writer.py`), trafilatura extraction + diskcache
+  (`fetch_page.py`, `blog_search.py`), and PDF writes (`arxiv.py`) now run via
+  `asyncio.to_thread`.
+- **`browser.py`** — the lazy MCP spawn is serialized under an `asyncio.Lock`;
+  concurrent browser calls can no longer spawn two subprocesses and orphan one.
+- **Tolerant float parsing** — unguarded `float(...)` on LLM/API numbers could
+  discard an entire sub-question, synthesis, or glossary run. Consolidated into
+  one shared `deep_research/util.py::coerce_float()` used everywhere.
+- **`state.py` `flush_refinements()`** — the per-iteration cap previously
+  cleared the whole `pending_refinements` list, silently dropping capped-out
+  refinements. Overflow now stays pending for the next iteration.
+- **`nodes/analyze_paper.py`** — the image degradation ladder was a single
+  global counter; the first overflowing image consumed every step. It is now
+  per-image (resets when an image is skipped).
+
+### P2 — config / security / docs
+
+- **`microservice.py`** — config-path containment now uses `is_relative_to`
+  instead of a `startswith` prefix check (the old check was fooled by sibling
+  dirs like `/proj` vs `/proj_evil`).
+- **`tool_timeout_s: 0` now disables the per-call guard** (`set_tool_timeout(inf)`);
+  previously `0` silently meant the 120s registry default.
+- **`scheduler.py`** — docstring corrected: the "refresh scheduler" is a
+  fixed-interval loop, not the apscheduler/croniter cron described in the design
+  docs.
+- **`__init__.py`** — silenced pre-existing `E402` on the sys.path fix-up import
+  block.
+- **Docs** — `docs/AGENTS.md` updated to match the current implementation
+  (exchange grouping, checkpoint save ordering, academic claim locking,
+  per-tool timeout semantics, `util.py`, postgres pool, non-fatal
+  post-processing).
+
+### Tests
+
+- Fixed 2 test-collection errors (stale `_fetch_paper_text` / `_render_paper_pages`
+  imports) and 3 web_search failures.
+- Updated postgres backend tests to mock `create_pool` instead of `connect`.
+- Added regression tests: `_maybe_summarise` API-validity (mid-loop +
+  post-exchange), glossary FTS search + `first_seen` provenance + stable
+  `term_id`, academic single-claim, `flush_refinements` overflow retention,
+  archive_pdf content-collision, microservice config-path containment,
+  `util.coerce_float` / `strip_arxiv_version`.
+- Suite: **599 passed, 2 skipped**; `ruff check` + `mypy` clean.

@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult, run_with_tools
 from deep_research.state import Citation, SubQuestion
+from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,7 @@ def _parse_final_assistant(messages: list[dict]) -> tuple[str, list[Citation]]:
                     url=url,
                     title=str(c.get("title", "") or ""),
                     snippet=str(c.get("snippet", "") or ""),
-                    confidence_score=float(c.get("confidence_score") or 0.6),
+                    confidence_score=coerce_float(c.get("confidence_score"), 0.6),
                     source_type="web",
                 )
             )

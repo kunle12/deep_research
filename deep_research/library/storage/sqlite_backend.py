@@ -66,6 +66,17 @@ class SqliteStorageBackend:
             raise RuntimeError("SQLite backend not connected")
         sql = _MIGRATION_FILE.read_text(encoding="utf-8")
         await self._conn.executescript(sql)
+        # One-time backfill for databases created before the glossary_fts sync
+        # triggers existed: rebuild the content-backed index when it is empty
+        # but the glossary table has rows (the triggers keep it in sync from
+        # now on).
+        try:
+            row = await self._fetchone("SELECT count(*) FROM glossary")
+            row_fts = await self._fetchone("SELECT count(*) FROM glossary_fts")
+            if row and row_fts and row[0] > 0 and row_fts[0] == 0:
+                await self._conn.execute("INSERT INTO glossary_fts(glossary_fts) VALUES('rebuild')")
+        except Exception as e:
+            logger.debug("glossary_fts rebuild skipped: %s: %s", type(e).__name__, e)
         await self._conn.commit()
         logger.info("schema initialized from %s", _MIGRATION_FILE.name)
 
@@ -92,13 +103,34 @@ class SqliteStorageBackend:
 
     async def upsert_artifact(self, artifact: ArtifactRow) -> str:
         await self._ensure_conn()
+        # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): a REPLACE would
+        # DELETE + re-INSERT the row, tripping the FK checks from dependent
+        # rows (analyses, citation_edges, tags, reports) that reference it.
+        # Updating in place keeps those links intact when an artifact that has
+        # already been analyzed is re-archived.
         sql = """
-            INSERT OR REPLACE INTO artifacts (
+            INSERT INTO artifacts (
                 artifact_id, kind, source_url, source_type, title, authors,
                 discovered_by, arxiv_id, parents, bytes_path, bytes_size,
                 first_seen_at, last_touched_at, raw_metadata,
                 refresh_after_at, last_refreshed_at, upstream_unchanged_since
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(artifact_id) DO UPDATE SET
+                kind = excluded.kind,
+                source_url = excluded.source_url,
+                source_type = excluded.source_type,
+                title = excluded.title,
+                authors = excluded.authors,
+                discovered_by = excluded.discovered_by,
+                arxiv_id = excluded.arxiv_id,
+                parents = excluded.parents,
+                bytes_path = excluded.bytes_path,
+                bytes_size = excluded.bytes_size,
+                last_touched_at = excluded.last_touched_at,
+                raw_metadata = excluded.raw_metadata,
+                refresh_after_at = excluded.refresh_after_at,
+                last_refreshed_at = excluded.last_refreshed_at,
+                upstream_unchanged_since = excluded.upstream_unchanged_since
         """
         await self._execute(
             sql,
@@ -206,12 +238,26 @@ class SqliteStorageBackend:
 
     async def insert_report(self, report: ReportRow) -> None:
         await self._ensure_conn()
+        # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): a resumed run reuses
+        # run_id, and REPLACE would DELETE the existing report row — violating
+        # the FK from analyses.run_id that previous runs' analyses carry.
         sql = """
-            INSERT OR REPLACE INTO reports (
+            INSERT INTO reports (
                 run_id, started_at, completed_at, original_query, path_taken,
                 classifier_rationale, iterations, config_snapshot, markdown,
                 artifact_id, citations_json, classifier_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                completed_at = excluded.completed_at,
+                original_query = excluded.original_query,
+                path_taken = excluded.path_taken,
+                classifier_rationale = excluded.classifier_rationale,
+                iterations = excluded.iterations,
+                config_snapshot = excluded.config_snapshot,
+                markdown = excluded.markdown,
+                artifact_id = excluded.artifact_id,
+                citations_json = excluded.citations_json,
+                classifier_json = excluded.classifier_json
         """
         await self._execute(
             sql,
@@ -281,12 +327,25 @@ class SqliteStorageBackend:
 
     async def insert_analysis(self, analysis: AnalysisRow) -> str:
         await self._ensure_conn()
+        # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): a REPLACE would
+        # DELETE the existing analysis row, tripping FKs from search_index /
+        # citation_edges that reference it.
         sql = """
-            INSERT OR REPLACE INTO analyses (
+            INSERT INTO analyses (
                 analysis_id, artifact_id, run_id, analyzer, summary,
                 key_findings, methodology, limitations, gaps, follow_ups,
                 key_references, relevance_to_query, analyzed_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(analysis_id) DO UPDATE SET
+                summary = excluded.summary,
+                key_findings = excluded.key_findings,
+                methodology = excluded.methodology,
+                limitations = excluded.limitations,
+                gaps = excluded.gaps,
+                follow_ups = excluded.follow_ups,
+                key_references = excluded.key_references,
+                relevance_to_query = excluded.relevance_to_query,
+                analyzed_at = excluded.analyzed_at
         """
         await self._execute(
             sql,
@@ -481,12 +540,25 @@ class SqliteStorageBackend:
 
     async def upsert_glossary_entry(self, entry: GlossaryEntry) -> None:
         await self._ensure_conn()
+        # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): preserves term_id so
+        # the content-backed glossary_fts rowid linkage stays valid, and keeps
+        # first_seen_* provenance from the original insertion.
         sql = """
-            INSERT OR REPLACE INTO glossary (
+            INSERT INTO glossary (
                 term, term_canonical, kind, short_def, long_def,
                 acronym_expansion, related_terms, domain_tags, confidence,
                 first_seen_run_id, first_seen_artifact_id, last_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(term_canonical) DO UPDATE SET
+                term = excluded.term,
+                kind = excluded.kind,
+                short_def = excluded.short_def,
+                long_def = excluded.long_def,
+                acronym_expansion = excluded.acronym_expansion,
+                related_terms = excluded.related_terms,
+                domain_tags = excluded.domain_tags,
+                confidence = excluded.confidence,
+                last_updated = excluded.last_updated
         """
         await self._execute(
             sql,

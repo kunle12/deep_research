@@ -226,11 +226,11 @@ deep_research/
 | **P10.6** | Glossary generation — per-run LLM-call enrichment + rule-based cross-run dedup. `glossary.md` regenerated atomically each run. SQLite `glossary` table with FTS5. | Curated key concepts + acronyms accumulate across runs. | done |
 | **P10.7** | Auto-tagging — post-synthesis LLM call extracts 3-5 topic tags from query + report. Tags persisted via `writer.tag()`. `deep-research-library ls` shows tags. CLI tag management: `--remove`, `--list`, `--rename-old`/`--rename-new`. Backend: `get_tags_for_artifacts()` (batch), `delete_tag()`, `rename_tag()`. `deep-research-library delete <run_id_prefix>` removes report files + DB records. | Reports auto-tagged; humans can add/modify/delete tags via CLI. | done |
 | **P11** | Wire `asyncpraw`. | Reddit access. | done |
-| **P12.0** | (a) **Postgres `StorageBackend` + asyncpg + conformance test suite** parameterized over both SQLite + Postgres. (b) **Long-running refresh scheduler** (`apscheduler` + `croniter`) wrapping `LibraryWriter.run_refresh_job` on a configurable cron; webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) **`applied` path** (blog-first research) — `paths/applied.py` lands here, not in P10.0. (d) **Library CLI completes**: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh`. (e) **FastAPI microservice** + Dockerfile + poppler setup. | Personal library UX; long-running service that auto-refreshes the library; deployable Postgres-backed microservice. | done |
+| **P12.0** | (a) **Postgres `StorageBackend` + asyncpg + conformance test suite** parameterized over both SQLite + Postgres. (b) **Long-running refresh scheduler** (`deep_research.scheduler`) wrapping `LibraryWriter.run_refresh_job` on a fixed interval (default 6h; implemented as a plain `asyncio` loop — **deviation from plan**: the design called for `apscheduler` + `croniter` cron, which was not adopted); webhook + email notifications (not implemented); daemonized `deep_research.scheduler` entrypoint. (c) **`applied` path** (blog-first research) — `paths/applied.py` lands here, not in P10.0. (d) **Library CLI completes**: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh`. (e) **FastAPI microservice** + Dockerfile + poppler setup. | Personal library UX; long-running service that auto-refreshes the library; deployable Postgres-backed microservice. | done |
 | **P12.5** | Web UI for browsing the library. | Visual library browser. | optional / deferred |
 | **P13** | Library-first recall — prior-knowledge injection before web search. Uses existing FTS5 index over prior analyses. Every path checks the library before hitting the web; delta-only fetching. | `nodes/recall.py` + integration into deep + academic + quick paths. | done |
 | **Scholar** | Google Scholar discovery backend (Serper primary, SearXNG fallback). Parallel arxiv+scholar seed gathering in academic path. Abstract-only analysis for paywalled hits. | `scholar_search` tool + academic-path integration + abstract-only leaf-node handling. | done |
-| **Refine** | Dynamic refinement during deep-path research. Researchers emit `refine` tool calls mid-loop (drill_deeper, chase_reference, revise_strategy). Refinements collected via `ScopedToolRegistry`, absorbed into state, flushed into plan before critic. Three-level cap hierarchy. | `ScopedToolRegistry` + `refine` tool + state/config/prompt changes + 17 tests. | done |
+| **Refine** | Dynamic refinement during deep-path research. Researchers emit `refine` tool calls mid-loop (drill_deeper, chase_reference, revise_strategy). Refinements collected via `ScopedToolRegistry`, absorbed into state, flushed into plan *after* the critic (and researched even when the critic says "sufficient"). Three-level cap hierarchy; the per-iteration cap is soft — overflow stays pending, never dropped. | `ScopedToolRegistry` + `refine` tool + state/config/prompt changes + tests. | done |
 
 > **Rule**: any new phase sub-rows must be added to THIS table. The detailed P10.0 / P10.5a / P10.5b / P10.6 sections later in this document are *expositions* of the rows above — they do not introduce new phases. If the table and the prose disagree, the table wins.
 
@@ -775,6 +775,13 @@ CREATE VIRTUAL TABLE glossary_fts USING fts5(
 );
 ```
 
+`glossary_fts` is content-backed, so it MUST be kept in sync. The migration ships
+the canonical `glossary_ai` / `glossary_ad` / `glossary_au` triggers (delete +
+re-insert on write), and `SqliteStorageBackend.ensure_schema()` runs a one-time
+`'rebuild'` for databases created before the triggers existed. Glossary upserts
+use `ON CONFLICT DO UPDATE` (never `INSERT OR REPLACE`) so `term_id` — the FTS
+rowid linkage — stays stable.
+
 ### Pluggable storage backend — `StorageBackend` Protocol (P10.5a)
 
 The `LibraryWriter` calls **only** the Protocol, never sqlite3 directly. Postgres backend lands in P12 by satisfying the same Protocol — no changes to `LibraryWriter` or any existing seam-point call site.
@@ -985,7 +992,7 @@ deep_research library refresh --re-analyze               # force re-analyze even
 deep_research library refresh --once                     # explicit: run exactly one cycle (for cron wrappers)
 ```
 
-P10.5b ships `--once` as the default behavior; P12's scheduler wraps the same `run_refresh_job()` in an `apscheduler.CronTrigger` loop. The implementation contract is identical — only the caller differs.
+P10.5b ships `--once` as the default behavior. P12's scheduler (`deep_research/scheduler.py`) wraps the same `run_refresh_job()` in a fixed-interval `asyncio` loop (default every 6h) rather than the `apscheduler.CronTrigger` loop described here — **implementation deviation**; the two share the same `run_refresh_job()` contract, only the caller differs.
 
 ### Config additions
 
@@ -1243,7 +1250,7 @@ deep_research/
 | **P10.5b** (split out) | Refresh foundation logic — `LibraryWriter.{refresh_needed, probe_upstream, run_refresh_job}` + `library refresh` CLI one-shot command. Uses columns/tables already created by P10.5a's `0003` migration. Users cron `deep_research library refresh --once` themselves until P12.0's scheduler lands. |
 | **P10.6** | Glossary generation: per-run LLM-call enrichment (no extra call) + rule-based cross-run dedup. `glossary.md` regenerated atomically each run. SQLite `glossary` table + FTS5 over definitions. |
 | **P11** | Wire `asyncpraw`. Reddit access. |
-| **P12.0** | (a) Postgres `StorageBackend` + asyncpg + conformance suite parameterized over both backends. (b) Long-running refresh scheduler (`apscheduler` + `croniter`) running `LibraryWriter.run_refresh_job` on a configurable cron; webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) `applied` path (`paths/applied.py`) — the **only** phase that introduces it. (d) Library CLI completes: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh` LLM reconcile. (e) FastAPI microservice + Dockerfile + poppler setup. |
+| **P12.0** | (a) Postgres `StorageBackend` + asyncpg + conformance suite parameterized over both backends. (b) Long-running refresh scheduler (`deep_research.scheduler`) running `LibraryWriter.run_refresh_job` on a fixed interval (**deviation**: implemented as an `asyncio` loop, not the planned `apscheduler` + `croniter`); webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) `applied` path (`paths/applied.py`) — the **only** phase that introduces it. (d) Library CLI completes: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh` LLM reconcile. (e) FastAPI microservice + Dockerfile + poppler setup. |
 | **P12.5** | Optional web UI for browsing the library. |
 
 ### Refresh-scheduler timeline recap
@@ -1513,7 +1520,7 @@ Normalize with `.strip().lower()` before comparison.
 2. `state.py` — add `refinement_depth`, `pending_refinements`, methods
 3. `config.py` — add knobs
 4. `nodes/researcher.py` — add schema, scoped handler, collector, return refinements
-5. `paths/deep.py` — absorb refinements, flush with cap before critic, progress reporting
+5. `paths/deep.py` — absorb refinements, flush with soft cap after the critic (research them even when the critic says "sufficient"), progress reporting
 6. `prompts/researcher.txt` — add instructions
 7. `tests/test_refine_tool.py` — write and verify
 8. Run `pytest tests/` to confirm nothing breaks

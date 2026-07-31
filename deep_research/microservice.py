@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Deep Research Agent", version="0.1.0")
 
-_ALLOWED_CONFIG_DIR = Path.cwd()
+# Resolved so a symlinked cwd does not cause false rejections when the config
+# path is `.resolve()`d (which follows symlinks) before the containment check.
+_ALLOWED_CONFIG_DIR = Path.cwd().resolve()
 
 # Hard timeout for a single research request. Deep research can take many
 # minutes; this prevents the HTTP server from hanging indefinitely.
@@ -46,7 +48,7 @@ async def research_endpoint(request: ResearchRequest) -> ResearchResponse:
     """Run a research query and return the result."""
 
     config_file = Path(request.config_path).resolve()
-    if not str(config_file).startswith(str(_ALLOWED_CONFIG_DIR)):
+    if not config_file.is_relative_to(_ALLOWED_CONFIG_DIR):
         raise HTTPException(status_code=400, detail="config_path outside allowed directory")
 
     config = AgentTopConfig.load_yaml(config_file)

@@ -231,8 +231,15 @@ async def academic_research(
                 logger.debug("arxiv_id %s already processed; skipping", base)
                 return
 
-            # Claim slot atomically under lock to prevent TOCTOU race
+            # Claim slot atomically under lock to prevent TOCTOU race.
+            # Re-check `base in processed` here too: the pre-check above runs
+            # before the lock, so two tasks for the same paper (e.g. the same
+            # reference enqueued by two parents in one batch) can both pass
+            # it; without this re-check both would claim and double-analyze.
             async with claim_lock:
+                if base in processed:
+                    logger.debug("arxiv_id %s already claimed; skipping", base)
+                    return
                 if processed_count >= cfg.max_papers:
                     logger.info("max_papers=%d reached; skipping enqueued %s", cfg.max_papers, base)
                     return
@@ -420,10 +427,10 @@ async def academic_research(
         raw_coros = [_analyze_and_recurse(node, depth, parent) for (node, depth, parent) in batch]
         tasks = [asyncio.create_task(c) for c in raw_coros]
         # Each batch task gets its own wall-clock budget via wait_for; inner
-        # tool sub-calls have per-call asyncio.timeout in ToolRegistry, so a
-        # hung tool surfaces as a clean error result instead of dead weight.
-        # The hard per-batch-member timeout is the safety net for anything
-        # that still slips through (e.g. legacy run_in_executor blockers).
+        # tool sub-calls have a per-call timeout in ToolRegistry.call
+        # (asyncio.wait_for), so a hung tool surfaces as a clean error result
+        # instead of dead weight. The hard per-batch-member timeout is the
+        # safety net for anything that still slips through.
         per_task_timeout_s = config.agent.researcher_timeout_s
         timed_tasks = [asyncio.wait_for(t, timeout=per_task_timeout_s) for t in tasks]
         gather_results = await asyncio.gather(*timed_tasks, return_exceptions=True)

@@ -75,6 +75,8 @@ async def run_research(
     if not query or not query.strip():
         reporter.phase("error", "empty query")
         reporter.complete()
+        if writer and isinstance(writer, LibraryWriter):
+            await writer.storage.close()
         return Report(
             markdown="# Error\n\nEmpty query.",
             path="unclear",
@@ -92,6 +94,8 @@ async def run_research(
         if not override_url.startswith(("http://", "https://")):
             reporter.phase("error", "--url-source without URL")
             reporter.complete()
+            if writer and isinstance(writer, LibraryWriter):
+                await writer.storage.close()
             return Report(
                 markdown=f"# Error\n\n`--url-source` requires a URL. Got: `{query!r}`.",
                 path="unclear",
@@ -116,29 +120,45 @@ async def run_research(
 
             # P10.6: dedicated glossary extraction from report text
             if report.markdown:
-                glossary_entries = await extract_glossary_from_report(
-                    report.markdown,
-                    client,
-                    config.llm.text_model,
-                    writer,
-                    run_id,
-                )
-                report.glossary_entries = glossary_entries
+                try:
+                    glossary_entries = await extract_glossary_from_report(
+                        report.markdown,
+                        client,
+                        config.llm.text_model,
+                        writer,
+                        run_id,
+                    )
+                    report.glossary_entries = glossary_entries
+                except Exception as e:
+                    # Post-processing must never discard a finished report.
+                    logger.warning(
+                        "glossary extraction failed: %s: %s; continuing without glossary",
+                        type(e).__name__,
+                        e,
+                    )
 
-            reporter.complete()
             artifact_id = await _archive_report(report, writer, run_id)
 
             # P10.7: auto-tag the report artifact with topic tags
             if artifact_id:
-                await auto_tag_report(
-                    query,
-                    report.markdown,
-                    artifact_id,
-                    client,
-                    config.llm.text_model,
-                    writer,
-                    run_id,
-                )
+                try:
+                    await auto_tag_report(
+                        query,
+                        report.markdown,
+                        artifact_id,
+                        client,
+                        config.llm.text_model,
+                        writer,
+                        run_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "auto-tagging failed: %s: %s; continuing without tags",
+                        type(e).__name__,
+                        e,
+                    )
+
+            reporter.complete()
     finally:
         if writer and isinstance(writer, LibraryWriter):
             await writer.storage.close()

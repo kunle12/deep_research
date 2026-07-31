@@ -120,8 +120,6 @@ async def deep_research(
         # ToolRegistry.call, so a hung tool surfaces as a clean error result
         # rather than dead weight. If the researcher's total wall-clock
         # exceeds timeout, we catch TimeoutError and skip that result.
-        # Sync work wrapped in run_in_executor that doesn't honour
-        # cancellation gets orphaned but the pipeline unblocks promptly.
         async def _run_one_with_timeout(sq, _storage=storage, _timeout=timeout):
             try:
                 return await asyncio.wait_for(
@@ -175,6 +173,31 @@ async def deep_research(
         if _interrupted:
             break
 
+        # Critic
+        reporter.phase("deep.critic", f"iter {iteration + 1}")
+        critique = await critic_review(state, client, config.llm.text_model)
+        logger.info(
+            "critic iter=%d sufficient=%s gaps=%d refinements=%d",
+            iteration,
+            critique.sufficient,
+            len(critique.gaps),
+            len(state.pending_refinements),
+        )
+
+        # Refinements queued by researchers are explicit follow-up work; run
+        # them even if the critic considers the current coverage sufficient.
+        if critique.sufficient and not state.pending_refinements:
+            reporter.step("deep.critic", "sufficient")
+            # Save checkpoint before breaking so resume can pick up the final state
+            if run_id:
+                save_checkpoint(state, run_id)
+            break
+        if critique.sufficient and state.pending_refinements:
+            logger.info(
+                "critic sufficient but %d refinement(s) pending — researching them",
+                len(state.pending_refinements),
+            )
+
         flushed = state.flush_refinements(
             max_total=config.agent.max_total_refinements_per_iteration,
         )
@@ -182,35 +205,29 @@ async def deep_research(
             logger.info("flushed %d refinements into plan", len(flushed))
             reporter.step("deep.refine.flush", f"{len(flushed)} new sub-q(s)")
 
-        # Critic
-        reporter.phase("deep.critic", f"iter {iteration + 1}")
-        critique = await critic_review(state, client, config.llm.text_model)
-        logger.info(
-            "critic iter=%d sufficient=%s gaps=%d",
-            iteration,
-            critique.sufficient,
-            len(critique.gaps),
-        )
+        if not critique.gaps and not flushed:
+            logger.warning("critic said insufficient but returned no gaps — forcing stop")
+            if run_id:
+                save_checkpoint(state, run_id)
+            break
+        if critique.gaps:
+            reporter.step("deep.critic", f"gaps={len(critique.gaps)} → enqueuing")
 
-        # Save checkpoint before breaking so resume can pick up the final state
+            # Append gaps as new sub-questions (with dedup by question text)
+            existing_qs = {sq.question for sq in state.plan.sub_questions}
+            for gap in critique.gaps:
+                if gap.question and gap.question not in existing_qs:
+                    state.plan.sub_questions.append(gap)
+                    existing_qs.add(gap.question)
+                    logger.info("added gap sub-question: %s", gap.question[:80])
+
+        # Persist progress AFTER all state mutations for this iteration (flush
+        # + gap enqueue) so a resumed run sees a coherent plan. Saving before
+        # the flush would strand pending_refinements: on resume they would not
+        # be in plan.sub_questions, and the top-of-loop `if not pending: break`
+        # would silently drop them.
         if run_id:
             save_checkpoint(state, run_id)
-
-        if critique.sufficient:
-            reporter.step("deep.critic", "sufficient")
-            break
-        if not critique.gaps:
-            logger.warning("critic said insufficient but returned no gaps — forcing stop")
-            break
-        reporter.step("deep.critic", f"gaps={len(critique.gaps)} → enqueuing")
-
-        # Append gaps as new sub-questions (with dedup by question text)
-        existing_qs = {sq.question for sq in state.plan.sub_questions}
-        for gap in critique.gaps:
-            if gap.question and gap.question not in existing_qs:
-                state.plan.sub_questions.append(gap)
-                existing_qs.add(gap.question)
-                logger.info("added gap sub-question: %s", gap.question[:80])
 
     # 3. Synthesize final report
     reporter.phase("deep.writer", f"synthesizing {len(state.citations)} citations")

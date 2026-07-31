@@ -23,6 +23,7 @@ from tavily.errors import (
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.state import Citation, ToolName
+from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ async def _tavily_search(
                 title=r.get("title") or "",
                 snippet=r.get("content") or "",
                 source_type="web",
-                confidence_score=float(r.get("score") or 0.5),
+                confidence_score=coerce_float(r.get("score"), 0.5),
                 discovered_by=ToolName.web_search,
             )
         )
@@ -208,6 +209,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     tavily_rate_limit_retries = cfg.tavily.rate_limit_retries
 
     async def _call(query: str, max_results: int = 10, **_: Any) -> ToolResult:
+        nonlocal _tavily_call_count
         if not backends:
             return ToolResult(
                 content="web_search has no usable backend (no tavily key, no searxng).",

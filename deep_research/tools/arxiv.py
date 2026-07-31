@@ -31,6 +31,7 @@ import httpx
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.state import Citation, ToolName
+from deep_research.util import strip_arxiv_version as _strip_version
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +94,8 @@ DOWNLOAD_SCHEMA = {
 
 # Strip the version suffix so 2401.12345v3 and 2401.12345 share a cache slot
 # (the latest revision always supersedes prior versions on arxiv).
-_VERSION_RX = re.compile(r"v\d+$")
-
-
-def _strip_version(arxiv_id: str) -> str:
-    return _VERSION_RX.sub("", arxiv_id)
+# `_strip_version` is an alias for the shared `deep_research.util` helper so
+# existing callers (incl. paths.academic and tests) keep working.
 
 
 def _safe_download_path(cache_dir: Path, arxiv_id: str) -> Path:
@@ -274,7 +272,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         content="",
                         error=f"unexpected content-type {ctype!r} for {url}",
                     )
-                target.write_bytes(resp.content)
+                await asyncio.to_thread(target.write_bytes, resp.content)
         except httpx.HTTPError as e:
             return ToolResult(
                 content="",

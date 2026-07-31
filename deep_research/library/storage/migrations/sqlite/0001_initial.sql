@@ -131,5 +131,25 @@ CREATE VIRTUAL TABLE IF NOT EXISTS glossary_fts USING fts5(
     tokenize='porter unicode61'
 );
 
+-- Keep the content-backed glossary_fts index in sync with the glossary table.
+-- The canonical FTS5 external-content triggers: delete on row removal and
+-- insert/update on row write. term_id is preserved across updates because
+-- upserts use ON CONFLICT DO UPDATE (never INSERT OR REPLACE), so the rowid
+-- linkage stays valid.
+CREATE TRIGGER IF NOT EXISTS glossary_ai AFTER INSERT ON glossary BEGIN
+  INSERT INTO glossary_fts(rowid, term, short_def, long_def, related_terms)
+  VALUES (new.term_id, new.term, new.short_def, new.long_def, new.related_terms);
+END;
+CREATE TRIGGER IF NOT EXISTS glossary_ad AFTER DELETE ON glossary BEGIN
+  INSERT INTO glossary_fts(glossary_fts, rowid, term, short_def, long_def, related_terms)
+  VALUES ('delete', old.term_id, old.term, old.short_def, old.long_def, old.related_terms);
+END;
+CREATE TRIGGER IF NOT EXISTS glossary_au AFTER UPDATE ON glossary BEGIN
+  INSERT INTO glossary_fts(glossary_fts, rowid, term, short_def, long_def, related_terms)
+  VALUES ('delete', old.term_id, old.term, old.short_def, old.long_def, old.related_terms);
+  INSERT INTO glossary_fts(rowid, term, short_def, long_def, related_terms)
+  VALUES (new.term_id, new.term, new.short_def, new.long_def, new.related_terms);
+END;
+
 -- Record schema version
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', '1');

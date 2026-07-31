@@ -91,7 +91,9 @@ async def _search_subreddit(
                 title=title,
                 snippet=selftext[:300] or f"{submission.score} points — r/{subreddit_name}",
                 source_type="reddit",
-                confidence_score=min(submission.score / 1000.0, 0.9) if submission.score else 0.5,
+                confidence_score=(
+                    max(0.0, min(submission.score / 1000.0, 0.9)) if submission.score else 0.5
+                ),
                 discovered_by=ToolName.reddit,
             )
         )

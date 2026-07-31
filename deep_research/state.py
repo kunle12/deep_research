@@ -146,13 +146,25 @@ class ResearchState(BaseModel):
                 existing_qs.add(key)
 
     def flush_refinements(self, max_total: int | None = None) -> list[SubQuestion]:
-        """Move pending refinements into the plan and return them."""
-        flushed = list(self.pending_refinements)
-        if max_total is not None and len(flushed) > max_total:
-            logger.info("flush_refinements: capping %d → %d", len(flushed), max_total)
-            flushed = flushed[:max_total]
+        """Move pending refinements into the plan and return them.
+
+        When *max_total* caps how many move into the plan this round, the
+        overflow stays pending so the next iteration can flush them too —
+        it is never silently dropped.
+        """
+        if max_total is not None and len(self.pending_refinements) > max_total:
+            logger.info(
+                "flush_refinements: capping %d → %d; %d held for next round",
+                len(self.pending_refinements),
+                max_total,
+                len(self.pending_refinements) - max_total,
+            )
+            flushed = list(self.pending_refinements[:max_total])
+            self.pending_refinements = self.pending_refinements[max_total:]
+        else:
+            flushed = list(self.pending_refinements)
+            self.pending_refinements.clear()
         self.plan.sub_questions.extend(flushed)
-        self.pending_refinements.clear()
         return flushed
 
 

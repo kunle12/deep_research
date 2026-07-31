@@ -8,9 +8,10 @@ Covers the recursive-mining loop fully offline by mocking:
 
 Helpers tested individually:
   - _gather_seeds: empty search_hint, missing arxiv_search tool, search-error
-  - _fetch_paper_text: download+extract happy path, dl failure -> resolve
-    fallback, no tools at all -> ""
-  - _render_paper_pages: missing tools, dl error, non-path content,
+  - _download_pdf_once / _extract_text: download + extract happy paths and
+    failure modes (dl failure -> None, missing tool -> empty)
+  - _fetch_paper_text_fallback: resolve-only fallback, missing tool -> ""
+  - _render_pages: missing tool, render error, non-JSON content,
     malformed JSON, happy path with valid data URLs list
   - _synthesize_markdown: empty analyses -> boilerplate, happy path LLM
     synthesis, LLM failure -> deterministic fallback, fallback formatting
@@ -32,10 +33,12 @@ from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.paths import academic
 from deep_research.paths.academic import (
+    _download_pdf_once,
+    _extract_text,
     _fallback_synthesis,
-    _fetch_paper_text,
+    _fetch_paper_text_fallback,
     _gather_seeds,
-    _render_paper_pages,
+    _render_pages,
     _synthesize_markdown,
     academic_research,
 )
@@ -260,158 +263,118 @@ class TestGatherSeeds:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_paper_text
+# _download_pdf_once / _extract_text / _fetch_paper_text_fallback
 # ---------------------------------------------------------------------------
 
 
-class TestFetchPaperText:
+class TestDownloadAndExtract:
     @pytest.mark.asyncio
-    async def test_download_then_extract_happy_path(self, tmp_path) -> None:
+    async def test_download_returns_path(self, tmp_path) -> None:
         pdf_path = tmp_path / "x.pdf"
         pdf_path.write_bytes(b"%PDF")
 
         async def _download(**_: Any) -> ToolResult:
             return ToolResult(content=str(pdf_path))
 
-        async def _extract(**_: Any) -> ToolResult:
-            return ToolResult(content="extracted body")
-
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_extract_text": _extract})
-        text, pdf_path = await _fetch_paper_text("2401.1", reg)
-        assert text == "extracted body"
-        assert pdf_path is not None
+        reg = _registry({"arxiv_download_pdf": _download})
+        out = await _download_pdf_once("2401.1", reg)
+        assert out == str(pdf_path)
 
     @pytest.mark.asyncio
-    async def test_download_failure_falls_back_to_resolve(self) -> None:
+    async def test_download_error_returns_none(self) -> None:
         async def _download(**_: Any) -> ToolResult:
             return ToolResult(content="", error="HTTP 503")
 
-        async def _resolve(**_: Any) -> ToolResult:
-            return ToolResult(content="metadata-only content")
-
-        reg = _registry(
-            {
-                "arxiv_download_pdf": _download,
-                "pdf_extract_text": _noop_tool,
-                "arxiv_resolve": _resolve,
-            }
-        )
-        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
-        assert out == "metadata-only content"
+        reg = _registry({"arxiv_download_pdf": _download})
+        out = await _download_pdf_once("2401.1", reg)
+        assert out is None
 
     @pytest.mark.asyncio
-    async def test_download_failure_no_resolve_returns_empty(self) -> None:
-        async def _download(**_: Any) -> ToolResult:
-            return ToolResult(content="", error="HTTP 503")
-
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_extract_text": _noop_tool})
-        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
-        assert out == ""
-
-    @pytest.mark.asyncio
-    async def test_no_pdf_tools_uses_resolve_only(self) -> None:
-        async def _resolve(**_: Any) -> ToolResult:
-            return ToolResult(content="resolved metadata")
-
-        reg = _registry({"arxiv_resolve": _resolve})
-        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
-        assert out == "resolved metadata"
-
-    @pytest.mark.asyncio
-    async def test_no_pdf_tools_no_resolve_returns_empty(self) -> None:
-        reg = _registry({})
-        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
-        assert out == ""
-
-    @pytest.mark.asyncio
-    async def test_download_returns_non_path_passthrough(self) -> None:
-        """If arxiv_download_pdf returns non-path content (e.g. an error
-        message string), it's returned as-is rather than crashing pdf_extract_text."""
+    async def test_download_non_path_returns_none(self) -> None:
+        """If arxiv_download_pdf returns non-path content, we return None so
+        the caller falls back to arxiv_resolve instead of crashing."""
 
         async def _download(**_: Any) -> ToolResult:
             return ToolResult(content="error: not a path")
 
-        async def _extract(**_: Any) -> ToolResult:
-            raise AssertionError("should not be called for non-path content")
-
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_extract_text": _extract})
-        out, _pdf_path = await _fetch_paper_text("2401.1", reg)
-        assert out == "error: not a path"
-
-
-# ---------------------------------------------------------------------------
-# _render_paper_pages
-# ---------------------------------------------------------------------------
-
-
-class TestRenderPaperPages:
-    @pytest.mark.asyncio
-    async def test_missing_download_tool_returns_empty(self) -> None:
-        reg = _registry({"pdf_render_pages": _noop_tool})
-        out = await _render_paper_pages("2401.1", reg)
-        assert out == []
+        reg = _registry({"arxiv_download_pdf": _download})
+        out = await _download_pdf_once("2401.1", reg)
+        assert out is None
 
     @pytest.mark.asyncio
-    async def test_missing_render_tool_returns_empty(self) -> None:
-        reg = _registry({"arxiv_download_pdf": _noop_tool})
-        out = await _render_paper_pages("2401.1", reg)
-        assert out == []
+    async def test_missing_download_tool_returns_none(self) -> None:
+        reg = _registry({})
+        out = await _download_pdf_once("2401.1", reg)
+        assert out is None
 
     @pytest.mark.asyncio
-    async def test_download_error_returns_empty(self, tmp_path) -> None:
-        async def _download(**_: Any) -> ToolResult:
-            return ToolResult(content="", error="boom")
-
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_render_pages": _noop_tool})
-        out = await _render_paper_pages("2401.1", reg)
-        assert out == []
-
-    @pytest.mark.asyncio
-    async def test_download_returns_non_path_returns_empty(self) -> None:
-        async def _download(**_: Any) -> ToolResult:
-            return ToolResult(content="not a path string")
-
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_render_pages": _noop_tool})
-        out = await _render_paper_pages("2401.1", reg)
-        assert out == []
-
-    @pytest.mark.asyncio
-    async def test_render_error_returns_empty(self, tmp_path) -> None:
+    async def test_extract_text_happy_path(self, tmp_path) -> None:
         pdf_path = tmp_path / "x.pdf"
         pdf_path.write_bytes(b"%PDF")
 
-        async def _download(**_: Any) -> ToolResult:
-            return ToolResult(content=str(pdf_path))
+        async def _extract(**_: Any) -> ToolResult:
+            return ToolResult(content="extracted body")
 
+        reg = _registry({"pdf_extract_text": _extract})
+        out = await _extract_text(str(pdf_path), reg)
+        assert out == "extracted body"
+
+    @pytest.mark.asyncio
+    async def test_extract_text_missing_tool_returns_empty(self) -> None:
+        reg = _registry({})
+        out = await _extract_text("/tmp/x.pdf", reg)
+        assert out == ""
+
+    @pytest.mark.asyncio
+    async def test_resolve_fallback_happy_path(self) -> None:
+        async def _resolve(**_: Any) -> ToolResult:
+            return ToolResult(content="metadata-only content")
+
+        reg = _registry({"arxiv_resolve": _resolve})
+        out, _pdf_path = await _fetch_paper_text_fallback("2401.1", reg)
+        assert out == "metadata-only content"
+
+    @pytest.mark.asyncio
+    async def test_resolve_fallback_missing_tool_returns_empty(self) -> None:
+        reg = _registry({})
+        out, _pdf_path = await _fetch_paper_text_fallback("2401.1", reg)
+        assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# _render_pages
+# ---------------------------------------------------------------------------
+
+
+class TestRenderPages:
+    @pytest.mark.asyncio
+    async def test_missing_render_tool_returns_empty(self) -> None:
+        reg = _registry({})
+        out = await _render_pages("/tmp/x.pdf", reg)
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_render_error_returns_empty(self) -> None:
         async def _render(**_: Any) -> ToolResult:
             return ToolResult(content="", error="poppler missing")
 
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_render_pages": _render})
-        out = await _render_paper_pages("2401.1", reg)
+        reg = _registry({"pdf_render_pages": _render})
+        out = await _render_pages("/tmp/x.pdf", reg)
         assert out == []
 
     @pytest.mark.asyncio
-    async def test_render_returns_non_json_returns_empty(self, tmp_path) -> None:
-        pdf_path = tmp_path / "x.pdf"
-        pdf_path.write_bytes(b"%PDF")
-
-        async def _download(**_: Any) -> ToolResult:
-            return ToolResult(content=str(pdf_path))
-
+    async def test_render_returns_non_json_returns_empty(self) -> None:
         async def _render(**_: Any) -> ToolResult:
             return ToolResult(content="not json")
 
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_render_pages": _render})
-        out = await _render_paper_pages("2401.1", reg)
+        reg = _registry({"pdf_render_pages": _render})
+        out = await _render_pages("/tmp/x.pdf", reg)
         assert out == []
 
     @pytest.mark.asyncio
     async def test_render_returns_pages_list_of_data_urls(self, tmp_path) -> None:
         pdf_path = tmp_path / "x.pdf"
         pdf_path.write_bytes(b"%PDF")
-
-        async def _download(**_: Any) -> ToolResult:
-            return ToolResult(content=str(pdf_path))
 
         async def _render(**_: Any) -> ToolResult:
             payload = {
@@ -420,8 +383,8 @@ class TestRenderPaperPages:
             }
             return ToolResult(content=json.dumps(payload))
 
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_render_pages": _render})
-        out = await _render_paper_pages("2401.1", reg, max_pages=10)
+        reg = _registry({"pdf_render_pages": _render})
+        out = await _render_pages(str(pdf_path), reg, max_pages=10)
         assert out == ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"]
 
     @pytest.mark.asyncio
@@ -429,15 +392,12 @@ class TestRenderPaperPages:
         pdf_path = tmp_path / "x.pdf"
         pdf_path.write_bytes(b"%PDF")
 
-        async def _download(**_: Any) -> ToolResult:
-            return ToolResult(content=str(pdf_path))
-
         async def _render(**_: Any) -> ToolResult:
             payload = {"pages": ["data:image/jpeg;base64,OK", "not a data url", ""], "count": 3}
             return ToolResult(content=json.dumps(payload))
 
-        reg = _registry({"arxiv_download_pdf": _download, "pdf_render_pages": _render})
-        out = await _render_paper_pages("2401.1", reg)
+        reg = _registry({"pdf_render_pages": _render})
+        out = await _render_pages(str(pdf_path), reg)
         assert out == ["data:image/jpeg;base64,OK"]
 
 
@@ -783,6 +743,23 @@ class TestAcademicResearchE2E:
         assert "https://arxiv.org/abs/2401.1" in urls
         assert "https://arxiv.org/abs/2401.2" in urls
 
+    @pytest.mark.asyncio
+    async def test_same_paper_seeded_twice_analyzed_once(self, monkeypatch) -> None:
+        """Two seeds resolving to the same version-stripped arxiv id must be
+        analyzed exactly once even when dispatched concurrently. The claim
+        under the lock re-checks membership, closing the pre-check TOCTOU."""
+        cfg = _cfg(max_depth=0, max_papers=10, seed_count=2, concurrency=2)
+        classified = _classified(search_hint="x")
+        # arxiv_search returns both the versioned and unversioned forms of the
+        # same paper; _gather_seeds keeps both (dedup there is by raw id).
+        analyses = {"2401.1": _analysis("2401.1"), "2401.1v2": _analysis("2401.1v2")}
+        calls = _patch_analyze(monkeypatch, analyses)
+        reg = _tools_for(monkeypatch, ["2401.1", "2401.1v2"])
+        client = _FakeAsyncOpenAI("# Synthesis OK\n")
+        report = await academic_research(classified, "x", client, reg, cfg)
+        assert calls["n"] == 1, "same paper analyzed more than once (TOCTOU)"
+        assert report.iterations == 1
+
 
 # ---------------------------------------------------------------------------
 # Tiny helpers
@@ -798,9 +775,9 @@ async def _noop_tool(**_: Any) -> ToolResult:
 
 __all__ = [
     "TestAcademicResearchE2E",
+    "TestDownloadAndExtract",
     "TestFallbackSynthesis",
-    "TestFetchPaperText",
     "TestGatherSeeds",
-    "TestRenderPaperPages",
+    "TestRenderPages",
     "TestSynthesizeMarkdown",
 ]

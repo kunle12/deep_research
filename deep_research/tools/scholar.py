@@ -39,6 +39,7 @@ import httpx
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.state import Citation, ToolName
+from deep_research.util import strip_arxiv_version as _strip_version
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +69,10 @@ SEARCH_SCHEMA = {
 
 
 # Arxiv ID detection — strip version suffix + extract from URL or DOI.
-_VERSION_RX = re.compile(r"v\d+$")
+# `_strip_version` is an alias for the shared `deep_research.util` helper.
 _ARXIV_ID_RX = re.compile(r"(\d{4}\.\d{4,5})")
 _ARXIV_URL_RX = re.compile(r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5})(?:v\d+)?")
 _ARXIV_DOI_RX = re.compile(r"10\.48550/arXiv\.([0-9]{4}\.[0-9]{4,5})", re.IGNORECASE)
-
-
-def _strip_version(arxiv_id: str) -> str:
-    return _VERSION_RX.sub("", arxiv_id)
 
 
 def _infer_arxiv_id(url: str | None, doi: str | None, title: str | None) -> str | None:
@@ -412,7 +409,14 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                             continue
                         _serper_call_count += 1
                 rate_limiter = serper_limiter if name == "serper" else searxng_limiter
-                citations = await _backoff_retry(rate_limiter, factory)
+                try:
+                    citations = await _backoff_retry(rate_limiter, factory)
+                except Exception:
+                    # Only charge quota for calls that actually executed.
+                    if name == "serper":
+                        async with _serper_call_lock:
+                            _serper_call_count -= 1
+                    raise
                 if citations:
                     logger.info(
                         "scholar_search %s -> %d results (via %s)",

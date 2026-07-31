@@ -71,5 +71,39 @@ async def test_glossary_search(sqlite_backend):
         )
     )
 
+    # The content-backed glossary_fts index must stay in sync with the
+    # glossary table (via triggers), so searching should actually match.
     results = await sqlite_backend.glossary_search("attention", limit=10)
-    assert len(results) >= 0
+    assert len(results) >= 1
+    assert results[0].term_canonical == "transformer"
+
+
+@pytest.mark.asyncio
+async def test_glossary_search_after_update(sqlite_backend):
+    """Updating an entry (ON CONFLICT DO UPDATE) must refresh the FTS row."""
+    now = datetime.now(UTC).isoformat()
+    await sqlite_backend.upsert_glossary_entry(
+        GlossaryEntry(
+            term="RLHF",
+            term_canonical="rlhf",
+            kind="acronym",
+            short_def="Old definition",
+            last_updated=now,
+        )
+    )
+    await sqlite_backend.upsert_glossary_entry(
+        GlossaryEntry(
+            term="RLHF",
+            term_canonical="rlhf",
+            kind="acronym",
+            short_def="Reinforcement Learning from Human Feedback",
+            last_updated=now,
+        )
+    )
+
+    results = await sqlite_backend.glossary_search("Reinforcement", limit=10)
+    assert len(results) >= 1
+    # The FTS row must reference the same (preserved) term_id, not an orphan.
+    fetched = await sqlite_backend.get_glossary_entry("rlhf")
+    assert fetched is not None
+    assert fetched.term_id == results[0].term_id

@@ -10,13 +10,6 @@ import respx
 
 from deep_research.config import AgentTopConfig
 from deep_research.tools import build_tool_registry
-from deep_research.tools import web_search as _web_search_mod
-
-
-@pytest.fixture(autouse=True)
-def _reset_web_search_globals() -> None:
-    """Reset module-level globals between tests to avoid cross-test pollution."""
-    _web_search_mod._tavily_call_count = 0
 
 
 def _make_cfg_with_tavily_key() -> AgentTopConfig:

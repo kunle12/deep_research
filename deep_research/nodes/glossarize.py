@@ -18,6 +18,7 @@ from openai import AsyncOpenAI
 
 from deep_research.library.storage.rows import GlossaryEntry
 from deep_research.library.writer import LibraryWriter
+from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ def parse_glossary_from_response(
                 acronym_expansion=acronym_expansion or None,
                 related_terms=json.dumps(related_terms) if related_terms else None,
                 domain_tags=json.dumps(domain_tags) if domain_tags else None,
-                confidence=float(item.get("confidence", 0.5)),
+                confidence=coerce_float(item.get("confidence"), 0.5),
                 first_seen_run_id=run_id,
                 first_seen_artifact_id=artifact_id,
                 last_updated=now,

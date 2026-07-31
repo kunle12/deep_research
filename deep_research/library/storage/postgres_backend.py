@@ -32,25 +32,25 @@ class PostgresStorageBackend:
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._conn: Any = None
+        self._pool: Any = None
 
     # -- Lifecycle --
 
     async def connect(self) -> None:
         import asyncpg
 
-        self._conn = await asyncpg.connect(self._dsn)
+        self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=8)
 
     async def close(self) -> None:
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
 
     # -- Schema management --
 
     async def ensure_schema(self) -> None:
         """Create all tables if they don't exist. Single consolidated migration."""
-        if self._conn is None:
+        if self._pool is None:
             raise RuntimeError("Postgres backend not connected")
         sql = _MIGRATION_FILE.read_text(encoding="utf-8")
         # asyncpg's Connection.execute() only runs the first statement of a
@@ -59,33 +59,41 @@ class PostgresStorageBackend:
         # If a future migration ever contains semicolons inside string
         # literals, use a proper SQL parser instead.
         statements = [s.strip() for s in sql.split(";") if s.strip()]
-        for stmt in statements:
-            await self._conn.execute(stmt)
+        async with self._pool.acquire() as conn, conn.transaction():
+            for stmt in statements:
+                await conn.execute(stmt)
         logger.info(
             "schema initialized from %s (%d statements)", _MIGRATION_FILE.name, len(statements)
         )
 
     # -- Helpers --
 
+    # asyncpg connections are not safe for concurrent use, so every operation
+    # acquires a dedicated connection from the pool. The pool keeps concurrent
+    # researchers (academic path) from stepping on each other.
+
     async def _fetchone(self, sql: str, *args: Any) -> tuple | None:
-        if self._conn is None:
+        if self._pool is None:
             raise RuntimeError("Postgres backend not connected")
-        row = await self._conn.fetchrow(sql, *args)
-        return tuple(row) if row else None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *args)
+            return tuple(row) if row else None
 
     async def _fetchall(self, sql: str, *args: Any) -> list[tuple]:
-        if self._conn is None:
+        if self._pool is None:
             raise RuntimeError("Postgres backend not connected")
-        rows = await self._conn.fetch(sql, *args)
-        return [tuple(r) for r in rows]
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+            return [tuple(r) for r in rows]
 
     async def _execute(self, sql: str, *args: Any) -> str | None:
-        if self._conn is None:
+        if self._pool is None:
             raise RuntimeError("Postgres backend not connected")
-        return await self._conn.execute(sql, *args)
+        async with self._pool.acquire() as conn:
+            return await conn.execute(sql, *args)
 
     async def _ensure_conn(self) -> None:
-        if self._conn is None:
+        if self._pool is None:
             await self.connect()
 
     # -- Artifact ops --
@@ -222,6 +230,11 @@ class PostgresStorageBackend:
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (run_id) DO UPDATE SET
                 completed_at = EXCLUDED.completed_at,
+                original_query = EXCLUDED.original_query,
+                path_taken = EXCLUDED.path_taken,
+                classifier_rationale = EXCLUDED.classifier_rationale,
+                iterations = EXCLUDED.iterations,
+                config_snapshot = EXCLUDED.config_snapshot,
                 markdown = EXCLUDED.markdown,
                 artifact_id = EXCLUDED.artifact_id,
                 citations_json = EXCLUDED.citations_json,
@@ -485,8 +498,6 @@ class PostgresStorageBackend:
                 related_terms = EXCLUDED.related_terms,
                 domain_tags = EXCLUDED.domain_tags,
                 confidence = EXCLUDED.confidence,
-                first_seen_run_id = EXCLUDED.first_seen_run_id,
-                first_seen_artifact_id = EXCLUDED.first_seen_artifact_id,
                 last_updated = EXCLUDED.last_updated
         """
         await self._execute(
@@ -668,37 +679,42 @@ class PostgresStorageBackend:
         indexes directly on the analyses table — no separate FTS table
         to clean up."""
         await self._ensure_conn()
-        await self._execute("DELETE FROM analyses WHERE run_id = $1", run_id)
-        await self._execute("DELETE FROM tags WHERE applied_in_run = $1", run_id)
-        await self._execute("DELETE FROM citation_edges WHERE discovered_in_run = $1", run_id)
-        # Nullify glossary entries and artifact_versions that reference this
-        # run (preserve the data itself — it may be relevant to other runs).
-        await self._execute(
-            "UPDATE glossary SET first_seen_run_id = NULL WHERE first_seen_run_id = $1",
-            run_id,
-        )
-        await self._execute(
-            "UPDATE artifact_versions SET discovered_in_run = NULL WHERE discovered_in_run = $1",
-            run_id,
-        )
-        await self._execute("DELETE FROM reports WHERE run_id = $1", run_id)
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("DELETE FROM analyses WHERE run_id = $1", run_id)
+            await conn.execute("DELETE FROM tags WHERE applied_in_run = $1", run_id)
+            await conn.execute("DELETE FROM citation_edges WHERE discovered_in_run = $1", run_id)
+            # Nullify glossary entries and artifact_versions that reference
+            # this run (preserve the data itself — it may be relevant to
+            # other runs).
+            await conn.execute(
+                "UPDATE glossary SET first_seen_run_id = NULL WHERE first_seen_run_id = $1",
+                run_id,
+            )
+            await conn.execute(
+                "UPDATE artifact_versions SET discovered_in_run = NULL "
+                "WHERE discovered_in_run = $1",
+                run_id,
+            )
+            await conn.execute("DELETE FROM reports WHERE run_id = $1", run_id)
 
     async def delete_artifact(self, artifact_id: str) -> None:
         """Delete an artifact and its dependent rows. Refuses (FK violation)
         if a report still references it via reports.artifact_id — caller
         should nullify or delete that report first."""
         await self._ensure_conn()
-        await self._execute("DELETE FROM analyses WHERE artifact_id = $1", artifact_id)
-        await self._execute("DELETE FROM tags WHERE artifact_id = $1", artifact_id)
-        await self._execute(
-            "DELETE FROM citation_edges WHERE source_artifact_id = $1 OR target_artifact_id = $1",
-            artifact_id,
-        )
-        await self._execute(
-            "DELETE FROM artifact_versions WHERE artifact_id_old = $1 OR artifact_id_new = $1",
-            artifact_id,
-        )
-        await self._execute("DELETE FROM artifacts WHERE artifact_id = $1", artifact_id)
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("DELETE FROM analyses WHERE artifact_id = $1", artifact_id)
+            await conn.execute("DELETE FROM tags WHERE artifact_id = $1", artifact_id)
+            await conn.execute(
+                "DELETE FROM citation_edges WHERE source_artifact_id = $1 "
+                "OR target_artifact_id = $1",
+                artifact_id,
+            )
+            await conn.execute(
+                "DELETE FROM artifact_versions WHERE artifact_id_old = $1 OR artifact_id_new = $1",
+                artifact_id,
+            )
+            await conn.execute("DELETE FROM artifacts WHERE artifact_id = $1", artifact_id)
 
     # -- FTS --
 
