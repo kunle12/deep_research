@@ -74,12 +74,14 @@ async def test_applied_happy_path(config, tools):
                 )
             ],
         )
+
     tools._tools["blog_search"] = _mock_blog
     tools._schemas.append({"name": "blog_search", "description": "", "parameters": {}})
 
     # Register fetch_page mock
     async def _mock_fetch(**kwargs):
         return MagicMock(error=None, content="Full blog post content here.")
+
     tools._tools["fetch_page"] = _mock_fetch
     tools._schemas.append({"name": "fetch_page", "description": "", "parameters": {}})
 
@@ -115,6 +117,7 @@ async def test_applied_fallback_on_llm_error(config, tools):
                 )
             ],
         )
+
     tools._tools["blog_search"] = _mock_blog
     tools._schemas.append({"name": "blog_search", "description": "", "parameters": {}})
 

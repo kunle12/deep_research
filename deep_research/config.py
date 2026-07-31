@@ -85,6 +85,9 @@ class AgentConfig(BaseModel):
     max_refinement_depth: int = 2
     max_refinement_per_researcher: int = 3
     max_total_refinements_per_iteration: int = 6
+    # How many times a sub-question may fail (timeout / error) before it is
+    # forcibly marked "covered" with an empty draft to prevent infinite loops.
+    max_subquestion_retries: int = 3
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
 
 

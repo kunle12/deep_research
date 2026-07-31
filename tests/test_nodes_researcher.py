@@ -93,13 +93,23 @@ class TestHintBlurb:
 class TestParseFinalAssistant:
     def test_valid_json_with_citations(self) -> None:
         messages = [
-            {"role": "assistant", "content": json.dumps({
-                "answer": "Paris is the capital.",
-                "citations": [
-                    {"url": "https://a", "title": "A", "snippet": "s", "confidence_score": 0.9},
-                    {"url": "https://b", "title": "B", "snippet": "s2"},
-                ],
-            })},
+            {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "answer": "Paris is the capital.",
+                        "citations": [
+                            {
+                                "url": "https://a",
+                                "title": "A",
+                                "snippet": "s",
+                                "confidence_score": 0.9,
+                            },
+                            {"url": "https://b", "title": "B", "snippet": "s2"},
+                        ],
+                    }
+                ),
+            },
         ]
         answer, cites = _parse_final_assistant(messages)
         assert "Paris" in answer
@@ -117,10 +127,15 @@ class TestParseFinalAssistant:
 
     def test_drops_citation_without_url(self) -> None:
         messages = [
-            {"role": "assistant", "content": json.dumps({
-                "answer": "text",
-                "citations": [{"title": "no url"}],
-            })},
+            {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "answer": "text",
+                        "citations": [{"title": "no url"}],
+                    }
+                ),
+            },
         ]
         _, cites = _parse_final_assistant(messages)
         assert cites == []
@@ -176,10 +191,19 @@ class TestResearch:
 
     @pytest.mark.asyncio
     async def test_parses_citations_from_final_message(self) -> None:
-        payload = json.dumps({
-            "answer": "answer with refs",
-            "citations": [{"url": "https://ref", "title": "ref", "snippet": "snip", "confidence_score": 0.8}],
-        })
+        payload = json.dumps(
+            {
+                "answer": "answer with refs",
+                "citations": [
+                    {
+                        "url": "https://ref",
+                        "title": "ref",
+                        "snippet": "snip",
+                        "confidence_score": 0.8,
+                    }
+                ],
+            }
+        )
         client = _fake_client_always(payload)
 
         reg = ToolRegistry()
@@ -211,6 +235,7 @@ class TestResearch:
 
         async def _dummy(**kw: Any) -> Any:
             from deep_research.llm.tool_loop import ToolResult
+
             return ToolResult(content="ok")
 
         reg.register("arxiv_search", _dummy, {"type": "function", "name": "arxiv_search"})

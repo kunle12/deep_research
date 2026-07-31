@@ -87,6 +87,12 @@ async def deep_research(
         reporter.step("deep.plan", f"{len(plan_result.sub_questions)} sub-questions")
 
     # 2. Iteration loop
+    # Track how many times each sub-question has failed to detect stuck ones
+    _sq_attempts: dict[str, int] = {}
+    _max_stuck_retries = config.agent.max_subquestion_retries
+    # Flag to stop early on KeyboardInterrupt
+    _interrupted = False
+
     for iteration in range(state.iteration, iterations_cap):
         state.iteration = iteration
         pending = [sq for sq in state.plan.sub_questions if not state.is_covered(sq)]
@@ -124,18 +130,31 @@ async def deep_research(
                 )
             except TimeoutError:
                 logger.warning("researcher for %s timed out after %ds", sq.id, _timeout)
-                return TimeoutError(f"researcher timed out after {_timeout}s")
+                raise  # let gather return_exceptions catch it
 
         results = await asyncio.gather(
             *[_run_one_with_timeout(sq) for sq in pending],
             return_exceptions=True,
         )
         for sq, r in zip(pending, results):
+            if isinstance(r, KeyboardInterrupt | SystemExit):
+                _interrupted = True
+                logger.warning("researcher interrupted — stopping early")
+                break
             if isinstance(r, Exception):
                 rtype = "timeout" if isinstance(r, TimeoutError) else type(r).__name__
                 msg = str(r) or rtype
                 logger.warning("researcher for %s raised (%s): %s", sq.id, rtype, msg)
                 reporter.step("deep.research.fail", sq.id)
+                # Track stuck sub-questions so they don't loop forever
+                _sq_attempts[sq.id] = _sq_attempts.get(sq.id, 0) + 1
+                if _sq_attempts[sq.id] >= _max_stuck_retries:
+                    logger.warning(
+                        "sub-question %s failed %d times — marking covered with empty draft",
+                        sq.id,
+                        _max_stuck_retries,
+                    )
+                    state.absorb_section(sq.id, [], "(research timed out)")
                 continue
             if not isinstance(r, tuple) or len(r) not in (2, 3):
                 logger.warning(
@@ -153,6 +172,9 @@ async def deep_research(
                     logger.info("researcher %s emitted %d refinements", sq.id, len(refinements))
                     reporter.step("deep.research.refine", f"{sq.id} (+{len(refinements)})")
 
+        if _interrupted:
+            break
+
         flushed = state.flush_refinements(
             max_total=config.agent.max_total_refinements_per_iteration,
         )
@@ -169,7 +191,8 @@ async def deep_research(
             critique.sufficient,
             len(critique.gaps),
         )
-        # Save checkpoint after critic (before next iteration or break)
+
+        # Save checkpoint before breaking so resume can pick up the final state
         if run_id:
             save_checkpoint(state, run_id)
 

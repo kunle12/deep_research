@@ -28,7 +28,6 @@ from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult
 from deep_research.nodes.researcher import research
 from deep_research.state import (
-    Citation,
     ClassifiedQuery,
     Critique,
     QueryPlan,
@@ -48,8 +47,11 @@ def _sub_q(
     refinement_depth: int = 0,
 ) -> SubQuestion:
     return SubQuestion(
-        id="sq1", question=question, tool_hint=tool_hint,
-        rationale="test", refinement_depth=refinement_depth,
+        id="sq1",
+        question=question,
+        tool_hint=tool_hint,
+        rationale="test",
+        refinement_depth=refinement_depth,
     )
 
 
@@ -89,8 +91,7 @@ def _client_with_refine_calls(refine_calls: list[dict]) -> MagicMock:
         call_idx["n"] += 1
         if call_idx["n"] == 1 and refine_calls:
             tool_calls = [
-                _FakeToolCall(f"tc_{i}", "refine", args)
-                for i, args in enumerate(refine_calls)
+                _FakeToolCall(f"tc_{i}", "refine", args) for i, args in enumerate(refine_calls)
             ]
             return _FakeResponse("", tool_calls)
         return _FakeResponse(_answer_json())
@@ -101,16 +102,18 @@ def _client_with_refine_calls(refine_calls: list[dict]) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# 1–6: research() refine tool unit tests
+# 1-6: research() refine tool unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestRefineTool:
     @pytest.mark.asyncio
     async def test_drill_deeper_collected(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "drill_deeper", "question": "What about Y?", "rationale": "interesting"},
-        ])
+        client = _client_with_refine_calls(
+            [
+                {"action": "drill_deeper", "question": "What about Y?", "rationale": "interesting"},
+            ]
+        )
         reg = ToolRegistry()
         _, _, refinements = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 1
@@ -120,9 +123,15 @@ class TestRefineTool:
 
     @pytest.mark.asyncio
     async def test_chase_reference_with_arxiv_url(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "chase_reference", "reference_url": "https://arxiv.org/abs/2401.12345", "rationale": "key paper"},
-        ])
+        client = _client_with_refine_calls(
+            [
+                {
+                    "action": "chase_reference",
+                    "reference_url": "https://arxiv.org/abs/2401.12345",
+                    "rationale": "key paper",
+                },
+            ]
+        )
         reg = ToolRegistry()
         _, _, refinements = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 1
@@ -131,9 +140,15 @@ class TestRefineTool:
 
     @pytest.mark.asyncio
     async def test_chase_reference_non_arxiv(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "chase_reference", "reference_url": "https://example.com/paper", "rationale": "ref"},
-        ])
+        client = _client_with_refine_calls(
+            [
+                {
+                    "action": "chase_reference",
+                    "reference_url": "https://example.com/paper",
+                    "rationale": "ref",
+                },
+            ]
+        )
         reg = ToolRegistry()
         _, _, refinements = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 1
@@ -141,54 +156,73 @@ class TestRefineTool:
 
     @pytest.mark.asyncio
     async def test_revise_strategy_not_collected(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "revise_strategy", "rationale": "try a different approach"},
-        ])
+        client = _client_with_refine_calls(
+            [
+                {"action": "revise_strategy", "rationale": "try a different approach"},
+            ]
+        )
         reg = ToolRegistry()
         _, _, refinements = await research(_sub_q(), client, "m", reg)
         assert refinements == []
 
     @pytest.mark.asyncio
     async def test_depth_cap_prevents_refinement(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "drill_deeper", "question": "deeper?", "rationale": "r"},
-        ])
+        client = _client_with_refine_calls(
+            [
+                {"action": "drill_deeper", "question": "deeper?", "rationale": "r"},
+            ]
+        )
         reg = ToolRegistry()
         sq = _sub_q(refinement_depth=2)
         _, _, refinements = await research(
-            sq, client, "m", reg, max_refinement_depth=2,
+            sq,
+            client,
+            "m",
+            reg,
+            max_refinement_depth=2,
         )
         assert refinements == []
 
     @pytest.mark.asyncio
     async def test_multiple_refine_calls_all_collected(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "drill_deeper", "question": "Q1?", "rationale": "r1"},
-            {"action": "drill_deeper", "question": "Q2?", "rationale": "r2"},
-            {"action": "chase_reference", "reference_url": "https://arxiv.org/abs/1", "rationale": "r3"},
-        ])
+        client = _client_with_refine_calls(
+            [
+                {"action": "drill_deeper", "question": "Q1?", "rationale": "r1"},
+                {"action": "drill_deeper", "question": "Q2?", "rationale": "r2"},
+                {
+                    "action": "chase_reference",
+                    "reference_url": "https://arxiv.org/abs/1",
+                    "rationale": "r3",
+                },
+            ]
+        )
         reg = ToolRegistry()
         _, _, refinements = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 3
 
     @pytest.mark.asyncio
     async def test_drill_deeper_missing_question_skipped(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "drill_deeper", "rationale": "no question provided"},
-        ])
+        client = _client_with_refine_calls(
+            [
+                {"action": "drill_deeper", "rationale": "no question provided"},
+            ]
+        )
         reg = ToolRegistry()
         _, _, refinements = await research(_sub_q(), client, "m", reg)
         assert refinements == []
 
     @pytest.mark.asyncio
     async def test_per_researcher_cap(self) -> None:
-        client = _client_with_refine_calls([
-            {"action": "drill_deeper", "question": f"Q{i}?", "rationale": "r"}
-            for i in range(5)
-        ])
+        client = _client_with_refine_calls(
+            [{"action": "drill_deeper", "question": f"Q{i}?", "rationale": "r"} for i in range(5)]
+        )
         reg = ToolRegistry()
         _, _, refinements = await research(
-            _sub_q(), client, "m", reg, max_refinement_per_researcher=2,
+            _sub_q(),
+            client,
+            "m",
+            reg,
+            max_refinement_per_researcher=2,
         )
         assert len(refinements) == 2
 
@@ -205,7 +239,9 @@ class TestRefineIntegration:
         cfg.agent.max_iterations = 2
         sq1 = SubQuestion(id="sq1", question="Q1?", rationale="r")
         plan_result = ResearchPlan(sub_questions=[sq1], breadth=1, max_depth=0)
-        refined_sq = SubQuestion(id="sq1.refine1", question="Deeper Q?", rationale="r", refinement_depth=1)
+        refined_sq = SubQuestion(
+            id="sq1.refine1", question="Deeper Q?", rationale="r", refinement_depth=1
+        )
 
         critic_saw_refinement = {"value": False}
 
@@ -224,6 +260,7 @@ class TestRefineIntegration:
             patch("deep_research.paths.deep.writer_write", return_value="# Report"),
         ):
             from deep_research.paths.deep import deep_research
+
             client = MagicMock()
             reg = ToolRegistry()
             classified = ClassifiedQuery(path=QueryPlan.deep, rationale="test")
@@ -242,22 +279,28 @@ class TestAbsorbRefinements:
         state.plan.sub_questions = [
             SubQuestion(id="sq1", question="What is X?", rationale="r"),
         ]
-        state.absorb_refinements([
-            SubQuestion(id="r1", question="what is x?", rationale="r"),
-            SubQuestion(id="r2", question="  WHAT IS X?  ", rationale="r"),
-            SubQuestion(id="r3", question="What is Y?", rationale="r"),
-        ])
+        state.absorb_refinements(
+            [
+                SubQuestion(id="r1", question="what is x?", rationale="r"),
+                SubQuestion(id="r2", question="  WHAT IS X?  ", rationale="r"),
+                SubQuestion(id="r3", question="What is Y?", rationale="r"),
+            ]
+        )
         assert len(state.pending_refinements) == 1
         assert state.pending_refinements[0].question == "What is Y?"
 
     def test_dedup_against_pending(self) -> None:
         state = ResearchState(query="q")
-        state.absorb_refinements([
-            SubQuestion(id="r1", question="New Q?", rationale="r"),
-        ])
-        state.absorb_refinements([
-            SubQuestion(id="r2", question="new q?", rationale="r"),
-        ])
+        state.absorb_refinements(
+            [
+                SubQuestion(id="r1", question="New Q?", rationale="r"),
+            ]
+        )
+        state.absorb_refinements(
+            [
+                SubQuestion(id="r2", question="new q?", rationale="r"),
+            ]
+        )
         assert len(state.pending_refinements) == 1
 
 
@@ -275,13 +318,20 @@ class TestConcurrentIsolation:
             async def _create(**kwargs: Any) -> _FakeResponse:
                 call_idx["n"] += 1
                 if call_idx["n"] == 1:
-                    return _FakeResponse("", [
-                        _FakeToolCall("tc_0", "refine", {
-                            "action": "drill_deeper",
-                            "question": question,
-                            "rationale": "r",
-                        }),
-                    ])
+                    return _FakeResponse(
+                        "",
+                        [
+                            _FakeToolCall(
+                                "tc_0",
+                                "refine",
+                                {
+                                    "action": "drill_deeper",
+                                    "question": question,
+                                    "rationale": "r",
+                                },
+                            ),
+                        ],
+                    )
                 return _FakeResponse(_answer_json())
 
             client = MagicMock()
@@ -306,7 +356,7 @@ class TestConcurrentIsolation:
 
 
 # ---------------------------------------------------------------------------
-# 10–11: Flush caps
+# 10-11: Flush caps
 # ---------------------------------------------------------------------------
 
 

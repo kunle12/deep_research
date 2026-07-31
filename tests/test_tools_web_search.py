@@ -139,7 +139,9 @@ async def test_tavily_proactive_quota_fallback() -> None:
     os.environ["TAVILY_API_KEY"] = "tvly-fake-test-key"
 
     tavily_resp = {
-        "results": [{"url": "https://example.com/a", "title": "A", "content": "snippet", "score": 0.8}]
+        "results": [
+            {"url": "https://example.com/a", "title": "A", "content": "snippet", "score": 0.8}
+        ]
     }
     respx.post("https://api.tavily.com/search").mock(
         return_value=httpx.Response(200, json=tavily_resp)

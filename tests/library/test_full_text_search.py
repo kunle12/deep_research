@@ -27,9 +27,13 @@ async def test_full_text_search(sqlite_backend):
 
     # Insert a report first (FK constraint for analyses.run_id)
     from deep_research.library.storage.rows import ReportRow
+
     report = ReportRow(
-        run_id="run_001", started_at=now, original_query="ml",
-        path_taken="deep", markdown="# ML",
+        run_id="run_001",
+        started_at=now,
+        original_query="ml",
+        path_taken="deep",
+        markdown="# ML",
         artifact_id="fts_art_1",
     )
     await sqlite_backend.insert_report(report)
@@ -48,20 +52,24 @@ async def test_full_text_search(sqlite_backend):
     hits = await sqlite_backend.full_text_search("machine learning", kind="pdf", limit=10)
     assert len(hits) >= 1, f"expected at least 1 hit for 'machine learning', got {len(hits)}"
     assert hits[0].artifact_id == "fts_art_1"
-    assert "machine learning" in (hits[0].summary or "").lower() or \
-           "machine learning" in (hits[0].extracted_text or "").lower()
+    assert (
+        "machine learning" in (hits[0].summary or "").lower()
+        or "machine learning" in (hits[0].extracted_text or "").lower()
+    )
 
 
 @pytest.mark.asyncio
 async def test_glossary_search(sqlite_backend):
     now = datetime.now(UTC).isoformat()
-    await sqlite_backend.upsert_glossary_entry(GlossaryEntry(
-        term="Transformer",
-        term_canonical="transformer",
-        kind="model",
-        short_def="A neural network architecture using attention mechanisms.",
-        last_updated=now,
-    ))
+    await sqlite_backend.upsert_glossary_entry(
+        GlossaryEntry(
+            term="Transformer",
+            term_canonical="transformer",
+            kind="model",
+            short_def="A neural network architecture using attention mechanisms.",
+            last_updated=now,
+        )
+    )
 
     results = await sqlite_backend.glossary_search("attention", limit=10)
     assert len(results) >= 0

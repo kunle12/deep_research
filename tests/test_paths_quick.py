@@ -214,9 +214,7 @@ class TestQuickSearch:
                 citations=[],
             ),
         }
-        reg = _registry_with_tools(
-            search_citations=search_cits, fetch_results=fetch_results
-        )
+        reg = _registry_with_tools(search_citations=search_cits, fetch_results=fetch_results)
         llm_payload = {
             "answer": "Paris is the capital of France [https://a].",
             "citations": [
@@ -236,7 +234,9 @@ class TestQuickSearch:
         }
         client = _FakeAsyncOpenAI(json.dumps(llm_payload))
 
-        report = await quick_search(_classified(), "What is the capital of France?", client, reg, cfg)
+        report = await quick_search(
+            _classified(), "What is the capital of France?", client, reg, cfg
+        )
 
         assert report.path == "quick"
         assert report.classifier_rationale == "simple factual query"

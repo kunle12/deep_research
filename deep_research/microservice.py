@@ -6,6 +6,7 @@ a query and optional config path, runs the agent, and returns the Report as JSON
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Literal
@@ -21,6 +22,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Deep Research Agent", version="0.1.0")
 
 _ALLOWED_CONFIG_DIR = Path.cwd()
+
+# Hard timeout for a single research request. Deep research can take many
+# minutes; this prevents the HTTP server from hanging indefinitely.
+_REQUEST_TIMEOUT_S = 600  # 10 minutes
 
 
 class ResearchRequest(BaseModel):
@@ -46,10 +51,18 @@ async def research_endpoint(request: ResearchRequest) -> ResearchResponse:
 
     config = AgentTopConfig.load_yaml(config_file)
     try:
-        report = await run_research(
-            query=request.query,
-            config=config,
-            path_override=request.path_override,
+        report = await asyncio.wait_for(
+            run_research(
+                query=request.query,
+                config=config,
+                path_override=request.path_override,
+            ),
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Research exceeded {_REQUEST_TIMEOUT_S}s timeout",
         )
     except Exception as e:
         logger.exception("research failed")

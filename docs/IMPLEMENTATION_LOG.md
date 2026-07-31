@@ -1129,3 +1129,24 @@ $ uv run ruff check deep_research/ tests/
 - **Separate checkpoint dir**: `./.cache/research_checkpoints/` keeps checkpoints independent from the PDL SQLite store, avoiding schema migrations and keeping writes fast.
 - **Query validation on resume**: if a checkpoint's `query` doesn't match the current run, it's discarded automatically, preventing stale-state contamination.
 - **75% threshold**: triggers summarisation before the model hits its absolute limit, giving headroom for the summarised conversation to continue making progress.
+
+### Post-review cleanup round (July 2026)
+
+- [x] `paths/deep.py` — researcher timeout now raises `TimeoutError` instead of returning it as a value; `asyncio.gather(return_exceptions=True)` handles it cleanly
+- [x] `paths/deep.py` — stuck sub-question detection: per-sub-q attempt counter (max `agent.max_subquestion_retries`) prevents infinite loops on persistently failing researchers
+- [x] `paths/deep.py` — `KeyboardInterrupt`/`SystemExit` from gather results are caught and break the loop
+- [x] `paths/deep.py` — checkpoint saved before every loop break, not just on critic gaps
+- [x] `state.py` — `is_covered()` relaxed: only checks for draft presence, no longer requires citations
+- [x] `state.py` — dedup logic consolidated into `_dedup_citations()` static method
+- [x] `llm/tool_loop.py` — `_run()` catches `BaseException` (re-raises `KeyboardInterrupt`/`SystemExit`/`CancelledError`) before `Exception` to prevent swallowing
+- [x] `llm/tool_loop.py` — `asyncio.wait_for` replaces `asyncio.timeout` so the inner task is actually cancelled when the deadline passes
+- [x] `paths/academic.py` — PDF downloaded once then shared between text extraction and page rendering (was downloading twice)
+- [x] `paths/academic.py` — removed `asyncio.shield` from render-task wait; timeout now cancels the render properly
+- [x] `paths/academic.py` — removed redundant `import asyncio` inside function body
+- [x] `checkpoint.py` — atomic writes via `tempfile` + `os.replace` so a crash mid-write never leaves a corrupted file
+- [x] `citations.py` — added `_MAX_RENDER_DEPTH = 20` guard to prevent stack overflow in recursive graph rendering
+- [x] `tools/web_search.py` — Tavily quota guard uses `asyncio.Lock` (correct); semaphore approach was wrong (acquire blocks, doesn't skip)
+- [x] `microservice.py` — research endpoint wrapped in `asyncio.wait_for(timeout=600)` to prevent hung requests
+- [x] `config.py` — added `AgentConfig.max_subquestion_retries: int = 3`
+- [x] `config.example.yaml` — added `max_subquestion_retries` knob
+- [x] `tests/test_paths_deep.py` — added stuck sub-question tests (`test_stuck_sub_question_marked_covered_after_max_retries`, `test_stuck_sub_question_does_not_block_other_sub_questions`)

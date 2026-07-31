@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +27,10 @@ def _checkpoint_path(run_id: str) -> Path:
 
 
 def save_checkpoint(state: ResearchState, run_id: str, **extra: Any) -> None:
-    """Write a JSON checkpoint of *state* to disk.
+    """Write a JSON checkpoint of *state* to disk atomically.
 
+    Uses a tempfile + os.replace so a crash mid-write never leaves a
+    partially-written checkpoint that would fail to load on resume.
     *extra* — additional metadata (e.g. config snapshot) merged at top level.
     """
     path = _checkpoint_path(run_id)
@@ -36,7 +40,14 @@ def save_checkpoint(state: ResearchState, run_id: str, **extra: Any) -> None:
     }
     payload.update(extra)
     try:
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        data = json.dumps(payload, ensure_ascii=False, indent=2)
+        # Atomic write: write to temp file, then rename over target
+        fd, tmp_path = tempfile.mkstemp(suffix=".json", dir=str(_CHECKPOINT_DIR))
+        try:
+            os.write(fd, data.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, str(path))
         logger.info("checkpoint saved: %s (iteration %d)", path, state.iteration)
     except Exception as e:
         logger.warning("checkpoint save failed: %s: %s", type(e).__name__, e)

@@ -285,7 +285,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 content="",
                 error=f"write to cache failed: {type(e).__name__}: {e}",
             )
-        logger.info("arxiv_download_pdf %s -> %s (%d bytes)", arxiv_id, target, target.stat().st_size)
+        logger.info(
+            "arxiv_download_pdf %s -> %s (%d bytes)", arxiv_id, target, target.stat().st_size
+        )
         return ToolResult(content=str(target))
 
     reg.register("arxiv_search", _search, SEARCH_SCHEMA)

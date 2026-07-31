@@ -192,9 +192,7 @@ class _MCPClientCtx:
             await self._stack.aclose()
             self._stack = None
             self._session = None
-            raise _MCPStartupError(
-                f"MCP initialize() failed: {type(e).__name__}: {e}"
-            ) from e
+            raise _MCPStartupError(f"MCP initialize() failed: {type(e).__name__}: {e}") from e
 
         return self
 
@@ -272,16 +270,16 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     async def _invoke(mcp_name: str, arguments: dict[str, Any]) -> ToolResult:
         mcp = await _ensure_mcp()
         if mcp is None:
-            err = startup_error[0] if startup_error else (
-                "browser tool unavailable (no MCP connection)"
+            err = (
+                startup_error[0]
+                if startup_error
+                else ("browser tool unavailable (no MCP connection)")
             )
             return ToolResult(content="", error=err)
         try:
             result = await mcp.call(mcp_name, arguments)
         except Exception as e:
-            logger.warning(
-                "MCP tool %s raised: %s: %s", mcp_name, type(e).__name__, e
-            )
+            logger.warning("MCP tool %s raised: %s: %s", mcp_name, type(e).__name__, e)
             return ToolResult(
                 content="",
                 error=f"MCP call {mcp_name} failed: {type(e).__name__}: {e}",
@@ -397,14 +395,14 @@ def _title_from_content(content: str) -> str:
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.startswith("- Page Title:"):
-            after = stripped[len("- Page Title:"):].strip()
+            after = stripped[len("- Page Title:") :].strip()
             if after:
                 return after
     # 2. `- heading "<title>" [ref=...]` (inlined a11y tree)
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.startswith("- heading "):
-            after = stripped[len("- heading "):]
+            after = stripped[len("- heading ") :]
             if after.startswith('"'):
                 end = after.find('"', 1)
                 if end > 0:

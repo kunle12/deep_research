@@ -72,10 +72,13 @@ def _tools(
     reg.register("arxiv_search", _arxiv_search, {"type": "function", "name": "arxiv_search"})
 
     if scholar_citations is not None:
+
         async def _scholar_search(query: str, max_results: int = 10, **_: Any) -> ToolResult:
             return ToolResult(content="scholar searched", citations=scholar_citations)
 
-        reg.register("scholar_search", _scholar_search, {"type": "function", "name": "scholar_search"})
+        reg.register(
+            "scholar_search", _scholar_search, {"type": "function", "name": "scholar_search"}
+        )
 
     return reg
 

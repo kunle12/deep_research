@@ -29,9 +29,7 @@ async def test_fetch_page_extracts_article_text(tmp_path) -> None:
       <p>Another paragraph also present in the main text.</p>
     </body></html>
     """
-    respx.get("https://example.test/article").mock(
-        return_value=httpx.Response(200, text=html)
-    )
+    respx.get("https://example.test/article").mock(return_value=httpx.Response(200, text=html))
 
     reg = await build_tool_registry(cfg)
     res = await reg.call("fetch_page", {"url": "https://example.test/article"})
@@ -68,9 +66,7 @@ async def test_fetch_page_cache_hits(tmp_path) -> None:
       <p>Adding paragraphs here to make sure trafilatura picks it up.</p>
     </body></html>
     """
-    route = respx.get("https://cache.test/x").mock(
-        return_value=httpx.Response(200, text=html)
-    )
+    route = respx.get("https://cache.test/x").mock(return_value=httpx.Response(200, text=html))
     reg = await build_tool_registry(cfg)
     # First call: HTTP
     await reg.call("fetch_page", {"url": "https://cache.test/x"})

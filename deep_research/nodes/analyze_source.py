@@ -36,8 +36,7 @@ def _build_messages(
             f"({len(page_image_data_urls)} pages attached)\n"
         )
     prompt_text = (
-        prompt_template
-        .replace("{url}", url)
+        prompt_template.replace("{url}", url)
         .replace("{source_type}", source_type)
         .replace("{content}", content[:40000])  # guard context blowup
         .replace("{query}", user_query or "")

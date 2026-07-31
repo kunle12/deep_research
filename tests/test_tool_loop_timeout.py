@@ -116,6 +116,7 @@ class _FakeResponse:
 
 class _FakeAsyncCompletions:
     """Minimal async OpenAI-compatible stub."""
+
     def __init__(self, responses: list[_FakeMessage]) -> None:
         self._responses = list(responses)
         self.create = self._create  # type: ignore[assignment]
@@ -149,6 +150,7 @@ def test_run_with_tools_logs_turn_timing_no_regression(
 
 async def _run_with_tools(client: Any, reg: ToolRegistry, max_turns: int) -> Any:
     from deep_research.llm.tool_loop import run_with_tools
+
     return await run_with_tools(
         client=client,
         messages=[{"role": "user", "content": "hi"}],
@@ -191,6 +193,7 @@ def test_researcher_timeout_returns_timeout_error_not_hang() -> None:
     correctly as "timeout" rather than a generic error, so long as the inner
     coroutine lets CancelledError propagate (the default behaviour when no
     try/except absorbs it)."""
+
     async def hung_researcher() -> str:
         # No try/except: lets CancelledError propagate (production behaviour).
         await asyncio.sleep(60)

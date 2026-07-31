@@ -129,7 +129,7 @@ async def run_research(
             artifact_id = await _archive_report(report, writer, run_id)
 
             # P10.7: auto-tag the report artifact with topic tags
-            if artifact_id and report.markdown:
+            if artifact_id:
                 await auto_tag_report(
                     query,
                     report.markdown,

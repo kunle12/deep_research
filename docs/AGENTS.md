@@ -336,6 +336,11 @@ captures all absorbed researcher results and flushed refinements.
   than crashing the agent
 - Separate storage: checkpoints live in `./.cache/research_checkpoints/`,
   independent from the PDL SQLite store — no schema migration needed
+- Atomic checkpoint writes: uses `tempfile` + `os.replace` so a crash mid-write
+  never leaves a corrupted checkpoint
+- Stuck sub-question detection: after `agent.max_subquestion_retries` (default 3)
+  consecutive failures, a sub-question is forcibly marked covered with an empty
+  draft, preventing infinite loops
 
 ---
 

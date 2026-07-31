@@ -12,6 +12,7 @@ from typing import Any
 
 try:
     import asyncpraw
+
     _HAS_ASYNCPRAW = True
 except ImportError:
     _HAS_ASYNCPRAW = False
@@ -48,14 +49,10 @@ SEARCH_SCHEMA = {
 }
 
 
-
-
 def _build_reddit(config: AgentTopConfig) -> Any:
     """Build or retrieve a cached asyncpraw.Reddit instance."""
     if not _HAS_ASYNCPRAW:
-        raise ImportError(
-            "asyncpraw is not installed. Run `uv sync --extra reddit` to install it."
-        )
+        raise ImportError("asyncpraw is not installed. Run `uv sync --extra reddit` to install it.")
     client_id = os.environ.get(config.reddit.client_id_env, "")
     client_secret = os.environ.get(config.reddit.client_secret_env, "")
     if not client_id or not client_secret:
@@ -139,7 +136,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         for i, c in enumerate(citations, start=1):
             title = c.title or "(no title)"
             snippet = c.snippet.strip()[:200]
-            lines.append(f"{i}. {title}\n   URL: {c.url}\n   Score: {c.confidence_score:.2f}\n   {snippet}")
+            lines.append(
+                f"{i}. {title}\n   URL: {c.url}\n   Score: {c.confidence_score:.2f}\n   {snippet}"
+            )
         content = "\n\n".join(lines)
 
         return ToolResult(content=content, citations=citations)

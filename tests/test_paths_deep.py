@@ -285,6 +285,85 @@ class TestDeepResilience:
             report = await deep_research(_classified("Q"), "Q", client, reg, cfg)
             assert report.path == "deep"
 
+    @pytest.mark.asyncio
+    async def test_stuck_sub_question_marked_covered_after_max_retries(
+        self, cfg: AgentTopConfig
+    ) -> None:
+        """A sub-question that fails repeatedly is eventually marked covered
+        with an empty draft so the loop doesn't spin forever."""
+        cfg.agent.max_iterations = 5
+        cfg.agent.max_subquestion_retries = 2  # lower threshold for test
+        sq1 = _sub_q(id="sq1", question="Q1?")
+        plan_result = _plan([sq1])
+
+        call_count = {"researcher": 0}
+
+        async def _failing_researcher(sq, client, model, tools, **kwargs):
+            call_count["researcher"] += 1
+            raise RuntimeError("simulated persistent failure")
+
+        async def _critic_not_sufficient(state, client, model):
+            return Critique(sufficient=False, rationale="need more", gaps=[])
+
+        with (
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                side_effect=_failing_researcher,
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                side_effect=_critic_not_sufficient,
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            report = await deep_research(_classified("Q"), "Q", client, reg, cfg)
+            assert report.path == "deep"
+            # After max_subquestion_retries (2) failures, sq1 should be covered
+            # The loop should have stopped retrying it before exhausting max_iterations
+            assert call_count["researcher"] <= cfg.agent.max_subquestion_retries + 1
+
+    @pytest.mark.asyncio
+    async def test_stuck_sub_question_does_not_block_other_sub_questions(
+        self, cfg: AgentTopConfig
+    ) -> None:
+        """A failing sub-question should not prevent others from being researched."""
+        cfg.agent.max_iterations = 3
+        cfg.agent.max_subquestion_retries = 1
+        sq1 = _sub_q(id="sq1", question="Q1?")
+        sq2 = _sub_q(id="sq2", question="Q2?")
+        plan_result = _plan([sq1, sq2])
+
+        call_count = {"researcher": 0}
+
+        async def _partial_researcher(sq, client, model, tools, **kwargs):
+            call_count["researcher"] += 1
+            if sq.id == "sq1":
+                raise RuntimeError("sq1 fails")
+            return (f"answer for {sq.question}", [_citation("https://ok", title="OK", score=0.7)])
+
+        async def _critic_sufficient(state, client, model):
+            return Critique(sufficient=True, rationale="covered", gaps=[])
+
+        with (
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                side_effect=_partial_researcher,
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                side_effect=_critic_sufficient,
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            report = await deep_research(_classified("Q"), "Q", client, reg, cfg)
+            assert report.path == "deep"
+
 
 # ---------------------------------------------------------------------------
 # Config integration

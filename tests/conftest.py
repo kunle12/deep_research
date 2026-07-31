@@ -25,6 +25,7 @@ def _load_env_dotlocal_once() -> None:
         return
     try:
         from dotenv import load_dotenv
+
         load_dotenv(_ENV_LOCAL_PATH, override=False)
     except ImportError:
         pass

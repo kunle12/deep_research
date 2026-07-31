@@ -136,19 +136,24 @@ class ToolRegistry:
             except Exception as e:
                 logger.exception("tool %s raised", name)
                 return ToolResult(content="", error=f"{type(e).__name__}: {e}")
+            except BaseException:
+                # Re-raise KeyboardInterrupt, SystemExit, CancelledError
+                # so they propagate up and are not swallowed.
+                raise
 
         async def _guarded() -> ToolResult:
             # Inner timeout protects a single tool call from infinite hangs.
-            # We do not shield the coroutine: the goal is to propagate
-            # CancelledError into the tool so it can abort pending I/O
-            # promptly, even if the tool wraps sync work in run_in_executor
-            # (the executor task won't be cancelled, but the awaiting
-            # coroutine unblocks immediately and the timeout is reported).
+            # We use asyncio.wait_for instead of asyncio.timeout because
+            # wait_for actually cancels the inner task when the deadline
+            # passes, preventing orphaned tool calls from consuming
+            # resources indefinitely.
             if self._tool_timeout_s == float("inf"):
                 return await _run()
             try:
-                async with asyncio.timeout(self._tool_timeout_s):
-                    return await _run()
+                return await asyncio.wait_for(
+                    _run(),
+                    timeout=self._tool_timeout_s,
+                )
             except TimeoutError:
                 logger.warning(
                     "tool %s exceeded per-call timeout %.1fs",

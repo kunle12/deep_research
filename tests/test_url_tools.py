@@ -18,7 +18,10 @@ class TestUrlDetector:
         assert extract_first_url("see https://example.com for more") == "https://example.com"
 
     def test_arxiv_abs_url(self) -> None:
-        assert extract_first_url("see https://arxiv.org/abs/2401.12345") == "https://arxiv.org/abs/2401.12345"
+        assert (
+            extract_first_url("see https://arxiv.org/abs/2401.12345")
+            == "https://arxiv.org/abs/2401.12345"
+        )
 
     def test_url_with_path_query_fragment(self) -> None:
         url = "https://example.com/foo/bar?x=1&y=2#frag"
@@ -35,16 +38,22 @@ class TestUrlDetector:
         assert extract_first_url(text) == "https://a.com"
 
     def test_strip_url_basic(self) -> None:
-        assert strip_url_from_query(
-            "https://arxiv.org/abs/2401.12345 summarize this",
-            "https://arxiv.org/abs/2401.12345",
-        ) == "summarize this"
+        assert (
+            strip_url_from_query(
+                "https://arxiv.org/abs/2401.12345 summarize this",
+                "https://arxiv.org/abs/2401.12345",
+            )
+            == "summarize this"
+        )
 
     def test_strip_url_with_separator(self) -> None:
-        assert strip_url_from_query(
-            "https://example.com/post what are the gaps?",
-            "https://example.com/post",
-        ) == "what are the gaps?"
+        assert (
+            strip_url_from_query(
+                "https://example.com/post what are the gaps?",
+                "https://example.com/post",
+            )
+            == "what are the gaps?"
+        )
 
     def test_strip_url_returns_empty(self) -> None:
         assert strip_url_from_query("https://example.com", "https://example.com") == ""

@@ -110,7 +110,9 @@ def _sync_extract(file_path: str) -> str:
     # --- pdfplumber (accuracy fallback) --------------------------------------
     logger.info(
         "pypdf yielded %d chars (below %d); falling back to pdfplumber for %s",
-        len(text), _MIN_PYPDF_CHARS, p,
+        len(text),
+        _MIN_PYPDF_CHARS,
+        p,
     )
     try:
         import pdfplumber
@@ -134,7 +136,9 @@ def _sync_extract(file_path: str) -> str:
     return text2 if len(text2) > len(text) else text
 
 
-def _sync_render(file_path: str, max_pages: int, render_dpi: int, poppler_path: str | None) -> list[Any]:
+def _sync_render(
+    file_path: str, max_pages: int, render_dpi: int, poppler_path: str | None
+) -> list[Any]:
     """Synchronous pdf2image conversion → list of PIL Images.
 
     Raises `poppler-missing` exception types as RuntimeError-derived; we catch
@@ -166,7 +170,8 @@ def _is_poppler_missing(exc: Exception) -> bool:
     """Heuristic: detect pdf2image's `PDFInfoNotInstalledError` without importing it."""
     cls_name = type(exc).__name__
     return cls_name in {"PDFInfoNotInstalledError", "PDFPopplerNotInstalledError"} or (
-        "poppler" in str(exc).lower() and ("not installed" in str(exc).lower() or "not found" in str(exc).lower())
+        "poppler" in str(exc).lower()
+        and ("not installed" in str(exc).lower() or "not found" in str(exc).lower())
     )
 
 
@@ -226,7 +231,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 )
                 data_urls.append(jpeg_bytes_to_data_url(jpeg))
         except Exception as e:
-            return ToolResult(content="", error=f"vision post-process failed: {type(e).__name__}: {e}")
+            return ToolResult(
+                content="", error=f"vision post-process failed: {type(e).__name__}: {e}"
+            )
 
         payload = {"pages": data_urls, "count": len(data_urls)}
         return ToolResult(content=json.dumps(payload))

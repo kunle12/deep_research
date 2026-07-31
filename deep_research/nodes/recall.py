@@ -49,14 +49,16 @@ async def recall(
         if aid in seen:
             continue
         seen.add(aid)
-        results.append({
-            "artifact_id": aid,
-            "title": hit.title or "",
-            "summary": hit.summary or "",
-            "key_findings": hit.extracted_text or "",
-            "source_type": "",  # not returned by FTS5; caller may enrich
-            "url": "",          # not returned by FTS5; caller may enrich
-        })
+        results.append(
+            {
+                "artifact_id": aid,
+                "title": hit.title or "",
+                "summary": hit.summary or "",
+                "key_findings": hit.extracted_text or "",
+                "source_type": "",  # not returned by FTS5; caller may enrich
+                "url": "",  # not returned by FTS5; caller may enrich
+            }
+        )
 
     return results
 

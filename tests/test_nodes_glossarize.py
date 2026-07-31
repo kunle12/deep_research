@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from deep_research.library.storage.rows import GlossaryEntry
 from deep_research.nodes.glossarize import (
     _canonicalize,
     parse_glossary_from_response,
@@ -26,16 +25,26 @@ def test_parse_glossary_from_response_empty():
 
 
 def test_parse_glossary_from_response_valid():
-    response = json.dumps({
-        "answer": "some text",
-        "glossary": [
-            {"term": "RLHF", "kind": "acronym", "short_def": "RL from human feedback",
-             "acronym_expansion": "Reinforcement Learning from Human Feedback",
-             "confidence": 0.9},
-            {"term": "PPO", "kind": "acronym", "short_def": "Proximal Policy Optimization",
-             "confidence": 0.8},
-        ]
-    })
+    response = json.dumps(
+        {
+            "answer": "some text",
+            "glossary": [
+                {
+                    "term": "RLHF",
+                    "kind": "acronym",
+                    "short_def": "RL from human feedback",
+                    "acronym_expansion": "Reinforcement Learning from Human Feedback",
+                    "confidence": 0.9,
+                },
+                {
+                    "term": "PPO",
+                    "kind": "acronym",
+                    "short_def": "Proximal Policy Optimization",
+                    "confidence": 0.8,
+                },
+            ],
+        }
+    )
     entries = parse_glossary_from_response(response, "run1", "art1")
     assert len(entries) == 2
     assert entries[0].term == "RLHF"
@@ -58,12 +67,9 @@ def test_parse_glossary_from_response_no_glossary_field():
 
 
 def test_parse_glossary_from_response_invalid_kind():
-    response = json.dumps({
-        "glossary": [{"term": "test", "kind": "invalid_kind", "short_def": "test"}]
-    })
+    response = json.dumps(
+        {"glossary": [{"term": "test", "kind": "invalid_kind", "short_def": "test"}]}
+    )
     entries = parse_glossary_from_response(response, "run1")
     assert len(entries) == 1
     assert entries[0].kind == "concept"  # defaults to concept
-
-
-

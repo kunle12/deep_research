@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from deep_research.library.storage.base import StorageBackend
 from deep_research.library.storage.rows import SearchHit
 from deep_research.nodes.recall import format_recall_context, recall
 
@@ -29,9 +28,7 @@ class _FakeStorage:
     def __init__(self, hits: list[SearchHit] | None = None):
         self._hits = hits or []
 
-    async def full_text_search(
-        self, query: str, *, kind: str, limit: int
-    ) -> list[SearchHit]:
+    async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         return self._hits
 
 
@@ -39,23 +36,23 @@ class _FakeStorage:
 async def test_recall_returns_hits() -> None:
     """When FTS5 returns hits, recall returns formatted dicts."""
     hits = [
-            SearchHit(
-                artifact_id="abc123",
-                title="Attention Is All You Need",
-                authors="Vaswani et al.",
-                summary="A seminal paper on transformer attention mechanisms.",
-                extracted_text="key finding: attention scales quadratically with sequence length",
-                score=0.95,
-            ),
-            SearchHit(
-                artifact_id="def456",
-                title="Efficient Attention",
-                authors="Smith et al.",
-                summary="A survey of efficient attention mechanisms.",
-                extracted_text="key finding: linear attention reduces O(n^2) to O(n)",
-                score=0.85,
-            ),
-        ]
+        SearchHit(
+            artifact_id="abc123",
+            title="Attention Is All You Need",
+            authors="Vaswani et al.",
+            summary="A seminal paper on transformer attention mechanisms.",
+            extracted_text="key finding: attention scales quadratically with sequence length",
+            score=0.95,
+        ),
+        SearchHit(
+            artifact_id="def456",
+            title="Efficient Attention",
+            authors="Smith et al.",
+            summary="A survey of efficient attention mechanisms.",
+            extracted_text="key finding: linear attention reduces O(n^2) to O(n)",
+            score=0.85,
+        ),
+    ]
     storage = _FakeStorage(hits)
     result = await recall("transformer attention", storage, max_results=5)
     assert len(result) == 2
@@ -69,23 +66,23 @@ async def test_recall_returns_hits() -> None:
 async def test_recall_dedup_by_artifact_id() -> None:
     """Duplicate artifact_ids are deduped."""
     hits = [
-            SearchHit(
-                artifact_id="abc123",
-                title="Attention Paper",
-                authors="Author A",
-                summary="Summary A",
-                extracted_text="findings A",
-                score=0.9,
-            ),
-            SearchHit(
-                artifact_id="abc123",
-                title="Attention Paper",
-                authors="Author B",
-                summary="Summary B",
-                extracted_text="findings B",
-                score=0.8,
-            ),
-        ]
+        SearchHit(
+            artifact_id="abc123",
+            title="Attention Paper",
+            authors="Author A",
+            summary="Summary A",
+            extracted_text="findings A",
+            score=0.9,
+        ),
+        SearchHit(
+            artifact_id="abc123",
+            title="Attention Paper",
+            authors="Author B",
+            summary="Summary B",
+            extracted_text="findings B",
+            score=0.8,
+        ),
+    ]
     storage = _FakeStorage(hits)
     result = await recall("attention", storage, max_results=5)
     assert len(result) == 1  # deduped

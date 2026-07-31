@@ -267,20 +267,34 @@ async def academic_research(
                     page_urls = []
                     text_source = "abstract"
             else:
-                # Download once, then extract text + (optionally) render pages
-                # concurrently so a large paper doesn't pay separate sequential
-                # downloads for the two paths. Each sub-step has its own
-                # inner timeout (see _fetch_paper_text / _render_paper_pages),
-                # so a slow render cannot eat the researcher's whole budget:
-                # the text-extract branch proceeds and analysis falls back to
-                # text-only mode if the render race loses.
-                paper_text, pdf_path = await _fetch_paper_text(node.arxiv_id, tools)
-                page_urls: list[str] = []
-                if config.pdf_vision.enabled and "pdf_render_pages" in tools.names():
-                    # Render is non-fatal; treat any failure (including
-                    # TimeoutError) as "no vision → text-only analysis".
-                    page_urls = await _render_paper_pages(node.arxiv_id, tools, max_pages=10)
-                text_source = "pdf"
+                # Download PDF once, then extract text and optionally render
+                # pages from the same local file.  Running extraction and
+                # rendering concurrently means a slow render cannot delay
+                # the text-analysis path.
+                pdf_path = await _download_pdf_once(node.arxiv_id, tools)
+                if pdf_path is None:
+                    # Fall back to arxiv_resolve metadata
+                    paper_text, _ = await _fetch_paper_text_fallback(node.arxiv_id, tools)
+                    page_urls: list[str] = []
+                    text_source: Literal["pdf", "abstract", "html"] = "abstract"
+                else:
+                    # Run text extraction and page rendering concurrently
+                    text_task = asyncio.create_task(_extract_text(pdf_path, tools, timeout_s=180.0))
+                    render_task = (
+                        asyncio.create_task(_render_pages(pdf_path, tools, max_pages=10))
+                        if config.pdf_vision.enabled and "pdf_render_pages" in tools.names()
+                        else None
+                    )
+
+                    paper_text = await text_task
+                    page_urls: list[str] = []
+                    if render_task is not None:
+                        try:
+                            page_urls = await asyncio.wait_for(render_task, timeout=300.0)
+                        except TimeoutError:
+                            logger.debug("page rendering timed out; falling back to text-only")
+                            page_urls = []
+                    text_source = "pdf"
 
             # Skip LLM analysis if paper_text is empty (e.g., download failed)
             if not paper_text.strip():
@@ -651,50 +665,21 @@ async def _gather_seeds(
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> tuple[str, str | None]:
-    """Download + extract text. Returns (text, pdf_path_or_None) on success,
-    or (metadata-content string, None) on failure."""
-    _fetch_timeout_s: float = 180.0
-    if "arxiv_download_pdf" not in tools.names() or "pdf_extract_text" not in tools.names():
-        # Fall back to arxiv_resolve metadata if that's all we have
-        if "arxiv_resolve" in tools.names():
-            try:
-                async with asyncio.timeout(_fetch_timeout_s):
-                    resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
-                return (resolved.content or "", None)
-            except TimeoutError:
-                logger.warning("arxiv_resolve timed out for %s (%.0fs)", arxiv_id, _fetch_timeout_s)
-                return ("", None)
-        return ("", None)
-    # Download has its own bounded latency; if it exceeds the budget, give up
-    # entirely on text and let the caller decide whether to fall back to abstract.
+async def _download_pdf_once(arxiv_id: str, tools: ToolRegistry) -> str | None:
+    """Download a PDF once. Returns a local path or None on failure.
+    Uses a bounded timeout so a hung server cannot block the pipeline."""
+    _timeout_s: float = 180.0
+    if "arxiv_download_pdf" not in tools.names():
+        return None
     try:
-        async with asyncio.timeout(_fetch_timeout_s):
+        async with asyncio.timeout(_timeout_s):
             dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
     except TimeoutError:
-        logger.warning(
-            "arxiv_download_pdf timed out for %s after %.0fs; falling back to resolve",
-            arxiv_id,
-            _fetch_timeout_s,
-        )
-        if "arxiv_resolve" in tools.names():
-            try:
-                async with asyncio.timeout(_fetch_timeout_s):
-                    resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
-                return (resolved.content or "", None)
-            except TimeoutError:
-                logger.warning("arxiv_resolve (fallback) also timed out for %s", arxiv_id)
-        return ("", None)
+        logger.warning("arxiv_download_pdf timed out for %s after %.0fs", arxiv_id, _timeout_s)
+        return None
     if dl.error is not None:
-        logger.info("arxiv_download_pdf failed for %s: %s; trying metadata", arxiv_id, dl.error)
-        if "arxiv_resolve" in tools.names():
-            try:
-                async with asyncio.timeout(_fetch_timeout_s):
-                    resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
-                return (resolved.content or "", None)
-            except TimeoutError:
-                logger.warning("arxiv_resolve (after dl error) timed out for %s", arxiv_id)
-        return ("", None)
+        logger.info("arxiv_download_pdf failed for %s: %s", arxiv_id, dl.error)
+        return None
     pdf_path = parse_pdf_path(dl.content)
     if pdf_path is None:
         logger.warning(
@@ -702,64 +687,52 @@ async def _fetch_paper_text(arxiv_id: str, tools: ToolRegistry) -> tuple[str, st
             arxiv_id,
             (dl.content or "")[:100],
         )
-        return (dl.content or "", None)
+        return None
+    return pdf_path
+
+
+async def _fetch_paper_text_fallback(arxiv_id: str, tools: ToolRegistry) -> tuple[str, str | None]:
+    """Fall back to arxiv_resolve metadata when PDF download is unavailable."""
+    _timeout_s: float = 180.0
+    if "arxiv_resolve" not in tools.names():
+        return ("", None)
     try:
-        # Extraction is the most expensive step for large PDFs — give it the
-        # bulk of the fetch budget on its own clock, independent of download.
-        async with asyncio.timeout(_fetch_timeout_s):
+        async with asyncio.timeout(_timeout_s):
+            resolved = await tools.call("arxiv_resolve", {"arxiv_id": arxiv_id})
+        return (resolved.content or "", None)
+    except TimeoutError:
+        logger.warning("arxiv_resolve timed out for %s (%.0fs)", arxiv_id, _timeout_s)
+        return ("", None)
+
+
+async def _extract_text(pdf_path: str, tools: ToolRegistry, timeout_s: float = 180.0) -> str:
+    """Extract text from a local PDF file. Returns the extracted text or ''."""
+    if "pdf_extract_text" not in tools.names():
+        return ""
+    try:
+        async with asyncio.timeout(timeout_s):
             extracted = await tools.call("pdf_extract_text", {"file_path": pdf_path})
+        return extracted.content or ""
     except TimeoutError:
-        logger.warning(
-            "pdf_extract_text timed out for %s after %.0fs (path=%s); returning empty text",
-            arxiv_id,
-            _fetch_timeout_s,
-            pdf_path,
-        )
-        return ("", pdf_path)
-    return (extracted.content or "", pdf_path)
+        logger.warning("pdf_extract_text timed out (path=%s); returning empty", pdf_path)
+        return ""
 
 
-async def _render_paper_pages(arxiv_id: str, tools: ToolRegistry, max_pages: int = 10) -> list[str]:
-    """Download + render. Returns [] on any failure (the analysis falls back
-    to text-only mode).
-
-    Bounded by `_RENDER_TIMEOUT_S` so a single paper's vision rendering cannot
-    eat an entire researcher's overall time budget; failure is non-fatal and
-    simply downgrades to text-only analysis for that paper.
-    """
-    _render_timeout_s: float = 300.0
-    if "arxiv_download_pdf" not in tools.names() or "pdf_render_pages" not in tools.names():
+async def _render_pages(
+    pdf_path: str, tools: ToolRegistry, max_pages: int = 10, timeout_s: float = 300.0
+) -> list[str]:
+    """Render pages from a local PDF file. Returns [] on any failure."""
+    if "pdf_render_pages" not in tools.names():
         return []
     try:
-        async with asyncio.timeout(_render_timeout_s):
-            dl = await tools.call("arxiv_download_pdf", {"arxiv_id": arxiv_id})
-    except TimeoutError:
-        logger.warning(
-            "render: arxiv_download_pdf timed out for %s after %.0fs",
-            arxiv_id,
-            _render_timeout_s,
-        )
-        return []
-    if dl.error is not None:
-        return []
-    pdf_path = parse_pdf_path(dl.content)
-    if pdf_path is None:
-        return []
-    try:
-        async with asyncio.timeout(_render_timeout_s):
+        async with asyncio.timeout(timeout_s):
             render = await tools.call(
                 "pdf_render_pages", {"file_path": pdf_path, "max_pages": max_pages}
             )
+        return parse_rendered_pages(render)
     except TimeoutError:
-        logger.warning(
-            "render: pdf_render_pages timed out for %s after %.0fs (path=%s); "
-            "downgrading this paper to text-only",
-            arxiv_id,
-            _render_timeout_s,
-            pdf_path,
-        )
+        logger.warning("pdf_render_pages timed out (path=%s); downgrading to text-only", pdf_path)
         return []
-    return parse_rendered_pages(render)
 
 
 # ---------------------------------------------------------------------------

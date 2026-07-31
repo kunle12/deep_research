@@ -40,7 +40,9 @@ class TestRedditCredentials:
     async def test_missing_asyncpraw_returns_error(self, config, reg):
         """When asyncpraw is not installed, returns a clean error."""
         with (
-            patch("deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]),
+            patch(
+                "deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]
+            ),
             patch("deep_research.tools.reddit._HAS_ASYNCPRAW", False),
         ):
             await register(reg, config)
@@ -63,9 +65,11 @@ class TestRedditHappyPath:
         mock_submission.selftext = "This is a test post content."
 
         mock_subreddit = MagicMock()
+
         # search must return an async iterable, not a list
         async def _mock_search(*args, **kwargs):
             yield mock_submission
+
         mock_subreddit.search = _mock_search
 
         mock_reddit = MagicMock()
@@ -74,7 +78,9 @@ class TestRedditHappyPath:
         mock_reddit.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]),
+            patch(
+                "deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]
+            ),
             patch("deep_research.tools.reddit.asyncpraw") as mock_ap_mod,
         ):
             mock_ap_mod.Reddit = MagicMock(return_value=mock_reddit)
@@ -95,6 +101,7 @@ class TestRedditHappyPath:
             # Return an empty async generator
             if False:
                 yield None
+
         mock_subreddit.search = _mock_empty
 
         mock_reddit = MagicMock()
@@ -103,7 +110,9 @@ class TestRedditHappyPath:
         mock_reddit.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]),
+            patch(
+                "deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]
+            ),
             patch("deep_research.tools.reddit.asyncpraw") as mock_ap_mod,
         ):
             mock_ap_mod.Reddit = MagicMock(return_value=mock_reddit)
@@ -120,6 +129,7 @@ class TestRedditHappyPath:
         async def _mock_raise(*args, **kwargs):
             raise ValueError("API rate limit exceeded")
             yield  # never reached
+
         mock_subreddit.search = _mock_raise
 
         mock_reddit = MagicMock()
@@ -128,7 +138,9 @@ class TestRedditHappyPath:
         mock_reddit.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]),
+            patch(
+                "deep_research.tools.reddit.os.environ.get", side_effect=["fake_id", "fake_secret"]
+            ),
             patch("deep_research.tools.reddit.asyncpraw") as mock_ap_mod,
         ):
             mock_ap_mod.Reddit = MagicMock(return_value=mock_reddit)

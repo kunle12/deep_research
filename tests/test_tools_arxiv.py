@@ -237,9 +237,7 @@ async def test_arxiv_download_pdf_http_error(tmp_path) -> None:
     cfg = AgentTopConfig()
     cfg.arxiv.request_delay_s = 0.0
     cfg.arxiv.pdf_cache_dir = str(tmp_path / "arxiv_pdfs")
-    respx.get("https://arxiv.org/pdf/1234.56789.pdf").mock(
-        return_value=httpx.Response(503)
-    )
+    respx.get("https://arxiv.org/pdf/1234.56789.pdf").mock(return_value=httpx.Response(503))
     reg = await build_tool_registry(cfg)
     res = await reg.call("arxiv_download_pdf", {"arxiv_id": "1234.56789"})
     assert res.error is not None
@@ -298,9 +296,7 @@ class TestHelpers:
         assert ".." not in p2.name
 
     def test_result_to_citation(self) -> None:
-        r = _FakeResult(
-            "2402.54321v4", "My Title", "Long abstract text.", ["A", "B"]
-        )
+        r = _FakeResult("2402.54321v4", "My Title", "Long abstract text.", ["A", "B"])
         c = arxiv_tool._result_to_citation(r)
         assert c.url == "https://arxiv.org/abs/2402.54321"  # version stripped
         assert c.title == "My Title"
@@ -331,10 +327,7 @@ async def test_rate_limited_runs_under_concurrency(monkeypatch) -> None:
     )
     reg = await build_tool_registry(cfg)
     # Run five concurrent searches — should not deadlock under concurrency=1
-    tasks = [
-        reg.call("arxiv_search", {"query": f"q{i}", "max_results": 5})
-        for i in range(5)
-    ]
+    tasks = [reg.call("arxiv_search", {"query": f"q{i}", "max_results": 5}) for i in range(5)]
     results = await asyncio.gather(*tasks)
     assert all(r.error is None for r in results)
     assert len(results) == 5

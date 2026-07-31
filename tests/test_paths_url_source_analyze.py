@@ -32,8 +32,8 @@ from deep_research.paths.url_source import (
     _render_analysis_markdown,
     url_source,
 )
-from deep_research.tools.pdf_utils import parse_pdf_path as _parse_pdf_path
 from deep_research.state import Citation, SourceAnalysis, ToolName
+from deep_research.tools.pdf_utils import parse_pdf_path as _parse_pdf_path
 
 _us_module = _sys.modules["deep_research.paths.url_source"]
 
@@ -343,11 +343,14 @@ class TestFetchHelpers:
 
         async def _render(**kw: Any) -> ToolResult:
             import json
+
             return ToolResult(
-                content=json.dumps({
-                    "pages": ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"],
-                    "count": 2,
-                })
+                content=json.dumps(
+                    {
+                        "pages": ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"],
+                        "count": 2,
+                    }
+                )
             )
 
         reg = _registry(
@@ -443,13 +446,18 @@ class TestFetchHelpers:
 
         async def _render(**kw: Any) -> ToolResult:
             import json
-            return ToolResult(content=json.dumps({"pages": ["data:image/jpeg;base64,AAAA"], "count": 1}))
+
+            return ToolResult(
+                content=json.dumps({"pages": ["data:image/jpeg;base64,AAAA"], "count": 1})
+            )
 
         reg = _registry({"pdf_extract_text": _extract, "pdf_render_pages": _render})
 
         pdf_bytes = b"%PDF-1.5 dummy"
         respx.get("https://cdn.test/x.pdf").mock(
-            return_value=httpx.Response(200, content=pdf_bytes, headers={"content-type": "application/pdf"})
+            return_value=httpx.Response(
+                200, content=pdf_bytes, headers={"content-type": "application/pdf"}
+            )
         )
 
         text, _cits, page_urls = await _fetch_pdf_source(
@@ -470,7 +478,12 @@ class TestUrlSourceDispatcher:
     async def test_arxiv_url_calls_analyze_and_renders(self, monkeypatch) -> None:
         # Arrange: stub the helpers to avoid hitting the network
         async def _fake_arxiv(_aid: str, _tools: ToolRegistry, **_kw: Any):
-            return ("paper body text", "My Title", [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")], [])
+            return (
+                "paper body text",
+                "My Title",
+                [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")],
+                [],
+            )
 
         monkeypatch.setattr(_us_module, "_fetch_arxiv_source", _fake_arxiv)
 
@@ -509,9 +522,7 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source(
-            "https://blog.example/post", "what does it say", client, reg, cfg
-        )
+        report = await url_source("https://blog.example/post", "what does it say", client, reg, cfg)
         assert report.path == "url_source"
         assert "blog summary here" in report.markdown
         assert "html" in report.markdown
@@ -531,9 +542,7 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source(
-            "https://x.test/p.pdf", "", client, reg, cfg
-        )
+        report = await url_source("https://x.test/p.pdf", "", client, reg, cfg)
         assert report.path == "url_source"
         assert "pdf summary" in report.markdown
         assert "pdf" in report.markdown.lower()
@@ -582,9 +591,7 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source(
-            "https://broken.test", "summarize", client, reg, cfg
-        )
+        report = await url_source("https://broken.test", "summarize", client, reg, cfg)
         assert report.path == "url_source"
         assert "Source Fetch Failed" in report.markdown
         assert "HTTP 503" in report.markdown
@@ -592,7 +599,12 @@ class TestUrlSourceDispatcher:
     @pytest.mark.asyncio
     async def test_no_follow_up_when_query_neutral(self, monkeypatch) -> None:
         async def _fake_arxiv(_aid: str, _tools: ToolRegistry, **_kw: Any):
-            return ("text", "T", [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")], [])
+            return (
+                "text",
+                "T",
+                [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")],
+                [],
+            )
 
         monkeypatch.setattr(_us_module, "_fetch_arxiv_source", _fake_arxiv)
 
@@ -627,7 +639,12 @@ class TestUrlSourceDispatcher:
     @pytest.mark.asyncio
     async def test_follow_up_triggered_when_query_asks_for_gaps(self, monkeypatch) -> None:
         async def _fake_arxiv(_aid: str, _tools: ToolRegistry, **_kw: Any):
-            return ("text", "T", [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")], [])
+            return (
+                "text",
+                "T",
+                [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")],
+                [],
+            )
 
         monkeypatch.setattr(_us_module, "_fetch_arxiv_source", _fake_arxiv)
 
@@ -643,6 +660,7 @@ class TestUrlSourceDispatcher:
         # Stub the deep path handoff so we don't run the real deep loop
         async def _fake_followup(classified, original_query, client, tools, config, **kwargs):
             from deep_research.state import Report
+
             return Report(markdown="## Follow-up Research\n\ndeep result body", path="deep")
 
         # _maybe_run_follow_up imports deep_research.paths.deep.deep_research lazily,
@@ -673,7 +691,12 @@ class TestUrlSourceDispatcher:
     async def test_follow_up_not_run_when_no_gaps_or_follow_ups(self, monkeypatch) -> None:
         # Even with a trigger-phrase query, no gaps/follow_ups -> no follow-up section
         async def _fake_arxiv(_aid: str, _tools: ToolRegistry, **_kw: Any):
-            return ("text", "T", [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")], [])
+            return (
+                "text",
+                "T",
+                [_cit("https://arxiv.org/abs/2401.12345", source_type="arxiv")],
+                [],
+            )
 
         monkeypatch.setattr(_us_module, "_fetch_arxiv_source", _fake_arxiv)
 

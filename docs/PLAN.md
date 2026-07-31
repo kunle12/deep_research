@@ -257,6 +257,7 @@ agent:
   max_refinement_depth: 2        # max recursive drill-deeper nesting levels
   max_refinement_per_researcher: 3  # max refine calls per single researcher
   max_total_refinements_per_iteration: 6  # global cap per iteration
+  max_subquestion_retries: 3      # max researcher failures per sub-q before forced coverage
   classifier:
     enabled: true
     force_path: null  # null | "quick" | "deep" | "academic" | "url_source"

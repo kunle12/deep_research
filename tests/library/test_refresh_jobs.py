@@ -12,7 +12,10 @@ async def test_start_and_complete_refresh_job(sqlite_backend):
     assert len(job_id) > 0
 
     await sqlite_backend.complete_refresh_job(
-        job_id=job_id, considered=10, refreshed=3, status="completed",
+        job_id=job_id,
+        considered=10,
+        refreshed=3,
+        status="completed",
     )
 
 

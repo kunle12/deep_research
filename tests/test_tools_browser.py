@@ -201,7 +201,7 @@ class TestHappyPathNavigate:
         fake_mcp = _FakeMCPClientCtx("npx", ["-y", "@playwright/mcp@latest"])
         # Tell the navigate tool the resulting page had some text
         fake_mcp._call_default = _make_text_result(
-            [("text", "- heading \"Welcome to Example\" [ref=s1h1]\nSome body content")]
+            [("text", '- heading "Welcome to Example" [ref=s1h1]\nSome body content')]
         )
 
         def _factory(command: str, args: list[str]) -> _FakeMCPClientCtx:
@@ -322,7 +322,8 @@ class TestOtherTools:
         await reg.call("browser_click", {"target": "ref=s2", "element": "Submit button"})
         assert fake_mcp.call_log[0] == ("browser_click", {"target": "ref=s1"})
         assert fake_mcp.call_log[1] == (
-            "browser_click", {"target": "ref=s2", "element": "Submit button"}
+            "browser_click",
+            {"target": "ref=s2", "element": "Submit button"},
         )
         await reg.close()
 
@@ -384,9 +385,7 @@ class TestMCPCallFailures:
         cfg = _cfg()
         monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
         fake_mcp = _FakeMCPClientCtx("npx", ["x"])
-        fake_mcp._call_default = _make_text_result(
-            [("text", "selector not found")], is_error=True
-        )
+        fake_mcp._call_default = _make_text_result([("text", "selector not found")], is_error=True)
         monkeypatch.setattr(browser_tool, "_MCPClientCtx", lambda c, a: fake_mcp)
         reg = await build_tool_registry(cfg)
         res = await reg.call("browser_snapshot", {})
@@ -490,10 +489,7 @@ class TestTitleFromContent:
         assert browser_tool._title_from_content(snapshot) == "Example Domain"
 
     def test_page_title_takes_precedence_over_heading(self) -> None:
-        snapshot = (
-            "- Page Title: Title From Metadata\n"
-            '- heading "Title From Heading" [ref=s1h1]\n'
-        )
+        snapshot = '- Page Title: Title From Metadata\n- heading "Title From Heading" [ref=s1h1]\n'
         assert browser_tool._title_from_content(snapshot) == "Title From Metadata"
 
     def test_extracts_md_h1_heading_as_last_resort(self) -> None:
@@ -505,7 +501,7 @@ class TestTitleFromContent:
         assert browser_tool._title_from_content(snapshot) == "Real Title"
 
     def test_returns_empty_on_no_heading(self) -> None:
-        assert browser_tool._title_from_content("- paragraph \"Body\"") == ""
+        assert browser_tool._title_from_content('- paragraph "Body"') == ""
 
     def test_returns_empty_on_empty_content(self) -> None:
         assert browser_tool._title_from_content("") == ""

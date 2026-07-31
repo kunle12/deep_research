@@ -37,7 +37,12 @@ def render_citation_graph_markdown(graph: CitationGraph) -> str:
         if not roots:
             roots = list(graph.nodes.values())
 
+    _MAX_RENDER_DEPTH = 20
+
     def _render(node: PaperNode, depth: int, lines: list[str]) -> None:
+        if depth > _MAX_RENDER_DEPTH:
+            lines.append(f"{'  ' * depth}└─ [... max depth reached]")
+            return
         indent = "  " * depth
         bullet = "-" if depth == 0 else "└─"
         title = node.title or node.arxiv_id
@@ -77,9 +82,15 @@ def render_bibtex(graph: CitationGraph) -> str:
                 "@misc{" + key + ",\n"
                 "  title = {" + title + "},\n"
                 "  author = {" + authors + "},\n"
-                "  howpublished = {\\href{" + url + "}{" + url + "}},\n"
+                "  howpublished = {\\href{"
+                + url
+                + "}{"
+                + url
+                + "}},\n"
                 + (f"  doi = {{{doi}}},\n" if doi else "")
-                + "  year = {" + (str(node.year) if node.year else "unknown") + "}\n"
+                + "  year = {"
+                + (str(node.year) if node.year else "unknown")
+                + "}\n"
                 "}\n"
             )
         else:

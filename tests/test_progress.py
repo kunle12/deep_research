@@ -165,7 +165,11 @@ class TestProgressReporterInPaths:
         assert report.path == "quick"
         # First phase is the routing phase; later phases are quick.* names.
         phase_names = [p[0] for p in rec.phases]
-        assert "quick.search" in phase_names or "quick.synthesize" in phase_names or "quick.done" in phase_names
+        assert (
+            "quick.search" in phase_names
+            or "quick.synthesize" in phase_names
+            or "quick.done" in phase_names
+        )
         # Final phase is "quick.done" or similar.
         # `complete()` is called on every exit path — even the error path.
         assert rec.completed is True

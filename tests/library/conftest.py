@@ -44,8 +44,17 @@ async def postgres_backend():
     await backend.connect()
     # Drop all tables for fresh state
     conn = backend._conn
-    for t in ["refresh_jobs", "artifact_versions", "glossary", "tags",
-              "citation_edges", "analyses", "reports", "artifacts", "schema_meta"]:
+    for t in [
+        "refresh_jobs",
+        "artifact_versions",
+        "glossary",
+        "tags",
+        "citation_edges",
+        "analyses",
+        "reports",
+        "artifacts",
+        "schema_meta",
+    ]:
         await conn.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
     await backend.ensure_schema()
     yield backend

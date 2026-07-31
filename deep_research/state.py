@@ -113,15 +113,22 @@ class ResearchState(BaseModel):
     pending_refinements: list[SubQuestion] = Field(default_factory=list)
 
     def is_covered(self, sub_q: SubQuestion) -> bool:
-        """A sub-question is 'covered' if it has >=1 cited source AND a draft."""
-        return bool(self.sections.get(sub_q.id)) and sub_q.id in self.drafts
+        """A sub-question is 'covered' if it has a draft (with or without citations)."""
+        return sub_q.id in self.drafts
+
+    @staticmethod
+    def _dedup_citations(
+        existing: dict[str, Citation], new_citations: list[Citation]
+    ) -> dict[str, Citation]:
+        """Dedup by url, keep highest confidence."""
+        for c in new_citations:
+            cur = existing.get(c.url)
+            if cur is None or cur.confidence_score < c.confidence_score:
+                existing[c.url] = c
+        return existing
 
     def absorb_citations(self, new_citations: list[Citation]) -> None:
-        for c in new_citations:
-            # dedup by url, keep highest confidence
-            existing = self.citations.get(c.url)
-            if existing is None or existing.confidence_score < c.confidence_score:
-                self.citations[c.url] = c
+        self._dedup_citations(self.citations, new_citations)
 
     def absorb_section(self, sq_id: str, citations: list[Citation], draft: str) -> None:
         self.sections[sq_id] = citations

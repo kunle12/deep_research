@@ -67,6 +67,7 @@ async def _register(monkeypatch, cfg: AgentTopConfig) -> ToolRegistry:
     """Register the scholar tool with a given config (mocked env)."""
     monkeypatch.setenv("SERPER_API_KEY", "test-key-123")
     from deep_research.tools import scholar
+
     reg = ToolRegistry()
     await scholar.register(reg, cfg)
     return reg
@@ -87,10 +88,24 @@ async def test_serper_search_basic(monkeypatch) -> None:
     endpoint = cfg.scholar.serper.endpoint
     respx.post(endpoint).respond(
         status_code=200,
-        json=_serper_response([
-            _serper_hit(title="Paper A", link="https://arxiv.org/abs/1706.03762", cited_by=100, year=2017),
-            _serper_hit(title="Paper B", link="https://doi.org/10.1234/example", cited_by=50, year=2020, pdf=None, doi=None),
-        ]),
+        json=_serper_response(
+            [
+                _serper_hit(
+                    title="Paper A",
+                    link="https://arxiv.org/abs/1706.03762",
+                    cited_by=100,
+                    year=2017,
+                ),
+                _serper_hit(
+                    title="Paper B",
+                    link="https://doi.org/10.1234/example",
+                    cited_by=50,
+                    year=2020,
+                    pdf=None,
+                    doi=None,
+                ),
+            ]
+        ),
     )
     result = await reg.call("scholar_search", {"query": "transformer", "max_results": 5})
     assert result.error is None, f"unexpected error: {result.error}"
@@ -229,17 +244,19 @@ async def test_no_arxiv_id_non_arxiv(monkeypatch) -> None:
     endpoint = cfg.scholar.serper.endpoint
     respx.post(endpoint).respond(
         status_code=200,
-        json=_serper_response([
-            _serper_hit(
-                title="A Nature paper",
-                link="https://www.nature.com/articles/s41586-024-12345",
-                authors="Smith, John",
-                year=2024,
-                cited_by=500,
-                pdf="https://www.nature.com/content/pdf/s41586-024-12345.pdf",
-                doi="10.1038/s41586-024-12345",
-            )
-        ]),
+        json=_serper_response(
+            [
+                _serper_hit(
+                    title="A Nature paper",
+                    link="https://www.nature.com/articles/s41586-024-12345",
+                    authors="Smith, John",
+                    year=2024,
+                    cited_by=500,
+                    pdf="https://www.nature.com/content/pdf/s41586-024-12345.pdf",
+                    doi="10.1038/s41586-024-12345",
+                )
+            ]
+        ),
     )
     result = await reg.call("scholar_search", {"query": "nature", "max_results": 5})
     assert result.citations[0].arxiv_id is None
@@ -326,7 +343,9 @@ async def test_concurrency_semaphore(monkeypatch) -> None:
     endpoint = cfg.scholar.serper.endpoint
     respx.post(endpoint).mock(
         side_effect=[
-            httpx.Response(status_code=200, json=_serper_response([_serper_hit(title=f"Paper {i}")]))
+            httpx.Response(
+                status_code=200, json=_serper_response([_serper_hit(title=f"Paper {i}")])
+            )
             for i in range(5)
         ],
     )
@@ -348,7 +367,9 @@ async def test_serper_proactive_quota_fallback(monkeypatch) -> None:
     respx.post(endpoint).mock(return_value=httpx.Response(200, json=serper_resp))
 
     searxng_url = cfg.scholar.searxng.url
-    searxng_resp = {"results": [{"title": "SearXNG paper", "url": "https://example.com/sx", "content": "ok"}]}
+    searxng_resp = {
+        "results": [{"title": "SearXNG paper", "url": "https://example.com/sx", "content": "ok"}]
+    }
     respx.get(searxng_url).mock(return_value=httpx.Response(200, json=searxng_resp))
 
     # First call uses Serper
@@ -385,6 +406,7 @@ async def test_serper_proactive_quota_fallback(monkeypatch) -> None:
 )
 def test_infer_arxiv_id(url, doi, title, expected) -> None:
     from deep_research.tools.scholar import _infer_arxiv_id
+
     assert _infer_arxiv_id(url, doi, title) == expected
 
 
@@ -407,4 +429,5 @@ def test_infer_arxiv_id(url, doi, title, expected) -> None:
 )
 def test_parse_year(input, expected) -> None:
     from deep_research.tools.scholar import _parse_year
+
     assert _parse_year(input) == expected

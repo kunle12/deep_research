@@ -169,9 +169,7 @@ async def test_render_returns_clean_error_when_pdf_vision_disabled(tmp_path) -> 
 async def test_render_missing_file_returns_error() -> None:
     cfg = AgentTopConfig()
     reg = await build_tool_registry(cfg)
-    res = await reg.call(
-        "pdf_render_pages", {"file_path": "/nonexistent/y.pdf"}
-    )
+    res = await reg.call("pdf_render_pages", {"file_path": "/nonexistent/y.pdf"})
     # Either FileNotFoundError or poppler-related runtime; in both cases `error`
     # is populated.
     assert res.error is not None
@@ -195,7 +193,7 @@ async def test_render_poppler_missing_returns_install_hint(monkeypatch, tmp_path
     async def _should_not_call(*a: Any, **kw: Any) -> Any:
         raise _FakeMissingError("pdfinfo not installed. Is poppler installed?")
 
-    monkeypatch.setattr(pdf_tool, "_sync_render", lambda *a, **kw: (_should_not_call()))
+    monkeypatch.setattr(pdf_tool, "_sync_render", lambda *a, **kw: _should_not_call())
 
     # Make sure the heuristic accepts the exception name we raise. _is_poppler_missing
     # checks `cls_name in {"PDFInfoNotInstalledError", "PDFPopplerNotInstalledError"}`
@@ -295,7 +293,10 @@ class TestIsPopplerMissing:
         class _E(RuntimeError):
             pass
 
-        assert pdf_tool._is_poppler_missing(_E("Unable to locate poppler binary: not installed")) is True
+        assert (
+            pdf_tool._is_poppler_missing(_E("Unable to locate poppler binary: not installed"))
+            is True
+        )
 
     def test_message_contains_poppler_not_found(self) -> None:
         class _E(RuntimeError):
@@ -305,7 +306,9 @@ class TestIsPopplerMissing:
 
     def test_unrelated_exception_returns_false(self) -> None:
         assert pdf_tool._is_poppler_missing(RuntimeError("something completely unrelated")) is False
-        assert pdf_tool._is_poppler_missing(KeyError("poppler")) is False  # no "not installed/not found"
+        assert (
+            pdf_tool._is_poppler_missing(KeyError("poppler")) is False
+        )  # no "not installed/not found"
 
 
 class TestSyncExtract:

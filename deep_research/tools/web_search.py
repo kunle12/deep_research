@@ -180,8 +180,6 @@ def _format_for_llm(citations: list[Citation]) -> str:
 
 async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     cfg = config.search
-    _tavily_call_count: int = 0
-    _tavily_call_lock = asyncio.Lock()
 
     # Resolve the ordered list of backends to try (primary + fallback_chain, deduped)
     backends: list[str] = []
@@ -200,12 +198,16 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         )
         backends = [b for b in backends if b != "tavily"]
 
-    # Proactive quota guard: max calls allowed this session
+    # Proactive quota guard: atomic counter with Lock.
+    # When max_calls_per_session is None, unlimited calls are allowed.
+    # A Lock is needed because we must atomically check-and-increment — if
+    # quota is exhausted we skip Tavily (not block), so Semaphore won't work.
     tavily_max_calls = cfg.tavily.max_calls_per_session
+    _tavily_call_count: int = 0
+    _tavily_call_lock = asyncio.Lock()
     tavily_rate_limit_retries = cfg.tavily.rate_limit_retries
 
     async def _call(query: str, max_results: int = 10, **_: Any) -> ToolResult:
-        nonlocal _tavily_call_count
         if not backends:
             return ToolResult(
                 content="web_search has no usable backend (no tavily key, no searxng).",
@@ -235,6 +237,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                             retries=tavily_rate_limit_retries,
                         )
                     except Exception:
+                        # Decrement under lock so the counter stays accurate
                         async with _tavily_call_lock:
                             _tavily_call_count -= 1
                         raise

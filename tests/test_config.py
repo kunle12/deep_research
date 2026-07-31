@@ -54,6 +54,4 @@ def test_force_path_enum_values() -> None:
     cfg = AgentTopConfig()
     assert cfg.agent.classifier.force_path is None
     with pytest.raises(ValidationError):
-        AgentTopConfig.model_validate(
-            {"agent": {"classifier": {"force_path": "bogus_path"}}}
-        )
+        AgentTopConfig.model_validate({"agent": {"classifier": {"force_path": "bogus_path"}}})
