@@ -23,6 +23,13 @@ from typing import Any, Literal
 from openai import AsyncOpenAI
 
 from deep_research.llm.tokens import count_text_tokens
+from deep_research.llm.vision import (
+    IMAGE_DEGRADE_LADDER,
+    MAX_TEXT_CHARS_WITH_IMAGES,
+    TOKENS_PER_IMAGE,
+    degrade_image,
+    is_context_overflow,
+)
 from deep_research.state import PaperAnalysis
 
 logger = logging.getLogger(__name__)
@@ -32,32 +39,11 @@ _IMAGE_BATCH_PROMPT_FILE = (
     Path(__file__).resolve().parent.parent / "prompts" / "analyze_paper_images.txt"
 )
 
-# Rough tokens per image (base64 data URL). Conservative estimate for
-# medium-resolution rendered PDF pages.
-_TOKENS_PER_IMAGE = 1100
 # Reserve for system prompt, JSON schema instructions, and response.
 _RESERVED_TOKENS = 4096
-# Hard cap on paper text chars to prevent context blowup even with large
-# context windows. ~40k chars ≈ 10k tokens.
+# Hard cap on paper text chars for the text-only synthesis call.
+# ~40k chars ≈ 10k tokens.
 _MAX_PAPER_CHARS = 40000
-
-_CONTEXT_ERROR_MARKERS = (
-    "tokenize",
-    "context length",
-    "context_length",
-    "maximum context",
-    "too long",
-    "too many tokens",
-    "reduce the length",
-    "prompt is too",
-)
-
-
-def _is_context_overflow_error(exc: Exception) -> bool:
-    """Heuristic: does this exception look like a prompt-too-long / tokenization
-    overflow from the server?"""
-    msg = str(exc).lower()
-    return any(marker in msg for marker in _CONTEXT_ERROR_MARKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -96,15 +82,19 @@ async def _call(
 def _compute_batch_size(
     paper_text: str,
     query: str,
+    images: list[str],
     max_context_tokens: int,
     model: str,
 ) -> int:
     """Return the max number of images that can fit in a single LLM call
-    alongside the paper text and prompt overhead.
+    alongside a small text context and prompt overhead.
 
-    Uses the same token-budget logic as _build_messages.
+    Uses a fixed per-image token estimate appropriate for servers with
+    native vision encoding.
     """
-    prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
+    if not images:
+        return 1
+    prompt_template = _IMAGE_BATCH_PROMPT_FILE.read_text(encoding="utf-8")
     base_prompt_tokens = count_text_tokens(
         prompt_template.replace("{arxiv_id}", "")
         .replace("{paper_text}", "")
@@ -112,9 +102,9 @@ def _compute_batch_size(
         .replace("{image_pages_section}", ""),
         model,
     )
-    paper_tokens = count_text_tokens(paper_text[: _MAX_PAPER_CHARS * 2], model)
-    available = max_context_tokens - _RESERVED_TOKENS - base_prompt_tokens - paper_tokens
-    return max(1, min(5, available // _TOKENS_PER_IMAGE))
+    text_tokens = count_text_tokens(paper_text[:MAX_TEXT_CHARS_WITH_IMAGES], model)
+    available = max_context_tokens - _RESERVED_TOKENS - base_prompt_tokens - text_tokens
+    return max(1, min(5, available // TOKENS_PER_IMAGE))
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +129,9 @@ async def _analyze_image_batch(
         f"\n## Page images (rendered PDF pages — {n} pages attached):\n({n} pages attached)\n"
     )
 
-    # Token budget for paper text in this batch call
+    # Token budget for paper text in this batch call.
+    # Image batch calls only need brief text context to locate figures;
+    # the full paper text is used in the text-only synthesis call.
     base_tokens = count_text_tokens(
         prompt_template.replace("{arxiv_id}", arxiv_id)
         .replace("{paper_text}", "")
@@ -147,9 +139,9 @@ async def _analyze_image_batch(
         .replace("{image_pages_section}", image_section),
         model,
     )
-    image_tokens = n * _TOKENS_PER_IMAGE
+    image_tokens = n * TOKENS_PER_IMAGE
     available = max_context_tokens - _RESERVED_TOKENS - image_tokens - base_tokens
-    max_chars = min(_MAX_PAPER_CHARS, max(1000, available * 4))
+    max_chars = min(MAX_TEXT_CHARS_WITH_IMAGES, max(500, available * 4))
 
     prompt_text = (
         prompt_template.replace("{arxiv_id}", arxiv_id)
@@ -187,7 +179,7 @@ async def _analyze_image_batch(
             "extraction_text": str(data.get("extraction_text", "") or ""),
         }
     except Exception as e:
-        if _is_context_overflow_error(e):
+        if is_context_overflow(e):
             # Re-raise so the caller can retry with smaller batches
             raise
         logger.warning(
@@ -286,7 +278,7 @@ async def _synthesize_final(
             analysis.key_references = []
         return analysis
     except Exception as e:
-        if _is_context_overflow_error(e):
+        if is_context_overflow(e):
             # Retry once with halved text if the synthesis itself overflows
             logger.warning(
                 "analyze_paper %s final synthesis too long; retrying with halved text: %s",
@@ -396,14 +388,15 @@ async def analyze(
         )
 
     # --- Multi-batch path: always process images in adaptive batches ---
-    # The single-shot estimate is unreliable because _TOKENS_PER_IMAGE assumes
-    # vision encoding, but most servers tokenize base64 as text (~100KB per
-    # image).  Always batch when images are present.
-    #
+    # Adaptive batching: start with computed batch_size, halve on failure.
+    # When batch_size=1 still overflows, degrade image quality/resolution
+    # via IMAGE_DEGRADE_LADDER before giving up on the image.
 
-    # Adaptive batching: start with computed batch_size, halve on failure
-    batch_size = _compute_batch_size(paper_text, query, max_context_tokens, model)
+    remaining = list(page_image_data_urls)
+    batch_size = _compute_batch_size(paper_text, query, remaining, max_context_tokens, model)
     batch_size = max(1, min(batch_size, n_images))
+    degrade_idx = 0
+
     logger.info(
         "analyze_paper %s: adaptive batching with initial batch_size=%d, %d images total",
         arxiv_id,
@@ -413,7 +406,6 @@ async def analyze(
 
     all_figures: list[str] = []
     all_extractions: list[str] = []
-    remaining = list(page_image_data_urls)
 
     while remaining:
         batch = remaining[:batch_size]
@@ -434,7 +426,7 @@ async def analyze(
                 all_extractions.append(ext)
             remaining = remaining[batch_size:]
         except Exception as e:
-            if _is_context_overflow_error(e) and batch_size > 1:
+            if is_context_overflow(e) and batch_size > 1:
                 logger.info(
                     "analyze_paper %s batch(%d images) overflow; halving batch "
                     "size to %d and retrying same images: %s",
@@ -444,8 +436,29 @@ async def analyze(
                     e,
                 )
                 batch_size = max(1, batch_size // 2)
-                # Do NOT advance — retry same images with smaller batch
                 continue
+            elif is_context_overflow(e) and batch_size == 1:
+                if degrade_idx < len(IMAGE_DEGRADE_LADDER):
+                    max_dim, quality = IMAGE_DEGRADE_LADDER[degrade_idx]
+                    logger.info(
+                        "analyze_paper %s single image overflow; degrading to "
+                        "%dpx/q%d and retrying: %s",
+                        arxiv_id,
+                        max_dim,
+                        quality,
+                        e,
+                    )
+                    remaining = [degrade_image(url, max_dim, quality) for url in remaining]
+                    degrade_idx += 1
+                    continue
+                else:
+                    logger.warning(
+                        "analyze_paper %s single image overflow after all "
+                        "degradation steps; skipping image: %s",
+                        arxiv_id,
+                        e,
+                    )
+                    remaining = remaining[1:]
             else:
                 logger.warning(
                     "analyze_paper %s batch(%d images) non-overflow error; advancing: %s: %s",
@@ -511,7 +524,7 @@ def _build_messages(
             f"({n_images} pages attached)\n"
         )
 
-    image_tokens = n_images * _TOKENS_PER_IMAGE
+    image_tokens = n_images * TOKENS_PER_IMAGE
     base_prompt_tokens = count_text_tokens(
         prompt_template.replace("{arxiv_id}", arxiv_id)
         .replace("{paper_text}", "")

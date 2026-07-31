@@ -21,10 +21,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from deep_research.llm.vision import is_context_overflow
 from deep_research.nodes.analyze_paper import (
     _analyze_image_batch,
     _coerce,
-    _is_context_overflow_error,
     _synthesize_final,
     analyze,
     extract_key_reference_arxiv_ids,
@@ -203,9 +203,9 @@ class TestMultiBatch:
         assert isinstance(syn_uc, str)
 
     @pytest.mark.asyncio
-    async def test_adaptive_halving_on_tokenization_overflow(self) -> None:
-        """When a batch fails with a tokenization error, batch size is halved
-        and the same images are retried."""
+    async def test_adaptive_halving_on_context_overflow(self) -> None:
+        """When a batch fails with a context-length overflow, batch size is
+        halved and the same images are retried."""
         call_log: list[int] = []
 
         class _FakeErr(Exception):
@@ -221,7 +221,7 @@ class TestMultiBatch:
             )
             call_log.append(nimg)
             if nimg == 5:
-                raise _FakeErr("Failed to tokenize prompt")
+                raise _FakeErr("This model's maximum context length is 131072 tokens")
             return _FakeResponse(
                 json.dumps({"figure_descriptions": [f"fig_{nimg}"], "extraction_text": f"t{nimg}"})
             )
@@ -239,6 +239,41 @@ class TestMultiBatch:
         assert len(batch_calls) == 6  # 1 failed(5) + 5 succeeded(2)
         assert batch_calls[0] == 5  # first attempt with 5
         assert all(n == 2 for n in batch_calls[1:])  # all retries with 2
+
+    @pytest.mark.asyncio
+    async def test_overflow_degradation_then_skip(self) -> None:
+        """When every batch size overflows, images are degraded then skipped
+        one by one, and the final text-only synthesis still runs."""
+        call_log: list[int] = []
+
+        class _FakeErr(Exception):
+            pass
+
+        async def _always_overflow(**kwargs: Any) -> Any:
+            msgs = kwargs["messages"]
+            uc = msgs[1]["content"]
+            nimg = (
+                len([b for b in uc if isinstance(b, dict) and b.get("type") == "image_url"])
+                if isinstance(uc, list)
+                else 0
+            )
+            call_log.append(nimg)
+            if nimg > 0:
+                raise _FakeErr("This model's maximum context length is 32768 tokens")
+            return _FakeResponse(json.dumps({"title": "T", "summary": "S", "relevance_score": 0.9}))
+
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=_always_overflow)
+
+        images = [f"data:image/jpeg;base64,{i}" for i in range(3)]
+        out = await analyze("2402.54321", "text", "q", client, "m", page_image_data_urls=images)
+        assert isinstance(out, PaperAnalysis)
+        # All image batches fail → eventually all images skipped → synthesis runs
+        batch_calls = [n for n in call_log if n > 0]
+        assert len(batch_calls) > 0
+        # Final synthesis call (no images) must succeed
+        synth_calls = [n for n in call_log if n == 0]
+        assert len(synth_calls) == 1
 
     @pytest.mark.asyncio
     async def test_batch_non_context_error_is_non_fatal(self) -> None:
@@ -386,20 +421,20 @@ class TestSynthesizeFinal:
 
 
 # ---------------------------------------------------------------------------
-# _is_context_overflow_error
+# is_context_overflow
 # ---------------------------------------------------------------------------
 
 
 class TestIsContextOverflow:
     def test_matches_tokenize_error(self) -> None:
-        assert _is_context_overflow_error(RuntimeError("Failed to tokenize prompt"))
+        assert is_context_overflow(RuntimeError("Failed to tokenize prompt"))
 
     def test_matches_context_length(self) -> None:
-        assert _is_context_overflow_error(RuntimeError("context length exceeded"))
+        assert is_context_overflow(RuntimeError("context length exceeded"))
 
     def test_does_not_match_other_errors(self) -> None:
-        assert not _is_context_overflow_error(RuntimeError("connection refused"))
-        assert not _is_context_overflow_error(RuntimeError("rate limit"))
+        assert not is_context_overflow(RuntimeError("connection refused"))
+        assert not is_context_overflow(RuntimeError("rate limit"))
 
 
 # ---------------------------------------------------------------------------

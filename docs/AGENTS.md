@@ -191,6 +191,13 @@ Tags are batch-fetched via `get_tags_for_artifacts()` to avoid N+1 queries.
 5. **Shared ToolRegistry is immutable at runtime**: `ToolRegistry.register()`
    raises on duplicate names. Never register per-researcher tools on the shared
    registry — use `ScopedToolRegistry` to wrap it (see Dynamic Refinement Pattern)
+6. **Vision context limits ≠ advertised context**: VLM servers (llama.cpp, vLLM)
+   have a much lower effective limit for combined text+image payloads than their
+   advertised `n_ctx`. A server advertising 131k context may fail at ~8k chars
+   text + 1 image. Never stuff large text alongside images — cap text in image
+   batch calls (`_MAX_IMAGE_BATCH_TEXT_CHARS`) and reserve full text for
+   text-only synthesis. "Failed to tokenize prompt" does NOT mean "no vision
+   support" — test with minimal payloads before concluding a capability is missing.
 
 ---
 
@@ -260,6 +267,40 @@ sub-step) and `_render_paper_pages` (300s total) have their own inner
 `asyncio.timeout` boundaries so a slow render cannot eat the researcher's
 overall budget. Vision failure is non-fatal: a `TimeoutError` from the
 render path returns `[]` and the analysis downgrades to text-only mode.
+
+### Vision analysis context budget (nodes/analyze_paper.py)
+The `analyze_paper` node uses a two-phase approach for papers with images:
+
+1. **Image batch calls** (`_analyze_image_batch`): processes page images in
+   adaptive batches to extract figure descriptions and visible text. Paper
+   text included alongside images is capped at `_MAX_IMAGE_BATCH_TEXT_CHARS`
+   (4000 chars) — just enough context to locate figures. This is critical
+   because VLM servers have a much lower effective context limit for combined
+   text+image payloads than for text alone (e.g. llama.cpp with native vision
+   encoding fails at ~8k chars text + 1 image, despite advertising 131k context).
+
+2. **Text-only synthesis** (`_synthesize_final`): merges all per-batch figure
+   descriptions with the FULL paper text (up to `_MAX_PAPER_CHARS` = 40k chars)
+   for the final structured analysis. No images — full context budget available.
+
+**Adaptive batching:**
+- `_compute_batch_size` estimates how many images fit using `_TOKENS_PER_IMAGE`
+  (1500 tokens/image for native vision encoding) plus the capped text budget.
+- On context overflow: halve batch size → retry same images.
+- On single-image overflow: degrade image resolution via `_IMAGE_DEGRADE_LADDER`
+  (512px/q60 → 256px/q40) → skip image if all steps fail.
+- Non-context errors (server 500, etc.) are non-fatal: skip batch, continue.
+
+**Key constants:**
+- `_TOKENS_PER_IMAGE = 1500` — per-image cost for servers with native vision
+  encoding (NOT base64-as-text; most VLM servers encode images as fixed-size
+  vision tokens regardless of base64 length).
+- `_MAX_IMAGE_BATCH_TEXT_CHARS = 4000` — text cap in image batch calls.
+- `_MAX_PAPER_CHARS = 40000` — text cap in text-only synthesis.
+
+**Model selection:** `academic.py` passes `config.llm.vision_model` when images
+are present, `config.llm.text_model` otherwise. Both default to the same model
+but can be configured separately for deployments with dedicated vision endpoints.
 
 ### Turn-budget math
 The tool loop's wall-clock demand is roughly

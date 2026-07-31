@@ -1150,3 +1150,42 @@ $ uv run ruff check deep_research/ tests/
 - [x] `config.py` — added `AgentConfig.max_subquestion_retries: int = 3`
 - [x] `config.example.yaml` — added `max_subquestion_retries` knob
 - [x] `tests/test_paths_deep.py` — added stuck sub-question tests (`test_stuck_sub_question_marked_covered_after_max_retries`, `test_stuck_sub_question_does_not_block_other_sub_questions`)
+
+### Vision analysis context overflow fix (July 2026)
+
+**Problem:** `analyze_paper` image batch calls stuffed up to 40k chars of paper
+text alongside page images. VLM servers (e.g. llama.cpp with native vision
+encoding) have a much lower effective context limit for combined text+image
+payloads than advertised (~8k chars text + 1 image was the real threshold).
+This caused "Failed to tokenize prompt" errors on every image batch, wasting
+dozens of API calls per paper.
+
+**Root cause investigation:**
+- The error was NOT "model doesn't support vision" — direct endpoint testing
+  confirmed images work fine in isolation (even 10 images at 884KB each).
+- The error was NOT about base64 size — the server uses native vision encoding
+  (~1500 tokens/image regardless of base64 length).
+- The error WAS about combined text+image payload exceeding the server's actual
+  processing limit. Binary search found the threshold: 5k chars text + 1 image
+  works, 8k chars text + 1 image fails.
+
+**Fix:**
+- [x] `nodes/analyze_paper.py` — added `_MAX_IMAGE_BATCH_TEXT_CHARS = 4000`:
+  image batch calls now include only brief context (enough to locate figures).
+  Full paper text reserved for text-only synthesis call.
+- [x] `nodes/analyze_paper.py` — replaced bogus `_TOKENS_PER_IMAGE = 1100`
+  (assumed OpenAI-style vision tokens) with `_TOKENS_PER_IMAGE = 1500`
+  (appropriate for native vision encoding servers).
+- [x] `nodes/analyze_paper.py` — added `_IMAGE_DEGRADE_LADDER` for genuine
+  single-image overflow: re-encode at 512px/q60 → 256px/q40 before skipping.
+- [x] `nodes/analyze_paper.py` — adaptive batching loop: halve batch size on
+  overflow → degrade images → skip image as last resort.
+- [x] `paths/academic.py` — uses `config.llm.vision_model` when images are
+  present (was always using `text_model`).
+- [x] `tests/test_nodes_analyze_paper.py` — updated halving test to use
+  context-length error; added degradation-then-skip test.
+
+**Key lesson:** "Failed to tokenize prompt" from llama.cpp does NOT always mean
+"model is text-only". It means the total prompt exceeds the server's processing
+limit. Always test the endpoint directly with minimal payloads before concluding
+a capability is unsupported.

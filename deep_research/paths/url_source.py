@@ -392,7 +392,7 @@ async def url_source(
         content=content_text,
         user_query=query or "",
         client=client,
-        model=config.llm.text_model,
+        model=config.llm.vision_model if page_image_data_urls else config.llm.text_model,
         page_image_data_urls=page_image_data_urls or None,
     )
 

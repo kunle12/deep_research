@@ -308,7 +308,7 @@ async def academic_research(
                 paper_text=paper_text,
                 query=original_query,
                 client=client,
-                model=config.llm.text_model,
+                model=config.llm.vision_model if page_urls else config.llm.text_model,
                 page_image_data_urls=page_urls or None,
                 text_source=text_source,
                 max_context_tokens=config.llm.max_context_tokens,
