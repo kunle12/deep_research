@@ -106,6 +106,12 @@ fetch_page:
   user_agent: "DeepResearchBot/0.1 (+https://example.com)"
   request_timeout_s: 30
   min_content_chars_for_browser_fallback: 500
+  # How long a blocked verdict (bot detection / 4xx / 5xx) is remembered per
+  # URL, so a blocked page is not re-fetched repeatedly within a run.
+  blocked_cache_ttl_s: 3600
+  # When a page is blocked, retry it via the Wayback Machine before declaring
+  # it unavailable.
+  archive_org_fallback: true
 
 cache:
   diskcache_dir: "./.cache/misc"

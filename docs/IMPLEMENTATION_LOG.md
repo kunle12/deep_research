@@ -1594,3 +1594,36 @@ Storage protocol additions and the FastAPI library API.
 - [x] Targeted tests raised the weakest recently-touched modules: `citations.py` 73% → **95%** (bibliography/graph/bibtex renderers, arxiv-id-referenced filter), `paper_analysis.py` 75% → **93%** (tool timeouts, render-failure downgrade, pass skip/timeout/archive-failure branches, library-cache error fallback, PDF archival, key-reference reconstruction validation).
 - [x] Hardened `_analysis_from_row`: string key references are now validated against the arXiv ID pattern (caught by a new test).
 - [x] Final total: **87%** (6401 statements, 820 missed). Gate verified: `--fail-under=88` exits 2 while `fail_under=80` passes.
+
+## [Bot detection] — skip-and-record handling
+
+### Done
+
+- [x] `state.py`: `BLOCKED_PREFIX` + `BlockedSource` model; `ResearchState.blocked_sources` + `absorb_blocked_sources()` (dedup by URL, sub-question annotation); `Report.blocked_sources`.
+- [x] `tools/fetch_page.py`: `classify_blocked_response` + `detect_challenge_vendor` (status + body markers for Cloudflare / DataDome / Akamai / PerimeterX / reCAPTCHA / hCaptcha / generic); structured `BLOCKED:<category>[:<vendor>] (<status>)` errors; negative blocked cache (`blocked_cache_ttl_s`); blocked pages short-circuit the browser fallback; browser BLOCKED verdicts propagate instead of raw challenge HTML.
+- [x] `tools/browser.py`: `browser_navigate` detects challenge markers in rendered snapshots and returns `BLOCKED:bot_detection:<vendor> (browser challenge)`.
+- [x] `prompts/researcher.txt`: skip policy — no retries, no circumvention; legitimate alternatives (archive.org / RSS / same content elsewhere) allowed.
+- [x] `nodes/researcher.py`: `_BlockedTrackingScopedRegistry` captures BLOCKED tool errors per researcher; `research()` now returns a 4-tuple `(answer, citations, refinements, blocked_sources)`.
+- [x] `paths/deep.py`: accepts 2/3/4-tuples from researchers, absorbs blocked sources, appends "Unavailable Sources" to the final markdown, sets `Report.blocked_sources`.
+- [x] `paths/url_source.py`: fetch errors surfaced from `_fetch_html_source`; PDF download 403/429/404/5xx classified as BLOCKED; "# Source Blocked" report + `blocked_sources`; failure branch catches `BLOCKED:`-prefixed content.
+- [x] `report/markdown.py`: `render_blocked_sources_markdown` + defense-in-depth append in `render_report_markdown` (marker check prevents duplication).
+- [x] Config: `fetch_page.blocked_cache_ttl_s` (+ `config.example.yaml` / `config.yaml`).
+- [x] Tests: `tests/test_blocked_sources.py` (classifier, fetch e2e, negative cache, browser-blocked propagation, reporting, deep-path wiring, url_source PDF blocked); browser challenge tests in `tests/test_tools_browser.py`; tuple-arity updates in researcher / refine / url-source tests. Full suite + ruff + mypy green.
+
+## [Bot detection] — Wayback Machine auto-fallback
+
+### Done
+
+- [x] `tools/fetch_page.py`: when a response classifies as blocked, retry the latest Wayback snapshot (`https://web.archive.org/web/2/<url>`) before declaring the source unavailable. Returns extracted text annotated with provenance and a citation pointing at the concrete snapshot URL; skips archive.org URLs; requires >= 100 extracted chars to count as a usable capture.
+- [x] Cache: rescued content is cached under the ORIGINAL URL with kind `"archive"` (the `html` slot carries the snapshot URL) so repeat fetches never re-hit the blocked page or the archive; failed fallbacks still record the blocked verdict.
+- [x] Config: `fetch_page.archive_org_fallback` (default true, + yaml examples).
+- [x] `prompts/researcher.txt`: notes that fetch_page may auto-resolve blocked sources via Wayback and that citations then point at the archive URL.
+- [x] Tests: rescue, no-snapshot (404 keeps the blocked error), flag-off (wayback not called), cache-on-rescue, no self-fallback for archive.org URLs; existing blocked-error tests pin `archive_org_fallback=false`. Full suite + ruff + mypy + coverage green.
+
+## [Bot detection] — Wayback fallback for direct PDF downloads
+
+### Done
+
+- [x] `paths/url_source.py`: `_download_pdf_to_cache` now returns `(result, archive_url)`; on an HTTP error (403/429/404/5xx) it retries `https://web.archive.org/web/2/<url>` via `_download_archived_pdf` (magic `%PDF-` check, same cache file), returning the concrete snapshot URL when rescued.
+- [x] `_fetch_pdf_source` passes `archive_fallback=config.fetch_page.archive_org_fallback`; rescued PDFs get provenance-annotated text and a citation pointing at the archive URL (confidence 0.5).
+- [x] Tests: blocked-PDF rescue, HTML-capture not saved, flag-off (wayback not called), full `_fetch_pdf_source` flow cites archive URL; existing PDF blocked-error test pins `archive_fallback=false`. Full suite + ruff + mypy + coverage green.

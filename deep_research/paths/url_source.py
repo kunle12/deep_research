@@ -28,7 +28,13 @@ from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
 from deep_research.progress import ProgressReporter, ensure_reporter
-from deep_research.state import Citation, Report
+from deep_research.state import BLOCKED_PREFIX, BlockedSource, Citation, Report
+from deep_research.tools.fetch_page import (
+    _annotate_archived,
+    _is_archive_url,
+    _wayback_url,
+    detect_challenge_vendor,
+)
 from deep_research.tools.pdf_utils import parse_pdf_path, parse_rendered_pages
 from deep_research.tools.url_classifier import (
     UrlType,
@@ -143,6 +149,7 @@ async def _fetch_pdf_source(
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",
     pdf_cache_dir: str | None = None,
+    archive_fallback: bool = True,
 ) -> tuple[str, list[Citation], list[str]]:
     """Download a PDF from a direct URL and extract text via the pdf tool.
 
@@ -150,10 +157,13 @@ async def _fetch_pdf_source(
     `render_pages=True` and `pdf_render_pages` is registered, also returns
     VLM-ready JPEG data URLs for the first `max_pages` pages.
     """
-    pdf_path = await _download_pdf_to_cache(url, pdf_cache_dir)
-    if isinstance(pdf_path, str):
+    download_result, archive_url = await _download_pdf_to_cache(
+        url, pdf_cache_dir, archive_fallback=archive_fallback
+    )
+    if isinstance(download_result, str):
         # Download failed — pdf_path is an error message
-        return (pdf_path, [], [])
+        return (download_result, [], [])
+    pdf_path = download_result
 
     text = ""
     page_urls: list[str] = []
@@ -167,13 +177,15 @@ async def _fetch_pdf_source(
         page_urls = parse_rendered_pages(render)
     if not text:
         text = "(PDF text extraction not available yet — vision path may still work)"
+    if archive_url and text.strip():
+        text = _annotate_archived(text, url)
 
     cit = Citation(
-        url=url,
-        title=f"PDF from {url[:80]}",
+        url=archive_url or url,
+        title=f"PDF archive of {url[:80]}" if archive_url else f"PDF from {url[:80]}",
         snippet=text[:200],
         source_type="pdf",
-        confidence_score=0.7,
+        confidence_score=0.5 if archive_url else 0.7,
     )
 
     # Archive PDF in library if writer is configured
@@ -188,15 +200,22 @@ async def _fetch_pdf_source(
     return (text, [cit], page_urls)
 
 
-async def _download_pdf_to_cache(url: str, cache_dir: str | None = None) -> str | Path:
-    """Download a PDF from URL to a tmp cache; return Path or error string.
+async def _download_pdf_to_cache(
+    url: str,
+    cache_dir: str | None = None,
+    archive_fallback: bool = True,
+) -> tuple[str | Path, str | None]:
+    """Download a PDF from URL to a tmp cache.
+
+    Returns ``(Path, None)`` on success, ``(error_string, None)`` on failure,
+    or ``(Path, archive_url)`` when the download was rescued from the Wayback
+    Machine (the snapshot URL is returned so callers can cite it).
 
     Caches by URL digest so repeat calls during the same run don't re-download.
     Uses `cache_dir` if provided, otherwise falls back to ~/.cache/deep_research/pdfs.
     """
     import hashlib
     import os
-    from pathlib import Path
 
     import httpx
 
@@ -206,15 +225,51 @@ async def _download_pdf_to_cache(url: str, cache_dir: str | None = None) -> str 
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_pdf = tmp_dir / f"{digest}.pdf"
     if tmp_pdf.exists() and tmp_pdf.stat().st_size > 1024:
-        return tmp_pdf
+        return tmp_pdf, None
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as c:
             resp = await c.get(url)
             resp.raise_for_status()
             tmp_pdf.write_bytes(resp.content)
+        return tmp_pdf, None
+    except httpx.HTTPStatusError as e:
+        if archive_fallback and not _is_archive_url(url):
+            archive_url = await _download_archived_pdf(url, tmp_pdf)
+            if archive_url is not None:
+                return tmp_pdf, archive_url
+        status = e.response.status_code
+        vendor = detect_challenge_vendor(e.response.text or "")
+        if vendor is not None and status in (403, 429):
+            return f"{BLOCKED_PREFIX}bot_detection:{vendor} ({status})", None
+        if status == 429:
+            return f"{BLOCKED_PREFIX}rate_limited (429)", None
+        if status == 404:
+            return f"{BLOCKED_PREFIX}not_found (404)", None
+        return f"{BLOCKED_PREFIX}http_error ({status})", None
     except Exception as e:
-        return f"(failed to download PDF: {type(e).__name__}: {e})"
-    return tmp_pdf
+        return f"(failed to download PDF: {type(e).__name__}: {e})", None
+
+
+async def _download_archived_pdf(url: str, tmp_pdf: Path) -> str | None:
+    """Fetch *url*'s latest Wayback snapshot as a PDF.
+
+    Saves the bytes to *tmp_pdf* and returns the concrete snapshot URL when
+    the capture is a real PDF; returns None otherwise (no capture, HTML
+    snapshot, or archive.org itself failing).
+    """
+    import httpx
+
+    wayback_url = _wayback_url(url)
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as c:
+            wr = await c.get(wayback_url)
+            wr.raise_for_status()
+            if not wr.content.startswith(b"%PDF-"):
+                return None
+            tmp_pdf.write_bytes(wr.content)
+            return str(wr.url)
+    except Exception:
+        return None
 
 
 async def _fetch_html_source(
@@ -223,7 +278,7 @@ async def _fetch_html_source(
     config: AgentTopConfig,
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",
-) -> tuple[str, list[Citation]]:
+) -> tuple[str, list[Citation], str]:
     """Fetch an HTML page via fetch_page.
 
     Browser fallback for low-yield JS-heavy pages is handled inside
@@ -231,14 +286,14 @@ async def _fetch_html_source(
     researcher benefit uniformly. No fallback logic here.
     """
     if "fetch_page" not in tools.names():
-        return ("(fetch_page tool not registered)", [])
+        return ("(fetch_page tool not registered)", [], "")
     res = await tools.call("fetch_page", {"url": url})
 
     # Archive HTML in library if writer is configured
     if isinstance(writer, LibraryWriter) and res.content and run_id:
         await writer.archive_html(url, res.content)
 
-    return (res.content, list(res.citations))
+    return (res.content, list(res.citations), res.error or "")
 
 
 def _render_analysis_markdown(
@@ -319,6 +374,7 @@ async def url_source(
     # Fetch content + initial citation(s)
     citations: list[Citation] = []
     content_text = ""
+    fetch_error = ""
     page_image_data_urls: list[str] = []
     render_pdf = config.pdf_vision.enabled
     max_pdf_pages = 25
@@ -343,10 +399,11 @@ async def url_source(
             writer=writer,
             run_id=run_id,
             pdf_cache_dir=config.arxiv.pdf_cache_dir,
+            archive_fallback=config.fetch_page.archive_org_fallback,
         )
     elif url_type == UrlType.html:
         reporter.phase("url.fetch", f"html: {url[:80]}")
-        content_text, citations = await _fetch_html_source(
+        content_text, citations, fetch_error = await _fetch_html_source(
             url,
             tools,
             config,
@@ -365,14 +422,36 @@ async def url_source(
         "url.fetch", f"{len(content_text)} chars; {len(page_image_data_urls)} vision pages"
     )
 
-    if not content_text or content_text.startswith(("HTTP", "(")):
+    reason = fetch_error or content_text or ""
+    if fetch_error or not content_text or content_text.startswith((BLOCKED_PREFIX, "HTTP", "(")):
         # If fetch failed, report it but don't try to analyze
-        reporter.phase("url.fetch.failed", content_text[:80])
+        reporter.phase("url.fetch.failed", reason[:80])
+        if reason.startswith(BLOCKED_PREFIX):
+            md = (
+                "# Source Blocked\n\n"
+                f"**URL:** {url}\n\n"
+                f"**Reason:** `{reason}`\n\n"
+                "This source could not be retrieved automatically — it appears to be "
+                "protected by bot detection, rate limiting, or returned a fetch error. "
+                "It was skipped rather than circumvented; you can fetch it manually "
+                "if needed.\n"
+            )
+            return Report(
+                markdown=md,
+                citations=citations,
+                blocked_sources=[BlockedSource(url=url, reason=reason)],
+                path="url_source",
+                classifier_rationale=(
+                    f"URL detected ({url_type.value}); source blocked/fetch error"
+                ),
+                created_at=datetime.now(UTC),
+                query=query,
+            )
         md = (
             f"# Source Fetch Failed\n\n"
             f"**URL:** {url}\n\n"
             f"**Detected type:** `{url_type.value}`\n\n"
-            f"**Fetch result:**\n\n```\n{content_text[:2000]}\n```\n"
+            f"**Fetch result:**\n\n```\n{reason[:2000]}\n```\n"
         )
         return Report(
             markdown=md,

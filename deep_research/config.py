@@ -252,6 +252,18 @@ class FetchPageConfig(BaseModel):
     request_timeout_s: int = 30
     # If trafilatura extraction returns fewer chars than this, auto-try browser MCP
     min_content_chars_for_browser_fallback: int = 500
+    # How long a blocked verdict (bot detection / 4xx / 5xx) is remembered per
+    # URL, so a blocked page is not re-fetched repeatedly within a run.
+    blocked_cache_ttl_s: int = 3600
+    # When a page is blocked (bot detection / HTTP error), retry it through the
+    # Wayback Machine's latest snapshot before declaring it unavailable.
+    archive_org_fallback: bool = True
+    # When a page is blocked (bot detection / HTTP error), retry it through the
+    # Wayback Machine's latest snapshot before declaring it unavailable.
+    archive_org_fallback: bool = True
+    # When a page is blocked (bot detection / HTTP error), retry it through the
+    # Wayback Machine's latest snapshot before declaring it unavailable.
+    archive_org_fallback: bool = True
 
 
 class CacheConfig(BaseModel):

@@ -115,7 +115,7 @@ class TestRefineTool:
             ]
         )
         reg = ToolRegistry()
-        _, _, refinements = await research(_sub_q(), client, "m", reg)
+        _, _, refinements, _ = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 1
         assert refinements[0].question == "What about Y?"
         assert refinements[0].refinement_depth == 1
@@ -133,7 +133,7 @@ class TestRefineTool:
             ]
         )
         reg = ToolRegistry()
-        _, _, refinements = await research(_sub_q(), client, "m", reg)
+        _, _, refinements, _ = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 1
         assert refinements[0].parent_arxiv_id == "https://arxiv.org/abs/2401.12345"
         assert "ref" in refinements[0].id
@@ -150,7 +150,7 @@ class TestRefineTool:
             ]
         )
         reg = ToolRegistry()
-        _, _, refinements = await research(_sub_q(), client, "m", reg)
+        _, _, refinements, _ = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 1
         assert refinements[0].parent_arxiv_id is None
 
@@ -162,7 +162,7 @@ class TestRefineTool:
             ]
         )
         reg = ToolRegistry()
-        _, _, refinements = await research(_sub_q(), client, "m", reg)
+        _, _, refinements, _ = await research(_sub_q(), client, "m", reg)
         assert refinements == []
 
     @pytest.mark.asyncio
@@ -174,7 +174,7 @@ class TestRefineTool:
         )
         reg = ToolRegistry()
         sq = _sub_q(refinement_depth=2)
-        _, _, refinements = await research(
+        _, _, refinements, _ = await research(
             sq,
             client,
             "m",
@@ -197,7 +197,7 @@ class TestRefineTool:
             ]
         )
         reg = ToolRegistry()
-        _, _, refinements = await research(_sub_q(), client, "m", reg)
+        _, _, refinements, _ = await research(_sub_q(), client, "m", reg)
         assert len(refinements) == 3
 
     @pytest.mark.asyncio
@@ -208,7 +208,7 @@ class TestRefineTool:
             ]
         )
         reg = ToolRegistry()
-        _, _, refinements = await research(_sub_q(), client, "m", reg)
+        _, _, refinements, _ = await research(_sub_q(), client, "m", reg)
         assert refinements == []
 
     @pytest.mark.asyncio
@@ -217,7 +217,7 @@ class TestRefineTool:
             [{"action": "drill_deeper", "question": f"Q{i}?", "rationale": "r"} for i in range(5)]
         )
         reg = ToolRegistry()
-        _, _, refinements = await research(
+        _, _, refinements, _ = await research(
             _sub_q(),
             client,
             "m",

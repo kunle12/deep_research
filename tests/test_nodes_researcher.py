@@ -184,7 +184,7 @@ class TestResearch:
         client = _fake_client_always(payload)
 
         reg = ToolRegistry()
-        answer, cites, refs = await research(_sub_q(), client, "m", reg)
+        answer, cites, refs, _blocked = await research(_sub_q(), client, "m", reg)
         assert "found results" in answer
         assert cites == []
         assert refs == []
@@ -207,7 +207,7 @@ class TestResearch:
         client = _fake_client_always(payload)
 
         reg = ToolRegistry()
-        _, cites, _ = await research(_sub_q(), client, "m", reg)
+        _, cites, _, _ = await research(_sub_q(), client, "m", reg)
         assert len(cites) == 1
         assert cites[0].url == "https://ref"
 
@@ -215,7 +215,7 @@ class TestResearch:
     async def test_non_json_fallback(self) -> None:
         client = _fake_client_always("plain text answer")
         reg = ToolRegistry()
-        answer, cites, _ = await research(_sub_q(), client, "m", reg)
+        answer, cites, _, _ = await research(_sub_q(), client, "m", reg)
         assert "plain text answer" in answer
         assert cites == []
 
@@ -339,7 +339,7 @@ class TestCitationGating:
         client = MagicMock()
         client.chat.completions.create = AsyncMock(side_effect=seq)
 
-        _, cites, _ = await research(_sub_q(), client, "m", reg, max_turns=2)
+        _, cites, _, _ = await research(_sub_q(), client, "m", reg, max_turns=2)
         assert [c.url for c in cites] == ["https://used"]
 
     @pytest.mark.asyncio
@@ -359,7 +359,7 @@ class TestCitationGating:
             }
         )
         reg = ToolRegistry()
-        _, cites, _ = await research(
+        _, cites, _, _ = await research(
             _sub_q(), client=_fake_client_always(payload), model="m", tools=reg
         )
         assert [c.url for c in cites] == ["https://listed"]
@@ -369,7 +369,7 @@ class TestCitationGating:
         """A URL referenced in the answer with no citation object gets one."""
         payload = json.dumps({"answer": "See <https://novel.example/doc>."})
         reg = ToolRegistry()
-        _, cites, _ = await research(
+        _, cites, _, _ = await research(
             _sub_q(), client=_fake_client_always(payload), model="m", tools=reg
         )
         assert [c.url for c in cites] == ["https://novel.example/doc"]
@@ -412,7 +412,7 @@ class TestCitationGating:
         client = MagicMock()
         client.chat.completions.create = AsyncMock(side_effect=seq)
 
-        _, cites, _ = await research(
+        _, cites, _, _ = await research(
             _sub_q(), client, "m", reg, max_turns=2, max_citations_per_researcher=5
         )
         assert len(cites) == 5

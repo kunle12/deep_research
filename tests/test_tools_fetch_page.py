@@ -50,7 +50,7 @@ async def test_fetch_page_returns_http_error(tmp_path) -> None:
 
     reg = await build_tool_registry(cfg)
     res = await reg.call("fetch_page", {"url": "https://404.test/missing"})
-    assert res.error == "HTTP 404"
+    assert res.error == "BLOCKED:not_found (404)"
 
 
 @pytest.mark.asyncio

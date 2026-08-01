@@ -21,6 +21,17 @@ Constraints:
 - Aim for 3-8 sources per sub-question.
 - If you cannot find good evidence for the sub-question, say so honestly
   rather than burning turns on more searches.
+- If a tool returns an error beginning with `BLOCKED:` (bot detection, rate
+  limiting, missing page, or another fetch failure), treat that source as
+  unavailable: do NOT retry the same URL and do NOT attempt to bypass the
+  block (no CAPTCHA solving, no stealth browsing, no proxies, no fingerprint
+  evasion). If a legitimate alternative exists — e.g. an archive.org
+  snapshot, the site's RSS feed, or the same content on another site — you
+  may fetch that instead. Otherwise move on and note the gap honestly in
+  your answer. Skipped sources are recorded automatically; you do not need
+  to list them yourself. Note: fetch_page may automatically retry a blocked
+  source through the Wayback Machine — when it does, the returned content
+  says so explicitly and the citation points at the archive URL.
 
 Return (after tool calls conclude) a JSON object:
 {{

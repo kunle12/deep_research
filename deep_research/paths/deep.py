@@ -37,6 +37,7 @@ from deep_research.nodes.recall import recall as recall_run
 from deep_research.nodes.researcher import research as researcher_run
 from deep_research.nodes.writer import write as writer_write
 from deep_research.progress import ProgressReporter, ensure_reporter
+from deep_research.report.markdown import render_blocked_sources_markdown
 from deep_research.state import (
     ClassifiedQuery,
     PaperAnalysis,
@@ -179,7 +180,7 @@ async def deep_research(
                     )
                     state.absorb_section(sq.id, [], "(research timed out)")
                 continue
-            if not isinstance(r, tuple) or len(r) not in (2, 3):
+            if not isinstance(r, tuple) or len(r) not in (2, 3, 4):
                 logger.warning(
                     "researcher for %s returned unexpected type %r", sq.id, type(r).__name__
                 )
@@ -188,12 +189,19 @@ async def deep_research(
             answer_md, citations = r[0], r[1]
             state.absorb_section(sq.id, citations, answer_md)
             reporter.step("deep.research.ok", f"{sq.id} ({len(citations)} cites)")
-            if len(r) == 3:
+            if len(r) >= 3:
                 refinements = r[2]
                 state.absorb_refinements(refinements)
                 if refinements:
                     logger.info("researcher %s emitted %d refinements", sq.id, len(refinements))
                     reporter.step("deep.research.refine", f"{sq.id} (+{len(refinements)})")
+            if len(r) >= 4:
+                state.absorb_blocked_sources(r[3], sq_id=sq.id)
+                if r[3]:
+                    reporter.step(
+                        "deep.research.blocked",
+                        f"{sq.id} ({len(r[3])} source(s) skipped)",
+                    )
 
         if _interrupted:
             break
@@ -287,6 +295,10 @@ async def deep_research(
         reverse=True,
     )
 
+    blocked_md = render_blocked_sources_markdown(state.blocked_sources)
+    if blocked_md:
+        final_md = final_md.rstrip() + "\n\n" + blocked_md
+
     # Clean up checkpoint — research completed successfully.
     # Skip if already discarded earlier (e.g. stale checkpoint on resume).
     if run_id and not _checkpoint_discarded:
@@ -297,6 +309,7 @@ async def deep_research(
     return Report(
         markdown=final_md,
         citations=all_citations,
+        blocked_sources=state.blocked_sources,
         path="deep",
         classifier_rationale=classified.rationale,
         iterations=state.iteration + 1 if state.plan.sub_questions else 0,

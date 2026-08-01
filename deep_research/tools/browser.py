@@ -43,7 +43,8 @@ from typing import Any
 
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
-from deep_research.state import Citation, ToolName
+from deep_research.state import BLOCKED_PREFIX, Citation, ToolName
+from deep_research.tools.fetch_page import detect_challenge_vendor
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,15 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         result = await _invoke("browser_navigate", {"url": url})
         if result.error:
             return result
+        vendor = detect_challenge_vendor(result.content or "")
+        if vendor is not None:
+            # The rendered page is a bot challenge (Cloudflare etc.), not the
+            # article. Surface a structured BLOCKED verdict so callers skip the
+            # source instead of parsing the challenge or trying to circumvent it.
+            return ToolResult(
+                content="",
+                error=f"{BLOCKED_PREFIX}bot_detection:{vendor} (browser challenge)",
+            )
         # Attach a Citation so downstream know where this content came from.
         # fetch_page's low-yield fallback relies on this for provenance.
         cit = Citation(

@@ -394,8 +394,9 @@ class TestFetchHelpers:
         cfg = _cfg()
         cfg.fetch_page.min_content_chars_for_browser_fallback = 10**9  # disable browser fallback
         reg = _registry({"fetch_page": _fetch_page})
-        text, cits = await _fetch_html_source("https://blog.example/post", reg, cfg)
+        text, cits, fetch_error = await _fetch_html_source("https://blog.example/post", reg, cfg)
         assert text == "extracted article body"
+        assert fetch_error == ""
         assert len(cits) == 1
 
     @pytest.mark.asyncio
@@ -414,8 +415,9 @@ class TestFetchHelpers:
         cfg.browser.enabled = True
         cfg.fetch_page.min_content_chars_for_browser_fallback = 500
         reg = _registry({"fetch_page": _fetch_page})
-        text, cits = await _fetch_html_source("https://x.test", reg, cfg)
+        text, cits, fetch_error = await _fetch_html_source("https://x.test", reg, cfg)
         assert "rendered via browser" in text
+        assert fetch_error == ""
         assert "trafilatura extraction low-yield" not in text  # no raw-HTML-excerpt retry here
         assert len(cits) == 1
 
@@ -423,8 +425,9 @@ class TestFetchHelpers:
     async def test_html_fetch_no_fetch_page_returns_warning(self) -> None:
         cfg = _cfg()
         reg = _registry()  # nothing registered
-        text, cits = await _fetch_html_source("https://x.test", reg, cfg)
+        text, cits, fetch_error = await _fetch_html_source("https://x.test", reg, cfg)
         assert "fetch_page tool not registered" in text
+        assert fetch_error == ""
         assert cits == []
 
     @pytest.mark.asyncio
@@ -510,7 +513,7 @@ class TestUrlSourceDispatcher:
     @pytest.mark.asyncio
     async def test_html_url_uses_fetch_page_then_analyze(self, monkeypatch) -> None:
         async def _fake_html(_url: str, _tools: ToolRegistry, _cfg: AgentTopConfig, **kw: Any):
-            return ("extracted blog text", [_cit("https://blog.example/post")])
+            return ("extracted blog text", [_cit("https://blog.example/post")], "")
 
         monkeypatch.setattr(_us_module, "_fetch_html_source", _fake_html)
 
@@ -578,7 +581,7 @@ class TestUrlSourceDispatcher:
     async def test_fetch_failure_short_circuits_without_analyze(self, monkeypatch) -> None:
         # Content starting with "HTTP" triggers the fetch-failed branch
         async def _fake_html(_url: str, _tools: ToolRegistry, _cfg: AgentTopConfig, **kw: Any):
-            return ("HTTP 503 from upstream", [])
+            return ("HTTP 503 from upstream", [], "")
 
         monkeypatch.setattr(_us_module, "_fetch_html_source", _fake_html)
 

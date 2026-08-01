@@ -10,12 +10,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from openai import AsyncOpenAI
 
 from deep_research.citations import extract_urls_from_markdown, normalize_url
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult, run_with_tools
-from deep_research.state import Citation, SubQuestion
+from deep_research.state import BLOCKED_PREFIX, BlockedSource, Citation, SubQuestion
 from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,27 @@ REFINE_SCHEMA = {
 }
 
 
+class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
+    """ScopedToolRegistry that records ``BLOCKED:...`` tool errors.
+
+    Intercepts fetch/browser calls so skipped sources are captured
+    programmatically — not just at the LLM's discretion — and can be surfaced
+    as an "Unavailable Sources" section in the final report.
+    """
+
+    def __init__(self, parent: ToolRegistry, collector: list[BlockedSource]) -> None:
+        super().__init__(parent)
+        self._collector = collector
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        result = await super().call(name, arguments)
+        if result.error and result.error.startswith(BLOCKED_PREFIX):
+            url = arguments.get("url", "") if isinstance(arguments, dict) else ""
+            if url:
+                self._collector.append(BlockedSource(url=url, reason=result.error))
+        return result
+
+
 async def research(
     sub_q: SubQuestion,
     client: AsyncOpenAI,
@@ -96,10 +118,10 @@ async def research(
     max_refinement_depth: int = 2,
     max_context_tokens: int = 131072,
     max_citations_per_researcher: int = 10,
-) -> tuple[str, list[Citation], list[SubQuestion]]:
+) -> tuple[str, list[Citation], list[SubQuestion], list[BlockedSource]]:
     """Run the researcher loop for one sub-question.
 
-    Returns (markdown_answer, citations, refinements).
+    Returns (markdown_answer, citations, refinements, blocked_sources).
 
     `prior_context`: optional markdown section from library recall injected as
     additional context so the researcher knows what we already know.
@@ -132,7 +154,8 @@ async def research(
         {"role": "user", "content": user_content},
     ]
 
-    scoped = ScopedToolRegistry(tools)
+    blocked_sources: list[BlockedSource] = []
+    scoped = _BlockedTrackingScopedRegistry(tools, blocked_sources)
     refine_calls_collector: list[dict] = []
 
     async def _refine_handler(**kwargs) -> ToolResult:
@@ -209,7 +232,7 @@ async def research(
                 )
             )
 
-    return (answer_md, citations, refinements)
+    return (answer_md, citations, refinements, blocked_sources)
 
 
 def _gate_citations(

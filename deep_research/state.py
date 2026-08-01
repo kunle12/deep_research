@@ -18,6 +18,15 @@ from deep_research.library.storage.rows import GlossaryEntry
 logger = logging.getLogger(__name__)
 
 
+# Machine-readable prefix for ToolResult errors that mean "source is
+# unavailable / blocked". Tools emit `BLOCKED:<reason>[:<detail>] (<status>)`
+# (e.g. `BLOCKED:bot_detection:cloudflare (403)`, `BLOCKED:rate_limited (429)`,
+# `BLOCKED:not_found (404)`, `BLOCKED:http_error (500)`). Callers use
+# `startswith(BLOCKED_PREFIX)` to branch: no retries, no circumvention,
+# record the source as unavailable.
+BLOCKED_PREFIX = "BLOCKED:"
+
+
 class ToolName(str, Enum):
     web_search = "web_search"
     fetch_page = "fetch_page"
@@ -54,6 +63,23 @@ class Citation(BaseModel):
     venue: str | None = None
     # Optional: Google Scholar citation count
     cited_by_count: int | None = None
+
+
+class BlockedSource(BaseModel):
+    """A source that could not be retrieved (bot detection, rate limit, fetch error).
+
+    Recorded so skipped sources are visible in the final report instead of
+    disappearing silently. `reason` is the raw `BLOCKED:...` error emitted by
+    the fetch/browser tools.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    reason: str = ""
+    blocked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Which sub-question was researching this source (deep path only).
+    sub_question: str | None = None
 
 
 class SubQuestion(BaseModel):
@@ -131,6 +157,9 @@ class ResearchState(BaseModel):
     # arxiv ids already selected for deep analysis this run (prevents
     # re-selecting the same paper across critic iterations).
     deep_analysis_requested: list[str] = Field(default_factory=list)
+    # Sources skipped during research (bot detection / fetch errors). Surfaced
+    # as an "Unavailable Sources" section in the final report.
+    blocked_sources: list[BlockedSource] = Field(default_factory=list)
 
     def is_covered(self, sub_q: SubQuestion) -> bool:
         """A sub-question is 'covered' if it has a draft (with or without citations)."""
@@ -164,6 +193,19 @@ class ResearchState(BaseModel):
             if r.question and key not in existing_qs:
                 self.pending_refinements.append(r)
                 existing_qs.add(key)
+
+    def absorb_blocked_sources(
+        self, sources: list[BlockedSource], sq_id: str | None = None
+    ) -> None:
+        """Record skipped sources, dedup by URL, annotating the sub-question."""
+        existing = {s.url for s in self.blocked_sources}
+        for s in sources:
+            if not s.url or s.url in existing:
+                continue
+            if sq_id and not s.sub_question:
+                s.sub_question = sq_id
+            self.blocked_sources.append(s)
+            existing.add(s.url)
 
     def flush_refinements(self, max_total: int | None = None) -> list[SubQuestion]:
         """Move pending refinements into the plan and return them.
@@ -306,6 +348,9 @@ class Report(BaseModel):
     iterations: int = 0
     # Glossary entries extracted from this report
     glossary_entries: list[GlossaryEntry] = Field(default_factory=list)
+    # Sources that could not be retrieved (bot detection / fetch errors);
+    # rendered as an "Unavailable Sources" section.
+    blocked_sources: list[BlockedSource] = Field(default_factory=list)
     # For library archival
     created_at: datetime | None = None
     query: str = ""
@@ -341,7 +386,9 @@ class ClassifiedQuery(BaseModel):
 
 
 __all__ = [
+    "BLOCKED_PREFIX",
     "AcademicState",
+    "BlockedSource",
     "Citation",
     "CitationGraph",
     "ClassifiedQuery",

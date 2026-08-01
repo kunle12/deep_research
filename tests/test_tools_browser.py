@@ -292,6 +292,49 @@ class TestHappyPathNavigate:
 # ---------------------------------------------------------------------------
 
 
+class TestChallengeDetection:
+    @pytest.mark.asyncio
+    async def test_navigate_challenge_page_returns_blocked_error(self, monkeypatch) -> None:
+        """A rendered bot challenge (Cloudflare etc.) yields a structured BLOCKED
+        error instead of article content, so callers skip rather than parse it."""
+        _FakeMCPClientCtx.reset()
+        cfg = _cfg()
+        monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
+
+        fake_mcp = _FakeMCPClientCtx("npx", ["-y", "@playwright/mcp@latest"])
+        fake_mcp._call_default = _make_text_result(
+            [("text", "Just a moment... <script data-cf-chl-123>checking your browser</script>")]
+        )
+        monkeypatch.setattr(browser_tool, "_MCPClientCtx", lambda c, a: fake_mcp)
+        reg = await build_tool_registry(cfg)
+
+        res = await reg.call("browser_navigate", {"url": "https://cf.test/page"})
+        assert res.error == "BLOCKED:bot_detection:cloudflare (browser challenge)"
+        assert res.content == ""
+        assert res.citations == []
+        await reg.close()
+
+    @pytest.mark.asyncio
+    async def test_navigate_normal_page_still_returns_content(self, monkeypatch) -> None:
+        """Non-challenge snapshots are unaffected by the detection."""
+        _FakeMCPClientCtx.reset()
+        cfg = _cfg()
+        monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
+
+        fake_mcp = _FakeMCPClientCtx("npx", ["x"])
+        fake_mcp._call_default = _make_text_result(
+            [("text", '- heading "Real Article" [ref=s1h1]\nParagraph content')]
+        )
+        monkeypatch.setattr(browser_tool, "_MCPClientCtx", lambda c, a: fake_mcp)
+        reg = await build_tool_registry(cfg)
+
+        res = await reg.call("browser_navigate", {"url": "https://example.com/article"})
+        assert res.error is None
+        assert "Real Article" in res.content
+        assert len(res.citations) == 1
+        await reg.close()
+
+
 class TestOtherTools:
     @pytest.mark.asyncio
     async def test_snapshot_calls_browser_snapshot(self, monkeypatch) -> None:

@@ -212,6 +212,48 @@ Both `web_search.py` and `scholar.py` use the same fallback pattern:
 
 ---
 
+## Bot-Detection / Blocked-Source Handling
+
+When a site actively blocks automated retrieval, the agent's policy is to SKIP
+and record the source — never to circumvent the block.
+
+- **Machine-readable verdicts**: fetch/browser tools emit errors prefixed
+  `BLOCKED:` (`state.BLOCKED_PREFIX`), e.g. `BLOCKED:bot_detection:cloudflare (403)`,
+  `BLOCKED:rate_limited (429)`, `BLOCKED:not_found (404)`, `BLOCKED:http_error (500)`.
+- **Detection**: `tools/fetch_page.py` classifies status codes AND body markers
+  (`classify_blocked_response` / `detect_challenge_vendor`) because challenge
+  pages often return HTTP 200. `tools/browser.py` runs the same marker detection
+  on rendered snapshots.
+- **No browser fallback for blocked pages**: a classified challenge returns the
+  BLOCKED error immediately; the browser fallback is reserved for low-yield 200
+  pages. If the browser itself renders a challenge, that verdict is propagated
+  instead of the raw challenge HTML.
+- **Negative cache**: blocked verdicts are cached per-URL for
+  `fetch_page.blocked_cache_ttl_s` (default 3600s) so a blocked URL is not
+  re-fetched every turn / iteration.
+- **Wayback Machine auto-fallback**: when `fetch_page` classifies a response
+  as blocked, it retries `https://web.archive.org/web/2/<url>` first
+  (`fetch_page.archive_org_fallback`, default on). A usable snapshot is
+  returned with explicit provenance and a citation pointing at the archive
+  URL, cached under the original URL (kind `"archive"` in `_PageCache`), so
+  repeat fetches hit the cache instead of re-fetching the blocked page or
+  the archive. Archive.org URLs never trigger the fallback.
+- **PDF downloads** (`paths/url_source.py`): a blocked direct-PDF download
+  (403/429/404/5xx) is retried via the same `/web/2/<url>` snapshot; when the
+  capture is a real PDF (magic `%PDF-` check), it is saved to the normal PDF
+  cache, the extracted text is annotated with provenance, and the citation
+  points at the archive URL (confidence 0.5). Same `archive_org_fallback`
+  config knob.
+- **LLM policy** (`prompts/researcher.txt`): on a `BLOCKED:` error, do not retry
+  the same URL and do not bypass (no CAPTCHA solving, stealth browsing, proxies,
+  fingerprint evasion). A legitimate alternative (archive.org snapshot, the
+  site's RSS feed, the same content elsewhere) may be fetched instead. When
+  `fetch_page` auto-retrieves a blocked source via Wayback, the content says
+  so and the citation points at the archive URL.
+- **Transparency**: `ResearchState.blocked_sources` / `Report.blocked_sources`
+  collect skipped sources; the deep and url_source paths render an
+  "Unavailable Sources" section in the final markdown so skips are visible.
+
 ## Rate-Limit Handling Conventions
 
 | Tool | Backend | Retry strategy | Backoff |
