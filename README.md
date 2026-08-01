@@ -120,6 +120,10 @@ academic:
   seed_backends: ["arxiv", "scholar"]
 ```
 
+The shipped `config.example.yaml` already enables Scholar and sets
+`seed_backends: ["arxiv", "scholar"]`. If no Scholar credentials are
+configured, the academic path falls back to arXiv-only seeds with a warning.
+
 ### Environment variables
 
 | Variable | Purpose |
@@ -150,7 +154,7 @@ Force a specific research path:
 ```bash
 uv run deep-research --quick "who invented the wheel?"
 uv run deep-research --deep "compare transformer architectures" --max-iterations 5
-uv run deep-research --academic "RLHF safety" --max-depth 2 --max-papers 20 --dump-graph refs.bib
+uv run deep-research --academic "RLHF safety" --max-depth 3 --max-papers 30 --dump-graph refs.bib
 uv run deep-research --url-source "https://example.com/foo.pdf" "verify its claims"
 ```
 
@@ -289,7 +293,7 @@ query → URL detected? → url_source path (analyze single URL + optional follo
        → no URL        → classifier (one LLM call) decides:
                           ├─ quick   → 1 search + summarize (~5-15s)
                           ├─ deep    → planner → researcher → critic → writer loop
-                          ├─ academic→ arxiv + optional Google Scholar seed → recursive citation graph mining (depth ≤ 2, papers ≤ 15)
+                          ├─ academic→ arxiv + Google Scholar seed → recursive citation graph mining (depth ≤ 3, papers ≤ 30)
                           └─ applied → blog-first research
 ```
 
@@ -307,9 +311,91 @@ equation comprehension. No external agent frameworks.
 |---|---|---|
 | **quick** | Single web search + summarize top 3 results. ~5–15s. | Factual questions, "what is X" |
 | **deep** | Planner decomposes query → parallel researcher tools → critic loop → final writer. Researchers can dynamically refine the plan mid-loop (chase references, drill into subtopics). | Multi-faceted questions, survey requests |
-| **academic** | arxiv (+ optional Google Scholar) seed → recursive citation graph (depth ≤ 2, ≤ 15 papers) → synthesis + BibTeX. Non-arxiv venues (Nature, ACM, IEEE, conferences) covered when Scholar is enabled. | Literature review, "what does the literature say" |
+| **academic** | arxiv + Google Scholar seed → recursive citation graph (depth ≤ 3, ≤ 30 papers) → synthesis + BibTeX. Non-arxiv venues (Nature, ACM, IEEE, conferences) covered via the Scholar backend. | Literature review, "what does the literature say" |
 | **url_source** | Classify URL → fetch (arxiv/pdf/html) → analyze_source LLM → optional follow-up deep research. | "Summarize this paper", "verify this blog" |
 | **applied** | blog_search first → fetch top blog posts → synthesize practical report. | Implementation questions, "how do I build X" |
+
+---
+
+## Getting the best results
+
+### Choosing a mode
+
+| You want... | Mode |
+|---|---|
+| Paper-level provenance: "state of the art", literature reviews, BibTeX + citation graph | `--academic` |
+| Broad multi-source answers mixing papers, blogs, docs, news, and discussion | `--deep` |
+| Both: a paper spine **and** wide coverage | Run academic first, then deep (recipe below) |
+
+The classifier auto-routes by default, but for important questions force the
+mode explicitly so the pipeline (and its budget) is deterministic.
+
+### Individual modes
+
+Academic — literature-focused, bounded by `academic.max_papers` (30 in the
+shipped example config):
+
+```bash
+uv run deep-research --academic "RLHF safety" --max-papers 30 --dump-graph refs.bib
+```
+
+Deep — multi-source, grows as breadth × iterations:
+
+```bash
+uv run deep-research --deep "RLHF safety" --max-iterations 4
+```
+
+### Recommended combination: academic spine → deep breadth
+
+Every academic run archives per-paper analyses to the personal library, and
+every deep researcher queries that library *before* going to the web. That
+makes the two modes compose into a two-pass recipe:
+
+```bash
+# Pass 1 — build the citation spine (papers only)
+uv run deep-research --academic "RLHF safety" --max-papers 30 --dump-graph refs.bib
+
+# Pass 2 — wide multi-source coverage; researchers recall pass-1 analyses
+# and only research the delta (automatic with pdl.enabled: true)
+uv run deep-research --deep "RLHF safety" --max-iterations 4
+```
+
+Pass-2 researchers see the pass-1 paper summaries and key findings as "prior
+research from the library" and are told to avoid re-fetching known ground, so
+the deep report extends the paper foundation instead of duplicating it.
+
+### Configuration knobs that matter most
+
+The shipped `config.example.yaml` is a "rich results" preset. The levers with
+the largest effect:
+
+| Knob | Default | Recommended | Effect |
+|---|---|---|---|
+| `academic.seed_backends` | `["arxiv"]` | `["arxiv", "scholar"]` | Covers non-arxiv venues (Nature, ACM, IEEE, conferences) |
+| `academic.max_papers` | 15 | 25–30 | More papers per survey |
+| `academic.max_depth` | 2 | 3 | Deeper reference chains |
+| `academic.seed_count` | 5 | 8–10 | Better seed diversity |
+| `agent.max_subquestions` | 6 | 8–10 | Wider deep-mode coverage |
+| `agent.max_iterations` | 3 | 4–5 | More critic gap-following rounds |
+| `search.tavily.search_depth` | basic | advanced | Better search recall (2 credits/call) |
+
+Keep `academic.key_reference_threshold` at `0.7`: it is the guardrail that
+keeps off-topic keyword-overlap papers out of the synthesis and citation graph.
+
+### Budget and cost notes
+
+- Deep-mode cost multiplies: sub-questions × iterations × sources. Raising
+  `max_subquestions` or `max_iterations` grows runtime and LLM cost roughly
+  linearly per dimension.
+- Keep the turn/timeout math consistent: `researcher_max_turns ×
+  llm.timeout_s` must stay comfortably below `researcher_timeout_s`
+  (16 × 240s = 3840s, leaving headroom for tool I/O inside 5400s).
+- `tavily.search_depth: "advanced"` costs 2 credits per call.
+- PDF vision is the most expensive academic step (one vision call per paper
+  with rendered pages). Disable `pdf_vision.enabled` when speed matters more
+  than figure comprehension.
+- `--max-iterations` applies to deep; `--max-depth` and `--max-papers` apply
+  to academic — raising the wrong flag has no effect.
 
 ---
 

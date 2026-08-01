@@ -172,10 +172,21 @@ function refCard(citation) {
   if (citation.venue) metaParts.push(citation.venue);
 
   const actions = [];
-  if (citation.arxiv_id) actions.push(refLink("arXiv", `https://arxiv.org/abs/${citation.arxiv_id}`));
+  if (citation.arxiv_id) {
+    const arxivHref = citation.local_pdf_url || `https://arxiv.org/abs/${citation.arxiv_id}`;
+    actions.push(
+      refLink(
+        "arXiv",
+        arxivHref,
+        citation.local_pdf_url ? "Archived PDF copy in library" : "View abstract on arXiv.org",
+      ),
+    );
+  }
   if (citation.pdf_url) actions.push(refLink("PDF", citation.pdf_url));
   if (citation.doi) actions.push(refLink("DOI", `https://doi.org/${citation.doi}`));
-  if (citation.url) actions.push(refLink("URL", citation.url));
+  if (citation.url && !(citation.arxiv_id && /arxiv\.org\/abs\//i.test(citation.url))) {
+    actions.push(refLink("URL", citation.url));
+  }
 
   return el(
     "div",
@@ -187,8 +198,8 @@ function refCard(citation) {
   );
 }
 
-function refLink(label, url) {
-  return el("a", { class: "btn btn-sm", href: safeUrl(url), target: "_blank", rel: "noopener noreferrer", text: label });
+function refLink(label, url, title) {
+  return el("a", { class: "btn btn-sm", href: safeUrl(url), target: "_blank", rel: "noopener noreferrer", title, text: label });
 }
 
 function tagEditor(report) {

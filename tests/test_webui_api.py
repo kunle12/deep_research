@@ -132,6 +132,7 @@ async def seeded_config(library_root: Path) -> Path:
         pdf_dir = library_root / "artifacts" / "pdf"
         pdf_dir.mkdir(parents=True)
         (pdf_dir / "art_a.pdf").write_bytes(b"%PDF-1.4 fake report pdf")
+        (pdf_dir / "art_b.pdf").write_bytes(b"%PDF-1.4 fake paper pdf")
 
         day_dir = library_root / "reports" / "2026" / "07" / "01"
         day_dir.mkdir(parents=True)
@@ -214,6 +215,7 @@ def test_report_detail(client):
     assert body["tags"] == ["ml", "survey"]
     assert len(body["citations"]) == 1
     assert body["citations"][0]["arxiv_id"] == "2401.00001"
+    assert body["citations"][0]["local_pdf_url"] == "/api/artifacts/art_b/pdf"
     assert body["has_pdf"] is True
     assert body["pdf_url"] == "/api/reports/run_a/pdf"
     assert body["markdown_url"] == "/api/reports/run_a/markdown"
@@ -238,6 +240,15 @@ def test_report_pdf(client):
     # run_b has no artifact/PDF
     assert client.get("/api/reports/run_b/pdf").status_code == 404
     assert client.get("/api/reports/nope/pdf").status_code == 404
+
+
+def test_artifact_pdf(client):
+    r = client.get("/api/artifacts/art_b/pdf")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF")
+
+    assert client.get("/api/artifacts/nope/pdf").status_code == 404
 
 
 def test_add_and_remove_tags(client):

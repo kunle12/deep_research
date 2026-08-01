@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -100,6 +103,53 @@ def _edge_info(e: CitationEdgeRow) -> CitationEdgeInfo:
     )
 
 
+def _strip_arxiv_version(arxiv_id: str) -> str:
+    """Normalize 2401.12345v2 -> 2401.12345 for artifact lookups."""
+    return re.sub(r"v\d+$", "", arxiv_id)
+
+
+async def _citation_local_pdf_url(
+    backend: StorageBackend,
+    root: Path,
+    citation: dict[str, Any],
+) -> str | None:
+    """Return a URL for the locally archived PDF of this citation, if any.
+
+    Papers archived by the academic path are stored as `kind="pdf"` artifacts
+    keyed by arxiv_id (and source_url), so references can open the library's
+    own copy instead of the upstream page.
+    """
+    aid = citation.get("arxiv_id")
+    artifact: ArtifactRow | None = None
+    if isinstance(aid, str) and aid and not aid.startswith("scholar:"):
+        artifact = await backend.find_artifact_by_arxiv_id(_strip_arxiv_version(aid))
+    if artifact is None:
+        url = citation.get("url")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            artifact = await backend.find_artifact_by_url(url)
+    if artifact is None or artifact.kind != "pdf" or not artifact.bytes_path:
+        return None
+    root_resolved = root.resolve()
+    file_path = (root_resolved / artifact.bytes_path).resolve()
+    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+        return None
+    return f"/api/artifacts/{artifact.artifact_id}/pdf"
+
+
+async def _enrich_citations(
+    backend: StorageBackend,
+    root: Path,
+    citations_json: str | None,
+) -> list[dict[str, Any]]:
+    """Attach `local_pdf_url` to citations that have an archived PDF copy."""
+    citations = parse_citations(citations_json)
+    for c in citations:
+        local_pdf = await _citation_local_pdf_url(backend, root, c)
+        if local_pdf:
+            c["local_pdf_url"] = local_pdf
+    return citations
+
+
 async def _require_report_artifact(backend: StorageBackend, run_id: str) -> str:
     report = await backend.get_report(run_id)
     if report is None:
@@ -156,7 +206,7 @@ async def get_report_detail(run_id: str, request: Request) -> ReportDetail:
         classifier_rationale=report.classifier_rationale,
         iterations=report.iterations,
         markdown=report.markdown,
-        citations=parse_citations(report.citations_json),
+        citations=await _enrich_citations(backend, get_root_dir(request), report.citations_json),
         tags=tags,
         artifact_id=report.artifact_id,
         has_pdf=has_pdf,
@@ -193,6 +243,23 @@ async def get_report_pdf(run_id: str, request: Request) -> FileResponse:
     if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="archived PDF file missing")
     return FileResponse(file_path, media_type="application/pdf", filename=f"{run_id}.pdf")
+
+
+@router.get("/artifacts/{artifact_id}/pdf")
+async def get_artifact_pdf(artifact_id: str, request: Request) -> FileResponse:
+    """Serve an archived PDF artifact (e.g. a paper PDF stored by the academic path)."""
+    backend = get_storage(request)
+    root = get_root_dir(request)
+    artifact = await backend.get_artifact(artifact_id)
+    if artifact is None or artifact.kind != "pdf" or not artifact.bytes_path:
+        raise HTTPException(status_code=404, detail="no archived PDF for this artifact")
+    root_resolved = root.resolve()
+    file_path = (root_resolved / artifact.bytes_path).resolve()
+    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="archived PDF file missing")
+    return FileResponse(
+        file_path, media_type="application/pdf", filename=f"{artifact.artifact_id}.pdf"
+    )
 
 
 @router.post("/reports/{run_id}/tags", response_model=TagUpdateResponse)

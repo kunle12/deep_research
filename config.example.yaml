@@ -10,13 +10,18 @@ llm:
   timeout_s: 240
 
 agent:
-  max_iterations: 3               # critic-loop depth cap
-  max_subquestions: 6            # planner breadth cap
+  # "Rich results" preset: wider planner breadth + more critic gap-following
+  # rounds. Lower these back to the defaults (3 / 6) for faster, cheaper runs.
+  max_iterations: 4               # critic-loop depth cap (3 = default; 4-5 = deeper gap-following)
+  max_subquestions: 8             # planner breadth cap (6 = default; 8-10 = wider coverage)
   max_concurrent_tools: 8        # asyncio.Semaphore bound on parallel tool dispatch
-  researcher_timeout_s: 3600     # per-researcher wall-clock cap (PDF fetch + LLM turns)
-  researcher_max_turns: 12       # per-researcher tool-loop turn budget (must fit researcher_timeout_s with headroom)
-  tool_timeout_s: 300.0         # hard per-tool-call timeout; 0 disables (not recommended)
-  max_subquestion_retries: 3     # max researcher failures per sub-q before forced coverage
+  researcher_timeout_s: 5400      # per-researcher wall-clock cap (PDF fetch + LLM turns)
+  researcher_max_turns: 16        # per-researcher tool-loop turn budget (must fit researcher_timeout_s: turns x llm.timeout_s + tool I/O)
+  tool_timeout_s: 300.0           # hard per-tool-call timeout; 0 disables (not recommended)
+  max_subquestion_retries: 3      # max researcher failures per sub-q before forced coverage
+  max_refinement_depth: 3         # how deep refinements (chase_reference / drill_deeper) may nest
+  max_refinement_per_researcher: 4  # per-researcher refinement budget per iteration
+  max_total_refinements_per_iteration: 10  # cap on refinements flushed into the plan each iteration
   classifier:
     enabled: true
     force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"
@@ -26,8 +31,8 @@ search:
   fallback_chain: ["searxng"]
   tavily:
     api_key_env: "TAVILY_API_KEY"
-    search_depth: "basic"        # "basic" = 1 credit; "advanced" = 2 credits
-    max_results: 10
+    search_depth: "advanced"      # "basic" = 1 credit; "advanced" = 2 credits (better recall — recommended)
+    max_results: 15               # more candidates per researcher (10 = default)
     rate_limit_retries: 2        # retries on 429 before falling back to SearXNG
     max_calls_per_session: null  # null = unlimited; set to switch to SearXNG proactively
   searxng:
@@ -58,7 +63,9 @@ reddit:
   max_results_per_query: 25
 
 scholar:
-  enabled: false                  # disabled by default; enable to seed academic path from Google Scholar
+  enabled: true                   # recommended: seeds the academic path from Google Scholar.
+                                  # Requires SERPER_API_KEY or a SearXNG instance with the `scholar`
+                                  # engine. Missing credentials degrade gracefully to arXiv-only seeds.
   primary: "serper"               # "serper" | "searxng"
   fallback_chain: ["searxng"]
   serper:
@@ -103,16 +110,16 @@ output:
 academic:
   enabled: true
   mode: "recursive"               # "flat" (no recursion) | "recursive"
-  max_depth: 2
-  max_papers: 15
+  max_depth: 3                    # citation-graph recursion depth (2 = default; 3 = deeper reference chains)
+  max_papers: 30                  # hard cap on total papers analyzed (15 = default; 25-30 recommended for richer surveys)
   concurrency: 3                  # parallel paper processing
-  key_reference_threshold: 0.7
+  key_reference_threshold: 0.7    # keep >= 0.7: lower values let off-topic keyword-overlap papers into the report
   always_extract_text: true
-  seed_count: 5
-  seed_backends: ["arxiv"]        # ["arxiv"] | ["arxiv", "scholar"] — add "scholar" to also seed from Google Scholar (requires `scholar.enabled: true`)
+  seed_count: 10                  # arxiv/scholar seeds per query (5 = default)
+  seed_backends: ["arxiv", "scholar"]  # ["arxiv"] | ["arxiv", "scholar"] — scholar covers Nature, ACM, IEEE, conferences (requires `scholar.enabled: true`)
   output_citation_graph: true
   citation_graph_formats: ["bibtex", "json"]
-  max_key_references_to_recurse: 5  # per-paper cap
+  max_key_references_to_recurse: 8  # per-paper cap on recursed references (5 = default)
 
 url_source:
   enabled: true

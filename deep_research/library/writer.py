@@ -393,7 +393,14 @@ def _render_pdf(markdown_text: str, pdf_path: Path) -> bytes | None:
     import markdown
 
     html = markdown.markdown(markdown_text, extensions=["extra"])
-    html = f"<!DOCTYPE html><html><body>{html}</body></html>"
+    # Explicitly left-align text: keeps weasyprint/xhtml2pdf output readable
+    # even if a future template introduces centered defaults.
+    html = (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        "<style>body { text-align: left; } "
+        "h1, h2, h3, h4, h5, h6, p, li, blockquote, td, th { text-align: left; }</style>"
+        f"</head><body>{html}</body></html>"
+    )
 
     try:
         from weasyprint import HTML
