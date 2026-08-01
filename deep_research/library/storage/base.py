@@ -50,7 +50,49 @@ class StorageBackend(Protocol):
 
     async def get_report(self, run_id: str) -> ReportRow | None: ...
 
-    async def list_reports(self, limit: int) -> list[ReportRow]: ...
+    async def list_reports(
+        self,
+        limit: int,
+        offset: int = 0,
+        *,
+        tag: str | None = None,
+        path: str | None = None,
+    ) -> list[ReportRow]:
+        """List reports ordered by started_at DESC, with optional tag/path
+        filtering applied in SQL so pagination totals stay correct."""
+        ...
+
+    async def search_reports(
+        self,
+        query: str,
+        *,
+        limit: int,
+        offset: int = 0,
+        tag: str | None = None,
+        path: str | None = None,
+    ) -> list[ReportRow]:
+        """Full-text-ish search over report queries + markdown bodies."""
+        ...
+
+    async def count_reports(
+        self,
+        *,
+        q: str | None = None,
+        tag: str | None = None,
+        path: str | None = None,
+    ) -> int:
+        """Count reports matching the same filters as list/search."""
+        ...
+
+    async def count_artifacts(self) -> int: ...
+
+    async def list_tags(self, limit: int = 200) -> list[tuple[str, int]]:
+        """All distinct tags with counts, ordered by count DESC then tag."""
+        ...
+
+    async def get_artifacts(self, artifact_ids: list[str]) -> dict[str, ArtifactRow]:
+        """Batch artifact fetch, keyed by artifact_id."""
+        ...
 
     # -- Analysis ops --
     async def insert_analysis(self, analysis: AnalysisRow) -> str: ...

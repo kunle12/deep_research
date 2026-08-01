@@ -35,6 +35,11 @@ changes.
 | `prompts/auto_tag.txt` | Prompt template for auto-tag extraction |
 | `prompts/glossary_extract.txt` | Prompt template for glossary extraction |
 | `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call`; `ScopedToolRegistry` for per-researcher tool isolation; context management with summarisation at 75% of max context window |
+| `webui/app.py` | P12.5 web UI app factory: `create_app(config_path, *, backend, research_runner)`; lifespan-owned storage, CSP headers, static mount |
+| `webui/jobs.py` | In-memory `ResearchJobManager` — runs `run_research` as an asyncio task, broadcasts phase/step events to SSE subscribers |
+| `webui/routers/library.py` | Library browsing API (reports, tags, artifacts, search, stats, PDF/markdown serving) |
+| `webui/routers/research.py` | Research job API: start, status, cancel, SSE stream |
+| `webui/static/` | Vanilla-JS SPA (no build step): `markdown.js` safe parser/renderer, views for list/report/research |
 
 ---
 
@@ -187,6 +192,71 @@ reset — do not reintroduce module-level counters for this. (The old
 <started_at[:19]>  <run_id[:16]>  <path_taken:8s>  <original_query[:60]>  [tag1, tag2]
 ```
 Tags are batch-fetched via `get_tags_for_artifacts()` to avoid N+1 queries.
+
+---
+
+## Web UI Patterns (P12.5)
+
+Design: the "P12.5 — Web UI (design & implementation plan)" section in
+`docs/PLAN.md`; phase tracker: the "P12.5 — Web UI (library browser)" section
+in `docs/IMPLEMENTATION_LOG.md`.
+
+### App factory
+
+- `create_app(config_path, *, backend=None, research_runner=None)` builds the
+  FastAPI app. `backend`/`research_runner` are injectable for tests; in
+  production the storage backend is resolved from YAML at startup (lifespan)
+  and closed on shutdown.
+- Run with `uv run deep-research-web` (binds 127.0.0.1:8080) or
+  `uv run uvicorn deep_research.webui.app:app`.
+- Every response gets CSP (`default-src 'self'` …), `X-Content-Type-Options:
+  nosniff`, and `Referrer-Policy: no-referrer`.
+
+### Storage layer additions
+
+The web UI relies on additive `StorageBackend` protocol methods implemented in
+both SQLite and Postgres: `list_reports(limit, offset, *, tag, path)`,
+`search_reports(...)` (escaped LIKE over query + markdown, lowercased both
+sides for dialect parity), `count_reports(*, q, tag, path)`, `count_artifacts()`,
+`list_tags(limit)`, `get_artifacts(ids)`. Keep them additive — CLI calls use
+the old defaults.
+
+### Research jobs + SSE
+
+- `ResearchJobManager` is in-memory only (jobs die on server restart; finished
+  reports are already archived). It generates the `run_id`, passes it into
+  `run_research(..., run_id=..., progress=reporter)`, and verifies archival via
+  the backend before emitting the terminal `done` event.
+- `GET /api/research/jobs/{id}/stream` replays the event log, sends a status
+  snapshot, then live events with 15s keepalives; it ends after
+  `done`/`error`/`cancelled`.
+- Cancelling calls `task.cancel()` — cooperative cleanup inside the agent is
+  not guaranteed; the job is marked `cancelled`.
+
+### Frontend conventions
+
+- Plain ES modules under `webui/static/js/`; no bundler, no npm deps.
+  `static/package.json` exists only to mark `"type": "module"` so node can run
+  the parser tests.
+- `markdown.js` is split into a pure AST parser (`parse`/`parseInline` — no
+  DOM, unit-tested under node:test via `tests/webui/markdown.test.mjs`) and a
+  DOM renderer. Text is only ever inserted via `textContent`; link protocols
+  are restricted to http/https/mailto (`safeUrl`). Never feed raw markdown to
+  `innerHTML`.
+- Views own their DOM and return a cleanup function; `app.js` disposes the
+  previous view's cleanup on route change.
+- Hash routing: `#/` list, `#/report/<run_id>`. `?new=1` deep-links to the
+  New Research modal.
+
+### Test conventions
+
+- API tests use `with TestClient(create_app(...))` — without the context
+  manager the portal cancels background asyncio tasks, which turns job tests
+  flaky.
+- Inject a `FakeRunner` (`research_runner=...`) instead of calling the real
+  LLM; see `tests/test_research_api.py`.
+- The JS parser tests run via `pytest` → `node --test`; skipped when node is
+  absent.
 
 ---
 

@@ -19,8 +19,10 @@ RUN uv sync --no-dev
 COPY deep_research/ deep_research/
 COPY config.example.yaml config.yaml
 
-# Expose the microservice port
+# Expose the web UI port
 EXPOSE 8080
 
-# Default: run the FastAPI microservice
-CMD ["uv", "run", "python", "-m", "deep_research.microservice"]
+# Default: run the FastAPI web UI (library browser). Binds 0.0.0.0 inside
+# the container so the port can be forwarded; for a plain local install the
+# `deep-research-web` entrypoint binds 127.0.0.1 instead.
+CMD ["uv", "run", "uvicorn", "deep_research.webui.app:app", "--host", "0.0.0.0", "--port", "8080"]

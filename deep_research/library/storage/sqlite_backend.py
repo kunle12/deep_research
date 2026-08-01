@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 _MIGRATION_FILE = Path(__file__).resolve().parent / "migrations" / "sqlite" / "0001_initial.sql"
 
 
+def _escape_like(text: str) -> str:
+    """Escape LIKE wildcards so user input is matched literally."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class SqliteStorageBackend:
     """SQLite implementation of StorageBackend.
 
@@ -164,6 +169,18 @@ class SqliteStorageBackend:
             return None
         return self._row_to_artifact(row)
 
+    async def get_artifacts(self, artifact_ids: list[str]) -> dict[str, ArtifactRow]:
+        """Batch artifact fetch, keyed by artifact_id (missing ids omitted)."""
+        if not artifact_ids:
+            return {}
+        await self._ensure_conn()
+        placeholders = ",".join("?" * len(artifact_ids))
+        rows = await self._fetchall(
+            f"SELECT * FROM artifacts WHERE artifact_id IN ({placeholders})",
+            tuple(artifact_ids),
+        )
+        return {r[0]: self._row_to_artifact(r) for r in rows}
+
     async def find_artifact_by_url(self, url: str) -> ArtifactRow | None:
         await self._ensure_conn()
         row = await self._fetchone("SELECT * FROM artifacts WHERE source_url = ?", (url,))
@@ -283,6 +300,87 @@ class SqliteStorageBackend:
         row = await self._fetchone("SELECT * FROM reports WHERE run_id = ?", (run_id,))
         if row is None:
             return None
+        return self._row_to_report(row)
+
+    def _report_filter_sql(
+        self,
+        *,
+        q: str | None = None,
+        tag: str | None = None,
+        path: str | None = None,
+    ) -> tuple[str, tuple]:
+        """Shared WHERE clause for report list/search/count queries."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tag:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM tags t WHERE t.artifact_id = r.artifact_id AND t.tag = ?)"
+            )
+            params.append(tag)
+        if path:
+            clauses.append("r.path_taken = ?")
+            params.append(path)
+        if q:
+            like = f"%{_escape_like(q)}%"
+            clauses.append(
+                "(LOWER(r.original_query) LIKE LOWER(?) ESCAPE '\\' "
+                "OR LOWER(r.markdown) LIKE LOWER(?) ESCAPE '\\')"
+            )
+            params.extend([like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, tuple(params)
+
+    async def list_reports(
+        self,
+        limit: int,
+        offset: int = 0,
+        *,
+        tag: str | None = None,
+        path: str | None = None,
+    ) -> list[ReportRow]:
+        await self._ensure_conn()
+        where, params = self._report_filter_sql(tag=tag, path=path)
+        rows = await self._fetchall(
+            f"SELECT * FROM reports r{where} ORDER BY r.started_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        return [self._row_to_report(r) for r in rows]
+
+    async def search_reports(
+        self,
+        query: str,
+        *,
+        limit: int,
+        offset: int = 0,
+        tag: str | None = None,
+        path: str | None = None,
+    ) -> list[ReportRow]:
+        await self._ensure_conn()
+        where, params = self._report_filter_sql(q=query, tag=tag, path=path)
+        rows = await self._fetchall(
+            f"SELECT * FROM reports r{where} ORDER BY r.started_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        return [self._row_to_report(r) for r in rows]
+
+    async def count_reports(
+        self,
+        *,
+        q: str | None = None,
+        tag: str | None = None,
+        path: str | None = None,
+    ) -> int:
+        await self._ensure_conn()
+        where, params = self._report_filter_sql(q=q, tag=tag, path=path)
+        row = await self._fetchone(f"SELECT count(*) FROM reports r{where}", params)
+        return int(row[0]) if row else 0
+
+    async def count_artifacts(self) -> int:
+        await self._ensure_conn()
+        row = await self._fetchone("SELECT count(*) FROM artifacts")
+        return int(row[0]) if row else 0
+
+    def _row_to_report(self, row: tuple) -> ReportRow:
         return ReportRow(
             run_id=row[0],
             started_at=row[1],
@@ -297,31 +395,6 @@ class SqliteStorageBackend:
             citations_json=row[10],
             classifier_json=row[11],
         )
-
-    async def list_reports(self, limit: int) -> list[ReportRow]:
-        await self._ensure_conn()
-        rows = await self._fetchall(
-            "SELECT * FROM reports ORDER BY started_at DESC LIMIT ?", (limit,)
-        )
-        results: list[ReportRow] = []
-        for r in rows:
-            results.append(
-                ReportRow(
-                    run_id=r[0],
-                    started_at=r[1],
-                    completed_at=r[2],
-                    original_query=r[3],
-                    path_taken=r[4],
-                    classifier_rationale=r[5],
-                    iterations=r[6],
-                    config_snapshot=r[7],
-                    markdown=r[8],
-                    artifact_id=r[9],
-                    citations_json=r[10],
-                    classifier_json=r[11],
-                )
-            )
-        return results
 
     # -- Analysis ops --
 
@@ -507,6 +580,14 @@ class SqliteStorageBackend:
             tag = TagRow(tag=r[0], artifact_id=r[1], applied_in_run=r[2])
             result.setdefault(tag.artifact_id, []).append(tag)
         return result
+
+    async def list_tags(self, limit: int = 200) -> list[tuple[str, int]]:
+        await self._ensure_conn()
+        rows = await self._fetchall(
+            "SELECT tag, count(*) AS n FROM tags GROUP BY tag ORDER BY n DESC, tag LIMIT ?",
+            (limit,),
+        )
+        return [(r[0], int(r[1])) for r in rows]
 
     async def get_artifacts_by_tag(self, tag: str) -> list[str]:
         await self._ensure_conn()

@@ -1,6 +1,6 @@
 # Deep Research Agent — Master Plan
 
-> **Status**: v8 — final, proceeded to implementation (P1–P13 done). P12.5 (Web UI) optional/deferred.
+> **Status**: v8 — final, proceeded to implementation (P1–P13 done). P12.5 (Web UI) implemented — see the P12.5 design section below and `docs/IMPLEMENTATION_LOG.md` for progress.
 > **Last update**: All phases P1–P12 implemented.
 > **Resume guidance**: If a session is interrupted, read this file first; it contains every locked-in decision. Then read `docs/IMPLEMENTATION_LOG.md` for progress state.
 
@@ -227,7 +227,7 @@ deep_research/
 | **P10.7** | Auto-tagging — post-synthesis LLM call extracts 3-5 topic tags from query + report. Tags persisted via `writer.tag()`. `deep-research-library ls` shows tags. CLI tag management: `--remove`, `--list`, `--rename-old`/`--rename-new`. Backend: `get_tags_for_artifacts()` (batch), `delete_tag()`, `rename_tag()`. `deep-research-library delete <run_id_prefix>` removes report files + DB records. | Reports auto-tagged; humans can add/modify/delete tags via CLI. | done |
 | **P11** | Wire `asyncpraw`. | Reddit access. | done |
 | **P12.0** | (a) **Postgres `StorageBackend` + asyncpg + conformance test suite** parameterized over both SQLite + Postgres. (b) **Long-running refresh scheduler** (`deep_research.scheduler`) wrapping `LibraryWriter.run_refresh_job` on a fixed interval (default 6h; implemented as a plain `asyncio` loop — **deviation from plan**: the design called for `apscheduler` + `croniter` cron, which was not adopted); webhook + email notifications (not implemented); daemonized `deep_research.scheduler` entrypoint. (c) **`applied` path** (blog-first research) — `paths/applied.py` lands here, not in P10.0. (d) **Library CLI completes**: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh`. (e) **FastAPI microservice** + Dockerfile + poppler setup. | Personal library UX; long-running service that auto-refreshes the library; deployable Postgres-backed microservice. | done |
-| **P12.5** | Web UI for browsing the library. | Visual library browser. | optional / deferred |
+| **P12.5** | Web UI for browsing the library + triggering research from the browser (FastAPI + zero-dependency vanilla JS). See the P12.5 design section below. | Visual library browser. | done |
 | **P13** | Library-first recall — prior-knowledge injection before web search. Uses existing FTS5 index over prior analyses. Every path checks the library before hitting the web; delta-only fetching. | `nodes/recall.py` + integration into deep + academic + quick paths. | done |
 | **Scholar** | Google Scholar discovery backend (Serper primary, SearXNG fallback). Parallel arxiv+scholar seed gathering in academic path. Abstract-only analysis for paywalled hits. | `scholar_search` tool + academic-path integration + abstract-only leaf-node handling. | done |
 | **Refine** | Dynamic refinement during deep-path research. Researchers emit `refine` tool calls mid-loop (drill_deeper, chase_reference, revise_strategy). Refinements collected via `ScopedToolRegistry`, absorbed into state, flushed into plan *after* the critic (and researched even when the critic says "sufficient"). Three-level cap hierarchy; the per-iteration cap is soft — overflow stays pending, never dropped. | `ScopedToolRegistry` + `refine` tool + state/config/prompt changes + tests. | done |
@@ -1251,7 +1251,7 @@ deep_research/
 | **P10.6** | Glossary generation: per-run LLM-call enrichment (no extra call) + rule-based cross-run dedup. `glossary.md` regenerated atomically each run. SQLite `glossary` table + FTS5 over definitions. |
 | **P11** | Wire `asyncpraw`. Reddit access. |
 | **P12.0** | (a) Postgres `StorageBackend` + asyncpg + conformance suite parameterized over both backends. (b) Long-running refresh scheduler (`deep_research.scheduler`) running `LibraryWriter.run_refresh_job` on a fixed interval (**deviation**: implemented as an `asyncio` loop, not the planned `apscheduler` + `croniter`); webhook + email notifications; daemonized `deep_research.scheduler` entrypoint. (c) `applied` path (`paths/applied.py`) — the **only** phase that introduces it. (d) Library CLI completes: `ls`, `find`, `show`, `tag`, `stats`, `prune`, `export-bibtex`, `glossary --refresh` LLM reconcile. (e) FastAPI microservice + Dockerfile + poppler setup. |
-| **P12.5** | Optional web UI for browsing the library. |
+| **P12.5** | Web UI for browsing the library + triggering research. Implemented — see the P12.5 design section below. |
 
 ### Refresh-scheduler timeline recap
 
@@ -1283,6 +1283,264 @@ tests/library/test_full_text_search.py
 Each test file is `pytest`-parameterized over both fixtures. SQLite runs always; Postgres skips with a clean message when `DEEP_RESEARCH_TEST_PG_DSN` env var is unset (matches the existing `requires_tavily` / `requires_llm_endpoint` fixture pattern in `tests/conftest.py`).
 
 ---
+
+## P12.5 — Web UI (design & implementation plan)
+
+> **Status**: implemented (2026-08-01). This section is the P12.5 design record.
+> Progress is tracked under "P12.5 — Web UI (library browser)" in
+> `docs/IMPLEMENTATION_LOG.md`.
+
+---
+
+### Goal
+
+A state-of-the-art, zero-build web UI for the personal research library that:
+
+- Lists past research reports with tags, path, timestamp, and a short snippet.
+- Renders the full report as proper markdown in the browser.
+- Gives an intuitive way to open referenced articles / the bibliography
+  (structured citation cards with arXiv / PDF / DOI / original-URL actions).
+- Lets the user trigger a new research run from the UI with live progress.
+- Uses FastAPI as the backend and **pure vanilla JavaScript** for the
+  frontend — no npm, no bundler, no frontend framework, no CDN dependencies
+  in v1 (optional KaTeX aside, see below).
+
+---
+
+### Decisions (user-approved, 2026-08-01)
+
+1. **Math rendering**: dependency-free v1 — math is shown as styled plain
+   text. Optional KaTeX CDN upgrade later, with graceful fallback.
+2. **Backend changes**: add small additive methods to the `StorageBackend`
+   protocol (offset/search/count/batch-*), implemented in both SQLite and
+   Postgres. CLI and existing tests stay untouched (defaults preserved).
+3. **Research trigger**: background job manager + SSE progress stream
+   (recommended) — not the existing blocking `POST /research`.
+4. **Tag editing**: the UI supports add/remove tags on reports.
+5. **Exposure**: localhost-only by default (`127.0.0.1`). A simple token-auth
+   option is a design hook, not implemented in v1.
+
+---
+
+### What exists today
+
+The library layer already provides almost everything the UI needs:
+
+| Piece | Where | Notes |
+|---|---|---|
+| Storage protocol | `deep_research/library/storage/base.py` | Async, backend-agnostic (SQLite + Postgres) |
+| Reports | `reports` table | run_id, timestamps, query, path, iterations, full markdown, `citations_json`, link to artifact |
+| Citations | `citations_json` column | Rich list: url, title, snippet, authors, arxiv_id, pdf_url, doi, year, venue, confidence |
+| Tags | `tags` table | Attached to artifacts; reports link via `artifact_id` |
+| Analyses / citation edges / glossary | tables | Available for artifact drill-down views |
+| Progress events | `deep_research/progress.py` | `ProgressReporter` protocol (`phase` / `step` / `complete`) already threaded through `run_research` |
+| FastAPI | `deep_research/microservice.py` | Existing blocking `POST /research`; we add a new app rather than extend it |
+
+Existing gaps the UI work fills:
+
+- No paginated / filtered / searchable report listing.
+- No tag browsing or editing API.
+- No way to serve archived report PDFs safely.
+- No background jobs or progress streaming.
+- No static frontend.
+
+---
+
+### Architecture
+
+```
+Browser (vanilla ES modules, no build step)
+   │  fetch / SSE
+   ▼
+FastAPI app  deep_research/webui/app.py
+   │
+   ├── routers/library.py   → StorageBackend (SQLite or Postgres via config)
+   └── routers/research.py  → ResearchJobManager (Phase 4)
+                                └── run_research + ProgressReporter → SSE
+```
+
+The app is created by a `create_app(config_path, *, backend)` factory so
+tests can inject a throwaway SQLite backend. In production the backend is
+resolved from `config.yaml` at startup (reusing `get_backend`) and closed on
+shutdown. No new Python dependencies.
+
+---
+
+### Storage protocol additions (Phase 1)
+
+Additive, with defaults that keep the CLI and existing tests unchanged:
+
+```python
+async def list_reports(
+    self, limit: int, offset: int = 0, *,
+    tag: str | None = None, path: str | None = None,
+) -> list[ReportRow]
+
+async def search_reports(
+    self, query: str, *, limit: int, offset: int = 0,
+    tag: str | None = None, path: str | None = None,
+) -> list[ReportRow]
+
+async def count_reports(
+    self, *, q: str | None = None, tag: str | None = None,
+    path: str | None = None,
+) -> int
+
+async def count_artifacts(self) -> int
+
+async def list_tags(self, limit: int = 200) -> list[tuple[str, int]]
+
+async def get_artifacts(self, artifact_ids: list[str]) -> dict[str, ArtifactRow]
+```
+
+Search matches `original_query` and `markdown` via escaped `LIKE` (lowercased
+both sides for dialect parity). Tag/path filtering is done in SQL so
+pagination totals stay correct. Ordering is `started_at DESC` in v1;
+relevance ordering is a later polish item.
+
+---
+
+### API design
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/health` | Liveness |
+| GET | `/api/reports?limit&offset&q&tag&path` | Paginated report list with tags + snippet |
+| GET | `/api/reports/{run_id}` | Full detail (markdown, citations, tags, pdf_url) |
+| GET | `/api/reports/{run_id}/markdown` | Raw markdown (text/markdown) |
+| GET | `/api/reports/{run_id}/pdf` | Archived PDF (containment-checked) |
+| POST | `/api/reports/{run_id}/tags` | Add a tag `{"tag": "..."}` |
+| DELETE | `/api/reports/{run_id}/tags` | Remove a tag `{"tag": "..."}` |
+| DELETE | `/api/reports/{run_id}?confirm=true` | Delete report + its files |
+| GET | `/api/tags?limit` | Tag cloud with counts |
+| GET | `/api/artifacts/{artifact_id}` | Artifact detail + analyses + citation edges |
+| GET | `/api/search?q&limit` | Combined report + artifact search |
+| GET | `/api/stats` | Library counts (reports, artifacts, tags) |
+| POST | `/api/research` | Start background research job (Phase 4) |
+| GET | `/api/research/jobs/{id}` | Job status (Phase 4) |
+| GET | `/api/research/jobs/{id}/stream` | SSE progress (Phase 4) |
+
+List items omit the heavy markdown body; they carry `run_id`, timestamps,
+query, path, iterations, tags, snippet, citation_count, markdown_length,
+`has_pdf`. Detail carries the full markdown and parsed citations.
+
+---
+
+### Frontend design
+
+Zero-dependency SPA served as static files from `deep_research/webui/static`.
+
+#### Layout
+
+- **Master–detail**: persistent left panel (search, tag chips, path filter)
+  + card list with "load more" infinite scroll.
+- **Report view**: sticky header (query, path badge, date, actions: PDF,
+  download markdown, delete), reading-progress bar, auto-generated TOC
+  sidebar for long reports, and a **References panel** rendered from
+  `citations_json` — each citation is a card with title, authors, year/venue,
+  snippet, and explicit buttons for arXiv / PDF / DOI / original URL (all
+  `target="_blank" rel="noopener"`).
+- The trailing `## Bibliography` markdown section is collapsed because the
+  structured panel replaces it; `## Citation Graph` stays rendered.
+- **New research modal**: query, optional path override, live SSE progress
+  feed, cancel; on completion the UI jumps to the new report.
+
+#### Styling
+
+- Hand-rolled CSS with design tokens (CSS custom properties), system font
+  stack, subtle shadows, good typography.
+- Dark/light theme via `prefers-color-scheme` + manual toggle.
+- Responsive: collapses to a single column on small screens.
+- Keyboard shortcuts: `/` focus search, `j`/`k` navigate list, `Esc` close.
+
+#### Markdown rendering & safety
+
+`js/markdown.js` is a small parser (pure AST) + DOM builder:
+
+- Headings, paragraphs, bold/italic/strikethrough, inline + fenced code,
+  links, bare-URL autolinking, ordered/unordered/nested lists, blockquotes,
+  tables, hr, images (rendered as links in v1).
+- Math stays as styled monospace text in v1 (optional KaTeX later).
+- **Safety**: the DOM is built with `createElement`/`textContent` — the raw
+  markdown is never passed through `innerHTML`, so LLM-generated report
+  content cannot inject markup.
+
+#### JS structure (no bundler, ES modules)
+
+```
+static/js/
+├── app.js          # bootstrap, hash router, keyboard shortcuts
+├── api.js          # thin fetch wrapper
+├── markdown.js     # parser (pure AST) + DOM builder
+├── state.js        # minimal pub/sub store
+└── views/
+    ├── list.js
+    ├── report.js
+    ├── research.js
+    └── toc.js
+```
+
+---
+
+### Research jobs & SSE (Phase 4)
+
+- In-process `ResearchJobManager` (`webui/jobs.py`) keeps job state in memory:
+  status (`running` / `done` / `failed` / `cancelled`), phase, step, result
+  (`run_id`), error. A restart drops in-flight jobs — acceptable for a
+  single-user local app; documented.
+- A `ProgressReporter` implementation pushes `phase`/`step` events into the
+  job's asyncio queue; `GET /api/research/jobs/{id}/stream` streams them as
+  SSE.
+- `POST /api/research` validates the query and starts `run_research` as an
+  `asyncio` task. The agent archives the report itself (`pdl.enabled`),
+  so on completion the report is already in the library.
+
+---
+
+### Security
+
+- Server binds to `127.0.0.1` by default.
+- File endpoints (`/pdf`) resolve `bytes_path` inside `pdl.root_dir` and
+  reject anything escaping it.
+- `DELETE /reports/{run_id}` requires an explicit `confirm=true`.
+- CSP header on the static app; markdown rendered via DOM APIs only.
+- Optional token auth is a documented hook for future LAN use, not v1.
+
+---
+
+### Implementation phases
+
+1. **Backend + API** (done): storage protocol additions, `webui` package
+   (app factory, models, router), pytest coverage.
+2. **Frontend shell**: index.html, design tokens, list view with search /
+   tag / path filters and pagination.
+3. **Report view**: markdown renderer + parser unit tests, TOC, references
+   panel, PDF/raw export, tag editing, delete.
+4. **New research**: job manager, SSE stream, modal, cancel, auto-navigate.
+5. **Polish + docs**: keyboard nav, theme toggle, empty/error states, stats
+   view, README + `docs/PLAN.md` update, Dockerfile CMD, optional
+   `deep-research-web` script entry.
+
+---
+
+### Testing strategy
+
+- **Backend**: extend `tests/library/test_report_crud.py` (conformance,
+  runs against SQLite always, Postgres when DSN set) for the new storage
+  methods; new `tests/test_webui_api.py` for endpoint behavior with an
+  injected temp SQLite backend + FastAPI `TestClient`.
+- **Frontend**: `markdown.js` parser is a pure function — unit-testable with
+  Node's built-in `node:test` if desired; no test harness required in v1.
+- Live smoke test with Playwright MCP is a nice-to-have later.
+
+---
+
+### Out of scope (future ideas)
+
+- Postgres-backed deployment + token auth.
+- Relevance-ranked search results.
+- Glossary browser view, refresh-job UI, citation graph visualization.
+- Report diffing / version history in the UI.
 
 ## P13 — Library-first recall (prior knowledge injection)
 

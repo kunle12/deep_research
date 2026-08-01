@@ -87,6 +87,7 @@ dev = [
 deep-research = "deep_research.cli.app:app"
 deep-research-library = "deep_research.library.cli:library_app"
 deep-research-scheduler = "deep_research.scheduler:_run_scheduler"
+deep-research-web = "deep_research.webui.app:main"
 
 [build-system]
 requires = ["hatchling>=1.21"]

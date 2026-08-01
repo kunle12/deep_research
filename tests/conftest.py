@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+import deep_research  # noqa: F401  (sys.path fixup before any fastapi/pydantic import)
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # Load .env.local EXPLICITLY only when a test requests network via

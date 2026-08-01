@@ -1,0 +1,6 @@
+{
+  "name": "deep-research-webui-static",
+  "private": true,
+  "type": "module",
+  "description": "Static assets for the Deep Research Library web UI. type=module lets node import the vanilla ES modules directly (browser unaffected)."
+}

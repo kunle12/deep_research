@@ -206,6 +206,36 @@ uv run deep-research-library glossary --filter-tag "nlp"   # filter by domain ta
 uv run deep-research-library glossary --out glossary.json  # export as JSON
 ```
 
+### Web UI (library browser)
+
+A zero-dependency FastAPI + vanilla-JS web app for browsing the personal
+library: search and filter reports by tag or path, read reports as rendered
+markdown with a table of contents and a structured references panel (one-click
+links to arXiv / PDF / DOI / original URLs), manage tags, download the
+archived PDF or markdown, and kick off new research from the browser with
+live progress:
+
+```bash
+uv run deep-research-web
+# open http://127.0.0.1:8080
+```
+
+Or run the server directly:
+
+```bash
+uv run uvicorn deep_research.webui.app:app --host 127.0.0.1 --port 8080
+```
+
+Notes:
+
+- Binds to `127.0.0.1` by default. The Dockerfile runs the web UI on
+  `0.0.0.0:8080` so the port can be forwarded.
+- Research jobs run in-process and live in memory — restarting the server
+  cancels in-flight jobs (finished reports are already archived in the
+  library, so they are safe).
+- The frontend is plain ES modules with no npm or build step. Interactive API
+  docs are available at `/docs`.
+
 Refresh scheduler (daemon that auto-refreshes upstream URLs):
 
 ```bash
@@ -233,13 +263,21 @@ asyncio.run(main())
 
 ### FastAPI microservice
 
+The web UI above is the recommended way to use the agent over HTTP. A minimal
+programmatic microservice (`POST /research` → report markdown/citations) is
+also available:
+
 ```bash
-uv run python -m deep_research.microservice
-# or via Docker:
-docker build -t deep-research .
-docker run -p 8080:8080 deep-research
+uv run uvicorn deep_research.microservice:app --host 127.0.0.1 --port 8080
 
 # POST /research with {"query": "...", "config_path": "config.yaml"}
+```
+
+Or run the web UI (library browser + new research) in Docker:
+
+```bash
+docker build -t deep-research .
+docker run -p 8080:8080 deep-research
 ```
 
 ---

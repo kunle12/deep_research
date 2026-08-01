@@ -622,6 +622,9 @@ $ uv run pytest tests/ --cov=deep_research --cov-report=term
 - **P12.x**: Postgres backend, scheduler, applied path, FastAPI microservice, Web UI — deferred
 - **P13**: Library-first recall — prior-knowledge injection before web search
 
+> Historical note: P11, P12.0, P12.5 (Web UI), and P13 have since been
+> implemented — see the corresponding sections below.
+
 ---
 
 ## P11 — Wire asyncpraw (Reddit access)
@@ -1274,3 +1277,191 @@ safety, and robustness regressions.
   archive_pdf content-collision, microservice config-path containment,
   `util.coerce_float` / `strip_arxiv_version`.
 - Suite: **599 passed, 2 skipped**; `ruff check` + `mypy` clean.
+
+---
+
+## P12.5 — Web UI (library browser)
+
+Implemented per the P12.5 design section in `docs/PLAN.md` (phase-by-phase
+tracker merged below). FastAPI backend + zero-dependency vanilla-JS frontend.
+
+### Done
+
+- [x] `deep_research/webui/` package:
+  - `app.py` — `create_app(config_path, *, backend, research_runner)` factory;
+    lifespan-owned storage backend, CSP/nosniff/referrer-policy headers,
+    static-file mount + `/` SPA shell
+  - `routers/library.py` — reports (list/detail/markdown/pdf/tags/delete),
+    tag cloud, artifact detail, search, stats
+  - `routers/research.py` — `POST /api/research`, job status, cancel,
+    SSE progress stream
+  - `jobs.py` — in-memory `ResearchJobManager` (max 2 concurrent, 50 retained,
+    pruned oldest); runs `run_research` as an asyncio task with generated
+    `run_id` + `progress` reporter; verifies archival after completion
+  - `progress.py` — `JobProgressReporter` bridges agent phase/step → SSE
+  - `static/` — `index.html`, `styles.css` (design tokens, dark/light,
+    responsive), vanilla ES modules: `app.js`, `api.js`, `dom.js`, `format.js`,
+    `state.js`, `markdown.js` (safe parser+renderer), `views/list.js`,
+    `views/report.js`, `views/research.js`
+- [x] Storage protocol additions (both SQLite + Postgres): `list_reports`
+  (offset/tag/path), `search_reports`, `count_reports`, `count_artifacts`,
+  `list_tags`, `get_artifacts` — additive, CLI-compatible
+- [x] `deep-research-web` console script; Dockerfile default CMD now serves
+  the web UI (0.0.0.0:8080)
+- [x] Tests: `tests/test_webui_api.py` (15), `tests/test_research_api.py` (8,
+  injectable fake runner), `tests/test_markdown_js.py` + `tests/webui/markdown.test.mjs`
+  (14 node:test parser cases), storage conformance additions
+- [x] README "Web UI (library browser)" section; `docs/PLAN.md` P12.5 row → done
+
+### Notes
+
+- Research jobs are in-memory only: a server restart cancels in-flight jobs;
+  finished reports are already archived and safe.
+- The frontend is plain ES modules (no npm/build step). `static/package.json`
+  only sets `"type": "module"` so node can import the parser in tests.
+- Markdown rendering never uses `innerHTML` with source text; links are
+  restricted to http/https/mailto.
+- TestClient-based tests must use `with TestClient(app)` — background asyncio
+  tasks (research jobs) are cancelled if the portal is not entered.
+- Headless-Chrome smoke checks pass for list, report, modal, and stats views
+  (no live LLM runs were triggered during verification).
+
+### Phase-by-phase tracker
+
+> All items below are complete.
+
+#### Phase 1 — Backend + API
+
+Storage protocol additions and the FastAPI library API.
+
+- [x] Write the P12.5 design doc (now merged into `docs/PLAN.md`)
+- [x] Write this implementation log
+- [x] Extend `StorageBackend` protocol:
+  - [x] `list_reports(limit, offset, *, tag, path)`
+  - [x] `search_reports(query, *, limit, offset, tag, path)`
+  - [x] `count_reports(*, q, tag, path)`
+  - [x] `count_artifacts()`
+  - [x] `list_tags(limit)`
+  - [x] `get_artifacts(artifact_ids)`
+- [x] SQLite backend implementation
+- [x] Postgres backend implementation
+- [ ] `deep_research/webui` package:
+  - [x] `app.py` — `create_app()` factory + lifespan
+  - [x] `models.py` — pydantic response models
+  - [x] `format.py` — snippet + citation parsing helpers
+  - [x] `routers/library.py` — reports / tags / artifacts / search / stats
+- [ ] Tests:
+  - [x] conformance tests for new storage methods
+  - [x] `tests/test_webui_api.py` endpoint coverage
+- [x] Run `uv run pytest` + `uv run ruff check` — full suite green
+
+##### Phase 1 notes
+
+- `deep_research/__init__.py` already contains a sys.path fixup for this
+  machine's `PYTHONPATH=/usr/lib/python3/dist-packages` quirk. It is now also
+  imported at the top of `tests/conftest.py`, so `pytest` itself gets the
+  correct environment before collecting any test module.
+- On this machine, run tests as: `env -u PYTHONPATH uv run pytest ...`
+- Smoke-tested the API against the real library DB (`index.db`, 385 reports):
+  list / detail / markdown / pdf / search / stats all work; the archived PDF
+  for `e8fadc62abb1462a` streams correctly (28 KB, application/pdf).
+
+#### Phase 2 — Frontend shell
+
+- [x] Static shell: index.html, styles.css design tokens
+- [x] List view: search, tag chips, path filter, load-more pagination
+- [x] Theme toggle + responsive layout
+
+##### Phase 2 notes
+
+- FastAPI now serves `deep_research/webui/static` via `/static` and `GET /`
+  returns the SPA shell, with CSP / nosniff / referrer-policy headers on
+  every response.
+- Frontend is pure ES modules (no bundler, no dependencies): `api.js`,
+  `dom.js`, `format.js`, `state.js`, `views/list.js`, `app.js`.
+- List view: debounced header search, tag cloud + path filter sidebar,
+  "Load more" + IntersectionObserver auto-load, empty/error states.
+- Hash routing skeleton: `#/` list, `#/report/<run_id>` placeholder until
+  Phase 3. Theme persisted in localStorage; keyboard shortcuts `/`, `j`, `k`,
+  `Esc`.
+- Verified with uvicorn against the live library (395 reports at the time):
+  `/`, `/static/js/app.js`, `/api/stats` all 200; JS syntax checked with node.
+
+#### Phase 3 — Report view
+
+- [x] `js/markdown.js` parser + DOM builder (+ parser tests)
+- [x] Report detail: markdown, TOC, references panel
+- [x] PDF / markdown export, tag editing, delete
+
+##### Phase 3 notes
+
+- `js/markdown.js`: dependency-free, safe parser (pure AST, no DOM) +
+  renderer. Supports headings (ATX + setext), paragraphs, bold/italic/
+  strikethrough, inline + fenced code (with copy button), links + bare-URL
+  autolinking, ordered/unordered/nested lists, tables, blockquotes, hr,
+  images-as-links, and `$...$` / `$$...$$` math as styled monospace text.
+  Text is only inserted via textContent; link protocols restricted to
+  http/https/mailto (no javascript:).
+- Unit tests: `tests/webui/markdown.test.mjs` (14 node:test cases, wired
+  into pytest via `tests/test_markdown_js.py`; `package.json` `type: module`
+  marker added to `static/` so node imports the ES modules).
+- `views/report.js`: sticky header (back, title, path badge, meta, Open PDF /
+  Download .md), reading-progress bar, auto TOC (smooth-scroll buttons, shown
+  when >= 3 headings), rendered markdown with the markdown `## Bibliography`
+  section stripped and replaced by the structured References panel
+  (arXiv / PDF / DOI / URL buttons per citation), tag add/remove editor,
+  delete-with-confirm, loading/error states.
+- Verified end-to-end in headless Chrome against the live library: list view
+  renders 50 cards ("Showing 50 of 405 reports"); the adversarial-RL survey
+  report renders its full markdown, 10 TOC links, 284 reference cards, math
+  spans, and no errors.
+
+#### Phase 4 — New research
+
+- [x] `jobs.py` ResearchJobManager
+- [x] SSE progress endpoint + progress reporter
+- [x] New-research modal with live feed + cancel
+
+##### Phase 4 notes
+
+- `webui/jobs.py`: in-memory `ResearchJobManager` (max 2 concurrent, 50 jobs
+  retained, oldest finished pruned). Each job runs `run_research` as an
+  asyncio task with a generated `run_id`; on completion it verifies archival
+  via the backend and emits a terminal `done` event with `run_id`.
+- `webui/progress.py`: `JobProgressReporter` forwards agent `phase`/`step`
+  calls into the job's event stream.
+- `webui/routers/research.py`:
+  - `POST /api/research` (202) — start; 422 blank query; 409 at concurrency cap
+  - `GET /api/research/jobs/{id}` — status
+  - `POST /api/research/jobs/{id}/cancel` — cancels the asyncio task
+  - `GET /api/research/jobs/{id}/stream` — SSE (status snapshot + event log
+    replay + live events + 15s keepalives; ends on terminal event)
+- Frontend `views/research.js`: modal with query + path override (auto/quick/
+  deep/academic/url_source), live SSE feed, cancel, auto-navigate to the new
+  report on completion, graceful reconnect/error handling. `?new=1` deep link
+  opens the modal.
+- Tests: `tests/test_research_api.py` — 8 tests with an injectable fake
+  runner covering start/poll, validation, failure, cancel, live + replayed
+  SSE, 404s, concurrency cap.
+- Verified in headless Chrome: modal renders via `/?new=1` (dialog, query,
+  path select, feed area, enabled header button). Live LLM runs were NOT
+  triggered during verification; the job/SSE lifecycle is covered by the
+  fake-runner tests.
+
+#### Phase 5 — Polish + docs
+
+- [x] Keyboard nav, empty/error states, stats view
+- [x] README + `docs/PLAN.md` update, Dockerfile CMD, script entry
+
+##### Phase 5 notes
+
+- List sidebar now shows a Library stats card (reports / artifacts / tags)
+  fed by `/api/stats`.
+- New `deep-research-web` console script (`deep_research.webui.app:main`,
+  binds 127.0.0.1:8080); verified it builds and boots via `uv run`.
+- Dockerfile default CMD now serves the web UI via uvicorn on 0.0.0.0:8080.
+- README gained a "Web UI (library browser)" section; `docs/PLAN.md` P12.5
+  status updated to implemented.
+- Final state: all five phases complete. Full pytest suite green, ruff clean,
+  node parser tests green, headless-Chrome smoke checks pass (list, report,
+  modal, stats).
