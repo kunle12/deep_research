@@ -8,10 +8,10 @@ Covers the recursive-mining loop fully offline by mocking:
 
 Helpers tested individually:
   - _gather_seeds: empty search_hint, missing arxiv_search tool, search-error
-  - _download_pdf_once / _extract_text: download + extract happy paths and
+  - download_pdf_once / extract_text: download + extract happy paths and
     failure modes (dl failure -> None, missing tool -> empty)
-  - _fetch_paper_text_fallback: resolve-only fallback, missing tool -> ""
-  - _render_pages: missing tool, render error, non-JSON content,
+  - fetch_paper_text_fallback: resolve-only fallback, missing tool -> ""
+  - render_pages: missing tool, render error, non-JSON content,
     malformed JSON, happy path with valid data URLs list
   - _synthesize_markdown: empty analyses -> boilerplate, happy path LLM
     synthesis, LLM failure -> deterministic fallback, fallback formatting
@@ -31,14 +31,16 @@ import pytest
 
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
+from deep_research.nodes.paper_analysis import (
+    download_pdf_once,
+    extract_text,
+    fetch_paper_text_fallback,
+    render_pages,
+)
 from deep_research.paths import academic
 from deep_research.paths.academic import (
-    _download_pdf_once,
-    _extract_text,
     _fallback_synthesis,
-    _fetch_paper_text_fallback,
     _gather_seeds,
-    _render_pages,
     _synthesize_markdown,
     academic_research,
 )
@@ -263,7 +265,7 @@ class TestGatherSeeds:
 
 
 # ---------------------------------------------------------------------------
-# _download_pdf_once / _extract_text / _fetch_paper_text_fallback
+# download_pdf_once / extract_text / fetch_paper_text_fallback
 # ---------------------------------------------------------------------------
 
 
@@ -277,7 +279,7 @@ class TestDownloadAndExtract:
             return ToolResult(content=str(pdf_path))
 
         reg = _registry({"arxiv_download_pdf": _download})
-        out = await _download_pdf_once("2401.1", reg)
+        out = await download_pdf_once("2401.1", reg)
         assert out == str(pdf_path)
 
     @pytest.mark.asyncio
@@ -286,7 +288,7 @@ class TestDownloadAndExtract:
             return ToolResult(content="", error="HTTP 503")
 
         reg = _registry({"arxiv_download_pdf": _download})
-        out = await _download_pdf_once("2401.1", reg)
+        out = await download_pdf_once("2401.1", reg)
         assert out is None
 
     @pytest.mark.asyncio
@@ -298,13 +300,13 @@ class TestDownloadAndExtract:
             return ToolResult(content="error: not a path")
 
         reg = _registry({"arxiv_download_pdf": _download})
-        out = await _download_pdf_once("2401.1", reg)
+        out = await download_pdf_once("2401.1", reg)
         assert out is None
 
     @pytest.mark.asyncio
     async def test_missing_download_tool_returns_none(self) -> None:
         reg = _registry({})
-        out = await _download_pdf_once("2401.1", reg)
+        out = await download_pdf_once("2401.1", reg)
         assert out is None
 
     @pytest.mark.asyncio
@@ -316,13 +318,13 @@ class TestDownloadAndExtract:
             return ToolResult(content="extracted body")
 
         reg = _registry({"pdf_extract_text": _extract})
-        out = await _extract_text(str(pdf_path), reg)
+        out = await extract_text(str(pdf_path), reg)
         assert out == "extracted body"
 
     @pytest.mark.asyncio
     async def test_extract_text_missing_tool_returns_empty(self) -> None:
         reg = _registry({})
-        out = await _extract_text("/tmp/x.pdf", reg)
+        out = await extract_text("/tmp/x.pdf", reg)
         assert out == ""
 
     @pytest.mark.asyncio
@@ -331,18 +333,18 @@ class TestDownloadAndExtract:
             return ToolResult(content="metadata-only content")
 
         reg = _registry({"arxiv_resolve": _resolve})
-        out, _pdf_path = await _fetch_paper_text_fallback("2401.1", reg)
+        out, _pdf_path = await fetch_paper_text_fallback("2401.1", reg)
         assert out == "metadata-only content"
 
     @pytest.mark.asyncio
     async def test_resolve_fallback_missing_tool_returns_empty(self) -> None:
         reg = _registry({})
-        out, _pdf_path = await _fetch_paper_text_fallback("2401.1", reg)
+        out, _pdf_path = await fetch_paper_text_fallback("2401.1", reg)
         assert out == ""
 
 
 # ---------------------------------------------------------------------------
-# _render_pages
+# render_pages
 # ---------------------------------------------------------------------------
 
 
@@ -350,7 +352,7 @@ class TestRenderPages:
     @pytest.mark.asyncio
     async def test_missing_render_tool_returns_empty(self) -> None:
         reg = _registry({})
-        out = await _render_pages("/tmp/x.pdf", reg)
+        out = await render_pages("/tmp/x.pdf", reg)
         assert out == []
 
     @pytest.mark.asyncio
@@ -359,7 +361,7 @@ class TestRenderPages:
             return ToolResult(content="", error="poppler missing")
 
         reg = _registry({"pdf_render_pages": _render})
-        out = await _render_pages("/tmp/x.pdf", reg)
+        out = await render_pages("/tmp/x.pdf", reg)
         assert out == []
 
     @pytest.mark.asyncio
@@ -368,7 +370,7 @@ class TestRenderPages:
             return ToolResult(content="not json")
 
         reg = _registry({"pdf_render_pages": _render})
-        out = await _render_pages("/tmp/x.pdf", reg)
+        out = await render_pages("/tmp/x.pdf", reg)
         assert out == []
 
     @pytest.mark.asyncio
@@ -384,7 +386,7 @@ class TestRenderPages:
             return ToolResult(content=json.dumps(payload))
 
         reg = _registry({"pdf_render_pages": _render})
-        out = await _render_pages(str(pdf_path), reg, max_pages=10)
+        out = await render_pages(str(pdf_path), reg, max_pages=10)
         assert out == ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"]
 
     @pytest.mark.asyncio
@@ -397,7 +399,7 @@ class TestRenderPages:
             return ToolResult(content=json.dumps(payload))
 
         reg = _registry({"pdf_render_pages": _render})
-        out = await _render_pages(str(pdf_path), reg)
+        out = await render_pages(str(pdf_path), reg)
         assert out == ["data:image/jpeg;base64,OK"]
 
 

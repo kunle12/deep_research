@@ -222,7 +222,6 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         "(cached result). Consider pdf_render_pages (vision) "
                         "or a different source."
                     ),
-                    citations=[cit],
                 )
             # kind == "html" — fall through to the HTML low-yield / browser
             # fallback logic below using the cached (html, text).
@@ -315,7 +314,6 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         f"PDF saved at: {pdf_path}. "
                         "Consider pdf_render_pages (vision) or a different source."
                     ),
-                    citations=[cit],
                 )
 
             # HTML path — decode and run trafilatura.

@@ -27,8 +27,13 @@ changes.
 | `tools/browser.py` | Playwright MCP headless browser |
 | `tools/arxiv.py` | arxiv.org search + PDF download |
 | `tools/fetch_page.py` | httpx + trafilatura page fetch |
-| `paths/deep.py` | Deep research path (planner→researcher→critic→writer); checkpoint resume |
-| `paths/academic.py` | Academic citation-graph path |
+| `paths/deep.py` | Deep research path (planner→researcher→critic→writer) with the critic-driven deep paper-analysis pass; checkpoint resume |
+| `paths/academic.py` | Academic citation-graph path (uses the shared PDF helpers in `nodes/paper_analysis.py`) |
+| `nodes/researcher.py` | One sub-question researcher: tool loop + used-only citation gating + strict final-answer parsing |
+| `nodes/critic.py` | Deep-path critic: sufficient/gaps + `papers_to_analyze` (deep PDF selection) |
+| `nodes/paper_analysis.py` | Shared PDF pipeline (`download_pdf_once`, `extract_text`, `render_pages`, `fetch_paper_text_fallback` — factored from `academic.py`) + `analyze_paper_deep` + `run_paper_analysis_pass` + `format_deep_analysis_context` |
+| `nodes/analyze_paper.py` | Vision-aware structured paper analysis (adaptive image batching) — used by academic + deep paths |
+| `citations.py` | URL normalization (`normalize_url`, `extract_urls_from_markdown`), used-only bibliography filter (`filter_citations_to_referenced`), bibliography/graph/BibTeX renderers |
 | `checkpoint.py` | JSON checkpoint save/load for crash recovery of deep research state |
 | `util.py` | Shared tiny helpers: `coerce_float()` (tolerant float parsing for LLM/API output) + `strip_arxiv_version()`. Import these — do NOT copy the body into new modules |
 | `nodes/auto_tag.py` | Post-synthesis LLM call — extracts 3-5 topic tags from query + report |
@@ -83,6 +88,108 @@ actions: `drill_deeper` (new sub-question), `chase_reference` (follow a URL),
   text to catch case/whitespace variants.
 - **`research()` returns a 3-tuple**: `(answer_md, citations, refinements)`.
   `paths/deep.py` accepts both 2-tuples (backward compat) and 3-tuples.
+
+---
+
+## Citation Hygiene Pattern (researcher.py + citations.py + report/markdown.py)
+
+Reports only cite sources that were actually used — search hits the researcher
+merely saw must never reach the bibliography.
+
+- **Researcher gating** (`nodes/researcher.py::_gate_citations`): after the tool
+  loop, only citations whose URL is referenced in the answer markdown OR
+  explicitly listed in the final JSON `citations` array are returned. Prose-
+  referenced URLs with no citation object get a minimal synthesized `Citation`.
+  Tool-result citations (search hits, fetched pages) are candidates, not
+  sources — most are dropped. The result is capped at
+  `max_citations_per_researcher` (prose-referenced first, then by confidence).
+- **Strict final-answer parsing** (`_parse_final_assistant`): only the LAST
+  message counts as the answer, and only if it is an assistant message with
+  content and NO `tool_calls`. If the turn budget expired mid-tool-call, the
+  researcher raises `RuntimeError("researcher produced no final answer")` so the
+  deep loop retries/marks the sub-question stuck instead of shipping intermediate
+  chatter ("Let me search for that.") as a draft.
+- **Bibliography = body-referenced** (`citations.py::filter_citations_to_referenced`):
+  a citation is kept only if its URL appears in the report markdown OR it is
+  referenced by arXiv id (`arxiv:ID` / `abs/ID` — academic mode cites Scholar
+  hits this way). Applied when building the deep `Report.citations` and again at
+  render time (`report/markdown.py`) as defense in depth for every path.
+- **URL matching helpers live ONLY in `citations.py`**: `normalize_url()`
+  (strips delimiters/trailing punctuation/trailing slash, lowercases) and
+  `extract_urls_from_markdown()` (handles `<url>` autolinks, `[url]` text,
+  `[label](url)`, bare URLs). Do NOT re-implement URL regexes in new modules.
+- **Citation style is inline autolinks** `<https://…>` in prompts
+  (`prompts/writer.txt`, `quick_summary.txt`, `researcher.txt`, `nodes/writer.py`)
+  — `[https://…]` is not valid Markdown link syntax and must not be instructed.
+- **fetch_page never attaches citations to error results** — only successful
+  extractions carry a `Citation`.
+
+---
+
+## Deep Paper Analysis Pattern (critic-selected full PDF analysis)
+
+The deep-path critic decides which arXiv papers deserve full PDF analysis;
+analyses enrich the final report (Phase 1) and feed the research loop (Phase 2).
+
+**Flow** (see also the "Deep paper analysis" section in `docs/PLAN.md`):
+
+```
+researchers -> critic (sufficient? gaps? papers_to_analyze?)
+  -> run_paper_analysis_pass (after critic, BEFORE sufficient/break checks)
+  -> state.deep_analyses[arxiv_id] = PaperAnalysis
+  -> writer prompt gets "Deep paper analyses" section (rendered FIRST)
+  -> next critic round + later researchers receive the digest (Phase 2)
+```
+
+**Selection** (`nodes/critic.py` + `prompts/critic.txt`):
+- `_render_paper_candidates(state)` builds the candidate table from arxiv
+  citations in `state.citations`: title, first author + year, ~250-char abstract,
+  `referenced_by_count` (distinct drafts mentioning the paper — the cheap
+  "notable referencing" signal), `cited_by_count` when known. Excludes already-
+  analyzed/requested papers; capped at 40. Key references of analyzed papers
+  become candidates (Phase 2).
+- Prompt task 4: select using abstract relevance / notable referencing /
+  foundational status; `[]` when nothing qualifies. Task 5 (Phase 2): use the
+  analyses digest to propose follow-up gaps and key-reference nominations.
+- Validation: arXiv-ID pattern only; priority clamped to [0,1]; dedupe by id
+  keeping highest priority; scholar/web-only entries rejected (v1 analyzes
+  downloadable arXiv PDFs only).
+
+**Pipeline** (`nodes/paper_analysis.py`):
+- Shared PDF helpers factored from `academic.py` — `download_pdf_once`,
+  `extract_text`, `render_pages`, `fetch_paper_text_fallback` — ONE implementation
+  for both paths. Do not add diverging copies back to `academic.py`.
+- `analyze_paper_deep`: full PDF (text + optional vision when
+  `pdf_vision.enabled`) -> abstract-only via `arxiv_resolve` -> skip.
+- `run_paper_analysis_pass`:
+  - Filter by `deep_analysis_min_priority`, dedupe, sort by priority desc.
+  - **The cap bounds the whole RUN, not a single pass invocation**: remaining
+    budget = `deep_analysis_max_papers` − `len(state.deep_analysis_requested)`.
+    Subtracting the already-requested set is what prevents N critic rounds from
+    analyzing N×cap papers. Never make this a per-call cap.
+  - Mark selected ids in `state.deep_analysis_requested` BEFORE running (no
+    same-run retry, even on failure — the set persists across checkpoints).
+  - Run under `asyncio.Semaphore(deep_analysis_concurrency)`, each paper wrapped
+    in `asyncio.wait_for(..., timeout=deep_analysis_timeout_s)`.
+  - Library cache: reuse a prior `analyze_paper` analysis via
+    `_cached_analysis`/`_analysis_from_row` when
+    `deep_analysis_use_library_cache` (string key-references are validated
+    against the arXiv-ID pattern).
+  - Success: store in `state.deep_analyses`, absorb a citation for the paper,
+    archive PDF + `record_analysis` in the library. Failures are logged/skipped —
+    a failed analysis must never fail the deep run.
+
+**Writer integration** (`nodes/writer.py`):
+- The "Deep paper analyses" section is rendered FIRST in
+  `_render_sections_for_prompt` (before sub-question drafts) so the trailing
+  12k-char truncation cap can never drop it. Keep this ordering.
+
+**Phase 2 feedback**:
+- Critic's sections blob includes `format_deep_analysis_context(state.deep_analyses)`.
+- `paths/deep.py::_run_one_researcher_with_recall` receives a per-iteration
+  snapshot of `state.deep_analyses` and appends the digest to `prior_context`.
+  Use a `None` default + init inside the function (a `dict(...)` default is a
+  mutable-default bug).
 
 ---
 
@@ -144,6 +251,13 @@ reset — do not reintroduce module-level counters for this. (The old
   - `max_refinement_depth: int = 2`
   - `max_refinement_per_researcher: int = 3`
   - `max_total_refinements_per_iteration: int = 6`
+- Citation-hygiene knob on `AgentConfig`: `max_citations_per_researcher: int = 10`
+- Deep paper-analysis knobs live on `AgentConfig`:
+  - `deep_analysis_max_papers: int = 3` (0 disables; **per RUN**, see Deep Paper Analysis Pattern)
+  - `deep_analysis_min_priority: float = 0.6`
+  - `deep_analysis_concurrency: int = 2`
+  - `deep_analysis_timeout_s: float = 900.0`
+  - `deep_analysis_use_library_cache: bool = True`
 
 ---
 
@@ -265,6 +379,9 @@ the old defaults.
 - **Framework**: pytest + respx (HTTP mocking) + pytest-asyncio
 - **Test file location**: `tests/` for general, `tests/tools/` for tool-specific
 - **Live tests**: skipped unless env var is set (`requires_tavily`, `requires_serper`, etc.)
+- **Coverage gate**: coverage must stay above 80% — enforced by
+  `[tool.coverage.report] fail_under = 80` in `pyproject.toml` (current total: 87%).
+  Run `coverage run -m pytest && coverage report`; `pytest --cov` works too (pytest-cov is a dev dep).
 - **Cross-test isolation**: module-level globals reset via `pytest.fixture(autouse=True)`
   (see `test_tools_web_search.py::_reset_web_search_globals`)
 - **Rate-limit tests**: mock 429/502 responses, verify retry + fallback behavior
@@ -287,7 +404,15 @@ the old defaults.
 5. **Shared ToolRegistry is immutable at runtime**: `ToolRegistry.register()`
    raises on duplicate names. Never register per-researcher tools on the shared
    registry — use `ScopedToolRegistry` to wrap it (see Dynamic Refinement Pattern)
-6. **Vision context limits ≠ advertised context**: VLM servers (llama.cpp, vLLM)
+6. **Per-run caps must subtract already-requested state**: the deep-analysis cap bounds the
+   whole run — compute `remaining = cap - len(state.deep_analysis_requested)` or repeated
+   critic rounds silently analyze N×cap papers. Also never use a mutable default
+   (`dict(state.deep_analyses)`) in a function signature — ruff B006; use `None` + init inside.
+7. **Writer analyses section ordering**: render "Deep paper analyses" BEFORE the drafts — the
+   sections blob is truncated to 12k chars, and appending analyses last means long drafts drop them.
+8. **URL matching belongs in `citations.py`**: use `normalize_url`/`extract_urls_from_markdown`/
+   `filter_citations_to_referenced`; do not copy URL regexes into new modules.
+9. **Vision context limits ≠ advertised context**: VLM servers (llama.cpp, vLLM)
    have a much lower effective limit for combined text+image payloads than their
    advertised `n_ctx`. A server advertising 131k context may fail at ~8k chars
    text + 1 image. Never stuff large text alongside images — cap text in image
@@ -366,14 +491,16 @@ Heavy sync blockers (`_sync_extract` in `tools/pdf.py`, `trafilatura.extract`,
 diskcache, file writes in `library/writer.py`) run via `asyncio.to_thread`, so a
 blocked call never stalls the event loop.
 
-### Vision rendering budget (academic path)
-`_analyze_and_recurse` in `paths/academic.py` passes PDF pages to vision
+### Vision rendering budget (academic + deep paths)
+Both `paths/academic.py` (`_analyze_and_recurse`) and the deep analysis pass
+(`nodes/paper_analysis.py::analyze_paper_deep`) pass PDF pages to vision
 rendering (`pdf_render_pages`) inside the same per-paper wall-clock budget
-as the text fetch + LLM analysis. `_download_pdf_once` and `_extract_text`
-(180s each) and `_render_pages` (300s total) have their own inner
-`asyncio.timeout` boundaries so a slow render cannot eat the researcher's
-overall budget. Vision failure is non-fatal: a `TimeoutError` from the
-render path returns `[]` and the analysis downgrades to text-only mode.
+as the text fetch + LLM analysis. The shared helpers now live in
+`nodes/paper_analysis.py`: `download_pdf_once` and `extract_text` (180s each)
+and `render_pages` (300s total) have their own inner `asyncio.timeout`
+boundaries so a slow render cannot eat the overall budget. Vision failure is
+non-fatal: a `TimeoutError` from the render path returns `[]` and the analysis
+downgrades to text-only mode.
 
 ### Vision analysis context budget (nodes/analyze_paper.py)
 The `analyze_paper` node uses a two-phase approach for papers with images:
@@ -465,8 +592,10 @@ run can resume from where it left off.
 
 **Checkpoint save points (`deep.py`):**
 ```
-planner → iteration(N) researchers → critic → flush refinements + enqueue gaps → save checkpoint → next iteration
+planner → iteration(N) researchers → critic → deep paper-analysis pass → flush refinements + enqueue gaps → save checkpoint → next iteration
                                                        ↘ (sufficient / force-stop) → save checkpoint → break
+(the deep analysis pass runs right after the critic, BEFORE the sufficient/break checks, so
+ analyses complete even on the final iteration and are available to the writer)
 ```
 The checkpoint is saved **after** all state mutations for the iteration — i.e.
 after refinements are flushed into the plan and critic gaps are enqueued, or
@@ -486,7 +615,9 @@ immediately before a `break`. Saving before the flush would strand
 
 **What gets saved:**
 - `ResearchState` serialised via pydantic `model_dump(mode="json")` — query,
-  plan, sections, drafts, citations, iteration, pending_refinements
+  plan, sections, drafts, citations, iteration, pending_refinements,
+  `deep_analyses`, `deep_analysis_requested` (new fields have pydantic defaults,
+  so old checkpoints load unchanged)
 - `run_id` metadata at top level for cross-reference
 
 **Safety mechanisms:**

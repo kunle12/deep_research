@@ -21,7 +21,7 @@ from deep_research.nodes.writer import (
     _render_sections_for_prompt,
     write,
 )
-from deep_research.state import Citation, ResearchPlan, ResearchState, SubQuestion
+from deep_research.state import Citation, PaperAnalysis, ResearchPlan, ResearchState, SubQuestion
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -104,6 +104,31 @@ class TestRenderSectionsForPrompt:
         state = _state()
         out = _render_sections_for_prompt(state)
         assert "(no drafts available)" in out
+
+    def test_deep_analyses_survive_long_drafts(self) -> None:
+        """The analyses section is rendered first and must never be truncated."""
+        state = _state(drafts={"sq1": "x" * 20000})
+        state.deep_analyses["2401.00001"] = PaperAnalysis(
+            title="Deep Paper", summary="IMPORTANT SUMMARY"
+        )
+        out = _render_sections_for_prompt(state)
+        assert "IMPORTANT SUMMARY" in out
+        assert out.startswith("## Deep paper analyses")
+
+    def test_renders_deep_paper_analyses_section(self) -> None:
+        state = _state(drafts={"sq1": "draft body"})
+        state.deep_analyses["2401.00001"] = PaperAnalysis(
+            title="Deep Paper",
+            summary="summary of the paper",
+            key_findings=["finding one", "finding two"],
+            relevance_to_query="highly relevant",
+        )
+        out = _render_sections_for_prompt(state)
+        assert "## Deep paper analyses" in out
+        assert "arxiv:2401.00001" in out
+        assert "summary of the paper" in out
+        assert "finding one" in out
+        assert "highly relevant" in out
 
 
 # ---------------------------------------------------------------------------

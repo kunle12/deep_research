@@ -22,17 +22,28 @@ from deep_research.checkpoint import (
     load_checkpoint,
     save_checkpoint,
 )
+from deep_research.citations import filter_citations_to_referenced
 from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.critic import review as critic_review
+from deep_research.nodes.paper_analysis import (
+    format_deep_analysis_context,
+    run_paper_analysis_pass,
+)
 from deep_research.nodes.planner import plan as planner_plan
 from deep_research.nodes.recall import format_recall_context
 from deep_research.nodes.recall import recall as recall_run
 from deep_research.nodes.researcher import research as researcher_run
 from deep_research.nodes.writer import write as writer_write
 from deep_research.progress import ProgressReporter, ensure_reporter
-from deep_research.state import ClassifiedQuery, Report, ResearchState, SubQuestion
+from deep_research.state import (
+    ClassifiedQuery,
+    PaperAnalysis,
+    Report,
+    ResearchState,
+    SubQuestion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,10 +131,24 @@ async def deep_research(
         # ToolRegistry.call, so a hung tool surfaces as a clean error result
         # rather than dead weight. If the researcher's total wall-clock
         # exceeds timeout, we catch TimeoutError and skip that result.
-        async def _run_one_with_timeout(sq, _storage=storage, _timeout=timeout):
+        async def _run_one_with_timeout(
+            sq,
+            _storage=storage,
+            _timeout=timeout,
+            _analyses=None,
+        ):
+            if _analyses is None:
+                _analyses = dict(state.deep_analyses)
             try:
                 return await asyncio.wait_for(
-                    _run_one_researcher_with_recall(sq, client, config, tools, _storage),
+                    _run_one_researcher_with_recall(
+                        sq,
+                        client,
+                        config,
+                        tools,
+                        _storage,
+                        deep_analyses=_analyses,
+                    ),
                     timeout=_timeout,
                 )
             except TimeoutError:
@@ -177,12 +202,29 @@ async def deep_research(
         reporter.phase("deep.critic", f"iter {iteration + 1}")
         critique = await critic_review(state, client, config.llm.text_model)
         logger.info(
-            "critic iter=%d sufficient=%s gaps=%d refinements=%d",
+            "critic iter=%d sufficient=%s gaps=%d refinements=%d papers_to_analyze=%d",
             iteration,
             critique.sufficient,
             len(critique.gaps),
             len(state.pending_refinements),
+            len(critique.papers_to_analyze),
         )
+
+        # Critic-selected deep paper analysis: run before the sufficient/break
+        # checks so analyses happen even when the loop ends, and so Phase 2
+        # can feed them into the next critic iteration.
+        if critique.papers_to_analyze:
+            await run_paper_analysis_pass(
+                state,
+                critique.papers_to_analyze,
+                query=original_query,
+                client=client,
+                config=config,
+                tools=tools,
+                writer=writer,
+                reporter=reporter,
+                run_id=run_id,
+            )
 
         # Refinements queued by researchers are explicit follow-up work; run
         # them even if the critic considers the current coverage sufficient.
@@ -235,9 +277,12 @@ async def deep_research(
         state, client, config.llm.text_model, writer=writer, run_id=run_id
     )
 
-    # 4. Project all assembled citations into a sorted list (by confidence desc)
+    # 4. Project all assembled citations into a sorted list (by confidence
+    # desc), keeping only sources the final report body actually references.
+    # Search hits / fetched pages that never made it into the synthesized
+    # markdown must not appear in the report's bibliography.
     all_citations = sorted(
-        state.citations.values(),
+        filter_citations_to_referenced(final_md, list(state.citations.values())),
         key=lambda c: c.confidence_score,
         reverse=True,
     )
@@ -266,6 +311,7 @@ async def _run_one_researcher_with_recall(
     config: AgentTopConfig,
     tools: ToolRegistry,
     storage: Any | None,
+    deep_analyses: dict[str, PaperAnalysis] | None = None,
 ) -> tuple[str, list, list]:
     """Run the researcher for one sub-question with library recall for prior context."""
     prior_context = ""
@@ -275,6 +321,13 @@ async def _run_one_researcher_with_recall(
             prior_context = format_recall_context(entries)
     except Exception as e:
         logger.debug("recall failed for %s: %s", sq.id, e)
+
+    # Phase 2: deep analyses from earlier critic rounds inform later
+    # researchers so their searches build on analyzed findings.
+    if deep_analyses:
+        digest = format_deep_analysis_context(deep_analyses)
+        if digest:
+            prior_context = prior_context + "\n\n" + digest if prior_context else digest
 
     return await researcher_run(
         sq,
@@ -286,6 +339,7 @@ async def _run_one_researcher_with_recall(
         max_refinement_per_researcher=config.agent.max_refinement_per_researcher,
         max_refinement_depth=config.agent.max_refinement_depth,
         max_context_tokens=config.llm.max_context_tokens,
+        max_citations_per_researcher=config.agent.max_citations_per_researcher,
     )
 
 

@@ -10,6 +10,64 @@ import re
 
 from deep_research.state import Citation, CitationGraph, PaperNode
 
+_URL_RE = re.compile(r"https?://[^\s<>\[\]()]+")
+
+
+def normalize_url(url: str) -> str:
+    """Normalize a URL for matching citations against prose references.
+
+    Strips markdown/autolink delimiters, trailing punctuation, and a trailing
+    slash so ``<https://example.com/x>``, ``[https://example.com/x/],`` and
+    ``https://example.com/x`` all compare equal.
+    """
+    u = (url or "").strip().strip("<>")
+    u = u.rstrip(".,;:!?)]}>\"'")
+    u = u.rstrip("/")
+    return u.lower()
+
+
+def extract_urls_from_markdown(markdown: str) -> dict[str, str]:
+    """Return ``{normalized_url: original_url}`` for every http(s) URL in *markdown*.
+
+    Keys are ``normalize_url`` outputs so callers can compare against
+    citation URLs cheaply; values preserve the original URL text (minus
+    delimiters and trailing punctuation) for building citations.
+    """
+    out: dict[str, str] = {}
+    for m in _URL_RE.finditer(markdown or ""):
+        original = m.group(0).strip("<>").rstrip(".,;:!?)]}>\"'")
+        normalized = normalize_url(original)
+        out.setdefault(normalized, original)
+    return out
+
+
+def filter_citations_to_referenced(
+    markdown: str,
+    citations: list[Citation],
+) -> list[Citation]:
+    """Keep only citations actually referenced in *markdown*.
+
+    A bibliography should list sources the report actually cites; search hits
+    that were never referenced in the body are dropped here. A citation is
+    kept when either its URL appears in the body OR it is referenced by its
+    arXiv id (e.g. academic-mode synthesis cites papers as ``arxiv:ID`` or
+    ``abs/ID`` even when the citation's canonical URL is a non-arXiv landing
+    page, such as a Scholar hit). Returns an empty list when the markdown
+    contains no references at all.
+    """
+    referenced = extract_urls_from_markdown(markdown)
+    if not referenced:
+        return []
+    kept: list[Citation] = []
+    for c in citations:
+        if normalize_url(c.url) in referenced:
+            kept.append(c)
+            continue
+        aid = (c.arxiv_id or "").strip()
+        if aid and (f"arxiv:{aid}" in markdown or f"abs/{aid}" in markdown):
+            kept.append(c)
+    return kept
+
 
 def render_bibliography_markdown(citations: list[Citation]) -> str:
     """Render a bibliography section."""

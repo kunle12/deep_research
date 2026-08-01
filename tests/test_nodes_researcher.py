@@ -267,4 +267,177 @@ class TestResearch:
         assert "Hint:" not in user_content
 
 
-__all__ = ["TestHintBlurb", "TestParseFinalAssistant", "TestResearch"]
+# ---------------------------------------------------------------------------
+# Citation gating + turn-budget truncation
+# ---------------------------------------------------------------------------
+
+
+class _FakeFunction:
+    def __init__(self, name: str, arguments: str) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeToolCall:
+    def __init__(self, name: str = "web_search", arguments: str = "{}") -> None:
+        self.id = "call_1"
+        self.type = "function"
+        self.function = _FakeFunction(name, arguments)
+
+
+class _FakeToolMessage:
+    def __init__(self, calls: list[_FakeToolCall]) -> None:
+        self.content = None
+        self.tool_calls = calls
+
+
+class _FakeToolChoice:
+    def __init__(self, calls: list[_FakeToolCall]) -> None:
+        self.message = _FakeToolMessage(calls)
+
+
+class _FakeToolResponse:
+    def __init__(self, calls: list[_FakeToolCall]) -> None:
+        self.choices = [_FakeToolChoice(calls)]
+
+
+class TestCitationGating:
+    @pytest.mark.asyncio
+    async def test_drops_unreferenced_tool_citations(self) -> None:
+        """Search-hit citations the answer never references must be dropped."""
+        from deep_research.llm.tool_loop import ToolResult
+        from deep_research.state import Citation
+
+        async def _web_search(**kw: Any) -> ToolResult:
+            return ToolResult(
+                content="results",
+                citations=[
+                    Citation(
+                        url="https://used",
+                        title="Used",
+                        snippet="s",
+                        confidence_score=0.9,
+                    ),
+                    Citation(
+                        url="https://unused",
+                        title="Unused",
+                        snippet="s",
+                        confidence_score=0.9,
+                    ),
+                ],
+            )
+
+        reg = ToolRegistry()
+        reg.register("web_search", _web_search, {"type": "function", "name": "web_search"})
+
+        seq = [
+            _FakeToolResponse([_FakeToolCall()]),
+            _FakeResponse(
+                json.dumps({"answer": "Answer with evidence <https://used>.", "citations": []})
+            ),
+        ]
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=seq)
+
+        _, cites, _ = await research(_sub_q(), client, "m", reg, max_turns=2)
+        assert [c.url for c in cites] == ["https://used"]
+
+    @pytest.mark.asyncio
+    async def test_keeps_json_listed_citations(self) -> None:
+        """Citations the model explicitly listed in its final JSON survive."""
+        payload = json.dumps(
+            {
+                "answer": "Answer text.",
+                "citations": [
+                    {
+                        "url": "https://listed",
+                        "title": "L",
+                        "snippet": "s",
+                        "confidence_score": 0.8,
+                    }
+                ],
+            }
+        )
+        reg = ToolRegistry()
+        _, cites, _ = await research(
+            _sub_q(), client=_fake_client_always(payload), model="m", tools=reg
+        )
+        assert [c.url for c in cites] == ["https://listed"]
+
+    @pytest.mark.asyncio
+    async def test_synthesizes_citation_for_referenced_url(self) -> None:
+        """A URL referenced in the answer with no citation object gets one."""
+        payload = json.dumps({"answer": "See <https://novel.example/doc>."})
+        reg = ToolRegistry()
+        _, cites, _ = await research(
+            _sub_q(), client=_fake_client_always(payload), model="m", tools=reg
+        )
+        assert [c.url for c in cites] == ["https://novel.example/doc"]
+
+    @pytest.mark.asyncio
+    async def test_caps_runaway_citation_lists(self) -> None:
+        """max_citations_per_researcher trims an over-long citation list."""
+        from deep_research.llm.tool_loop import ToolResult
+        from deep_research.state import Citation
+
+        async def _web_search(**kw: Any) -> ToolResult:
+            return ToolResult(
+                content="results",
+                citations=[
+                    Citation(
+                        url=f"https://hit{i}",
+                        title=f"H{i}",
+                        snippet="s",
+                        confidence_score=0.9,
+                    )
+                    for i in range(20)
+                ],
+            )
+
+        reg = ToolRegistry()
+        reg.register("web_search", _web_search, {"type": "function", "name": "web_search"})
+
+        seq = [
+            _FakeToolResponse([_FakeToolCall()]),
+            _FakeResponse(
+                json.dumps(
+                    {
+                        "answer": "Answer citing "
+                        + " ".join(f"<https://hit{i}>" for i in range(20)),
+                        "citations": [],
+                    }
+                )
+            ),
+        ]
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=seq)
+
+        _, cites, _ = await research(
+            _sub_q(), client, "m", reg, max_turns=2, max_citations_per_researcher=5
+        )
+        assert len(cites) == 5
+
+    @pytest.mark.asyncio
+    async def test_truncated_loop_raises_no_answer(self) -> None:
+        """Turn budget exhausted mid-tool-call must fail, not fabricate an answer."""
+        from deep_research.llm.tool_loop import ToolResult
+
+        async def _web_search(**kw: Any) -> ToolResult:
+            return ToolResult(content="results")
+
+        reg = ToolRegistry()
+        reg.register("web_search", _web_search, {"type": "function", "name": "web_search"})
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_FakeToolResponse([_FakeToolCall()])
+        )
+        with pytest.raises(RuntimeError, match="no final answer"):
+            await research(_sub_q(), client, "m", reg, max_turns=1)
+
+
+__all__ = [
+    "TestCitationGating",
+    "TestHintBlurb",
+    "TestParseFinalAssistant",
+    "TestResearch",
+]

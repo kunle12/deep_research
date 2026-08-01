@@ -89,6 +89,20 @@ class Critique(BaseModel):
     sufficient: bool
     gaps: list[SubQuestion] = Field(default_factory=list)
     rationale: str = ""
+    # arXiv papers the critic wants full PDF analysis for (deep path).
+    papers_to_analyze: list[PaperAnalysisRequest] = Field(default_factory=list)
+
+
+class PaperAnalysisRequest(BaseModel):
+    """A critic-selected arXiv paper proposed for full PDF deep analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    arxiv_id: str
+    rationale: str = ""
+    reason: Literal["abstract_relevance", "notable_citations", "foundational", "other"] = "other"
+    priority_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    expected_title: str = ""
 
 
 class ResearchState(BaseModel):
@@ -111,6 +125,12 @@ class ResearchState(BaseModel):
     citations: dict[str, Citation] = Field(default_factory=dict)
     iteration: int = 0
     pending_refinements: list[SubQuestion] = Field(default_factory=list)
+    # Critic-selected full PDF analyses (arxiv_id -> PaperAnalysis). The
+    # writer weaves these into the final report.
+    deep_analyses: dict[str, PaperAnalysis] = Field(default_factory=dict)
+    # arxiv ids already selected for deep analysis this run (prevents
+    # re-selecting the same paper across critic iterations).
+    deep_analysis_requested: list[str] = Field(default_factory=list)
 
     def is_covered(self, sub_q: SubQuestion) -> bool:
         """A sub-question is 'covered' if it has a draft (with or without citations)."""
@@ -327,6 +347,7 @@ __all__ = [
     "ClassifiedQuery",
     "Critique",
     "PaperAnalysis",
+    "PaperAnalysisRequest",
     "PaperNode",
     "QueryPlan",
     "Report",

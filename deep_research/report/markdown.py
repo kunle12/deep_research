@@ -9,6 +9,7 @@ Combines:
 from __future__ import annotations
 
 from deep_research.citations import (
+    filter_citations_to_referenced,
     render_bibliography_markdown,
     render_citation_graph_markdown,
 )
@@ -28,9 +29,15 @@ def render_report_markdown(report: Report, output_cfg: OutputConfig) -> str:
             parts.append(graph_md)
 
     if output_cfg.include_citations_bibliography and report.citations:
-        bib_md = render_bibliography_markdown(report.citations)
-        if bib_md:
-            parts.append(bib_md)
+        # A bibliography lists sources the report actually cites. Citations
+        # that were collected during research but never referenced in the
+        # final markdown body are dropped here (defense in depth — the deep
+        # path already gates citations per researcher).
+        cited = filter_citations_to_referenced(report.markdown, report.citations)
+        if cited:
+            bib_md = render_bibliography_markdown(cited)
+            if bib_md:
+                parts.append(bib_md)
 
     return "\n".join(parts).strip() + "\n"
 

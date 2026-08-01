@@ -41,7 +41,7 @@ async def write(
         system_msg = (
             "You are the final research report writer. Output a single Markdown "
             "document (the report). Do not wrap in code fences. "
-            "Cite sources inline using bare URLs like [https://example.com/source]. "
+            "Cite sources inline using autolinks like <https://example.com/source>. "
             "Do NOT include a Bibliography section — that is appended separately."
         )
 
@@ -68,6 +68,29 @@ async def write(
 
 def _render_sections_for_prompt(state: ResearchState) -> str:
     lines: list[str] = []
+
+    # Critic-selected deep paper analyses — authoritative sources the writer
+    # should weave into the report (Phase 1 of deep paper analysis). Rendered
+    # FIRST so the trailing truncation cap can never drop them.
+    if state.deep_analyses:
+        lines.append("## Deep paper analyses")
+        lines.append("")
+        for aid, a in state.deep_analyses.items():
+            lines.append(f"### {a.title or aid} (arxiv:{aid})")
+            if a.summary:
+                lines.append(f"Summary: {a.summary[:600]}")
+            if a.key_findings:
+                lines.append("Key findings:")
+                for f in a.key_findings[:5]:
+                    lines.append(f"- {str(f)[:200]}")
+            if a.relevance_to_query:
+                lines.append(f"Relevance: {a.relevance_to_query[:300]}")
+            if a.limitations:
+                lines.append(
+                    "Limitations: " + "; ".join(str(x)[:100] for x in a.limitations[:3])[:300]
+                )
+            lines.append("")
+
     for sq in state.plan.sub_questions:
         draft = state.drafts.get(sq.id)
         if not draft:
@@ -75,9 +98,10 @@ def _render_sections_for_prompt(state: ResearchState) -> str:
         lines.append(f"## {sq.question}")
         lines.append(draft)
         lines.append("")
+
     if not lines:
         lines.append("(no drafts available)")
-    return "\n".join(lines)
+    return "\n".join(lines)[:12000]
 
 
 def _render_citations_for_prompt(state: ResearchState) -> str:

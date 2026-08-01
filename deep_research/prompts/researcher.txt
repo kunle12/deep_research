@@ -24,7 +24,7 @@ Constraints:
 
 Return (after tool calls conclude) a JSON object:
 {{
-  "answer": "<2-4 paragraph synthesis answering the sub-question>",
+  "answer": "<2-4 paragraph synthesis answering the sub-question; cite inline with autolinks like <https://example.com/source>>",
   "citations": [
     {{"url": "...", "title": "...", "snippet": "...", "confidence_score": 0.8}}
   ]

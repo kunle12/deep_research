@@ -377,6 +377,8 @@ the largest effect:
 | `academic.seed_count` | 5 | 8–10 | Better seed diversity |
 | `agent.max_subquestions` | 6 | 8–10 | Wider deep-mode coverage |
 | `agent.max_iterations` | 3 | 4–5 | More critic gap-following rounds |
+| `agent.max_citations_per_researcher` | 10 | 10 | Caps sources a single researcher may return; keeps the bibliography relevant |
+| `agent.deep_analysis_max_papers` | 3 | 3–5 | Critic-selected full PDF analyses per deep run (0 disables) |
 | `search.tavily.search_depth` | basic | advanced | Better search recall (2 credits/call) |
 
 Keep `academic.key_reference_threshold` at `0.7`: it is the guardrail that

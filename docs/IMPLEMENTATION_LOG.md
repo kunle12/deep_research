@@ -4,6 +4,80 @@
 
 ---
 
+## Deep paper analysis — design record (merged from docs/DEEP_PAPER_ANALYSIS.md)
+
+> The former `docs/DEEP_PAPER_ANALYSIS.md` was merged here and into `docs/PLAN.md` on 2026-08-01. This section preserves the design; the "Done" entries at the bottom of this log track implementation.
+
+### Goal
+
+Let the deep-path critic decide which arXiv papers deserve full PDF analysis (academic-pipeline machinery), enrich the final report (Phase 1), and feed the analyses back into the research loop (Phase 2).
+
+### Selection criteria (user-specified)
+
+1. **Abstract relevance** — abstract clearly directly relevant to the research.
+2. **Notable referencing** — referenced noticeably by other sources (multiple sub-question drafts, or high citation count).
+3. **Foundational/seminal** — foundational/seminal work deserving full reading.
+
+### Architecture
+
+```
+critic ── papers_to_analyze ──► deep paper-analysis pass
+  (candidate table: abstract, referenced_by_count, cited_by_count)
+  download -> extract -> render (vision optional) -> analyze_paper
+  fallback chain: full PDF -> abstract-only -> skip
+  per-run cap, min priority, concurrency, per-paper timeout
+        │
+        ▼
+state.deep_analyses (checkpoint-safe) ──► writer "Deep paper analyses" section
+        │
+        └── Phase 2: next critic round (gaps + key-reference chasing)
+                     + later researchers via prior_context
+```
+
+### Data model (`deep_research/state.py`)
+
+- `PaperAnalysisRequest{arxiv_id, rationale, reason, priority_score 0..1, expected_title}`
+- `Critique.papers_to_analyze` (default `[]`)
+- `ResearchState.deep_analyses: dict[str, PaperAnalysis]`, `deep_analysis_requested: list[str]`
+
+### Pipeline (`deep_research/nodes/paper_analysis.py`)
+
+- Shared helpers factored from `academic.py`: `download_pdf_once`, `extract_text`, `render_pages`, `fetch_paper_text_fallback`.
+- `analyze_paper_deep` — full PDF → abstract-only → skip.
+- `run_paper_analysis_pass` — priority filter, **per-run cap** (remaining budget = cap − already requested), dedupe, up-front requested marking, semaphore concurrency, per-paper `wait_for` timeout, library cache reuse (`_cached_analysis`/`_analysis_from_row`, string key-references validated against the arXiv ID pattern), archival (`_archive_and_record`), citation absorb. Failures logged/skipped.
+- `format_deep_analysis_context` — compact digest for critic + researcher feedback (Phase 2).
+
+### Critic (`nodes/critic.py` + `prompts/critic.txt`)
+
+- `_render_paper_candidates`: arxiv citations from `state.citations`; `referenced_by_count` computed from drafts; excludes analyzed/requested; key references of analyzed papers become candidates (Phase 2); capped at 40.
+- Tasks 4 (select papers) and 5 (Phase 2: analyses digest → follow-up gaps + key-reference nominations).
+- Validation: arXiv ID regex; priority clamp; dedupe by id keeping highest priority; scholar/web-only dropped.
+
+### Wiring (`paths/deep.py`)
+
+Pass runs after each critic call, before sufficient/break checks. Phase 2: `_run_one_researcher_with_recall` receives `deep_analyses` snapshot and appends the digest to `prior_context`; critic's sections blob includes the digest.
+
+### Writer (`nodes/writer.py` + `prompts/writer.txt`)
+
+"Deep paper analyses" section rendered FIRST (before drafts) so the 12k-char truncation cap cannot drop it; writer instructed to synthesize these as authoritative sources with inline autolinks.
+
+### Config (`agent.*`)
+
+`deep_analysis_max_papers` (3, 0 disables, per run), `deep_analysis_min_priority` (0.6), `deep_analysis_concurrency` (2), `deep_analysis_timeout_s` (900.0), `deep_analysis_use_library_cache` (true).
+
+### Decisions (confirmed)
+
+1. Defaults incl. 900s timeout (covers download+extract+render worst case + LLM calls on vision runs).
+2. Library cache reuse in Phase 1.
+3. Analyses incorporated into prose with inline autolinks (no separate appendix).
+4. Phase 2 entry: both critic and researchers receive the digest.
+
+### Out of scope (future ideas)
+
+Web-PDF deep analysis via `fetch_page`; Scholar `cited_by_count` enrichment; per-iteration analysis budget; auto-generated "Key papers" appendix.
+
+---
+
 ## P1 - project scaffold
 
 ### Done
@@ -1480,3 +1554,43 @@ Storage protocol additions and the FastAPI library API.
 - Final state: all five phases complete. Full pytest suite green, ruff clean,
   node parser tests green, headless-Chrome smoke checks pass (list, report,
   modal, stats).
+
+## [Deep paper analysis] — Phase 1 + Phase 2 core
+
+### Done
+
+- [x] `state.py`: `PaperAnalysisRequest` model; `Critique.papers_to_analyze`; `ResearchState.deep_analyses` + `deep_analysis_requested` (checkpoint-safe defaults).
+- [x] `nodes/paper_analysis.py`: shared PDF helpers factored out of `academic.py` (`download_pdf_once`, `extract_text`, `render_pages`, `fetch_paper_text_fallback`), `analyze_paper_deep` (PDF -> abstract-only -> skip fallback chain), `run_paper_analysis_pass` (priority filter, per-run cap, dedupe, concurrency, per-paper timeout, library cache reuse, archival), `format_deep_analysis_context` (Phase 2 digest).
+- [x] `paths/academic.py`: refactored to import the shared helpers (behavior preserved; academic tests green).
+- [x] `nodes/critic.py` + `prompts/critic.txt`: task 4 selects arXiv papers for deep analysis (abstract relevance / notable referencing / foundational) with `papers_to_analyze` output; task 5 (Phase 2) uses the analyses digest to propose follow-up gaps and key-reference chasing. Candidates table includes `referenced_in_drafts` counts and key references of analyzed papers.
+- [x] `paths/deep.py`: deep-analysis pass runs after each critic call (before loop-break checks); Phase 2 injects the analyses digest into later researchers via `prior_context`.
+- [x] `nodes/writer.py` + `prompts/writer.txt`: "Deep paper analyses" section rendered into the writer prompt; analyses cited inline.
+- [x] Config knobs: `deep_analysis_max_papers` (0 disables), `deep_analysis_min_priority`, `deep_analysis_concurrency`, `deep_analysis_timeout_s`, `deep_analysis_use_library_cache` (+ yaml examples + README).
+- [x] Tests: `tests/test_paper_analysis.py`, critic candidate/proposal tests, deep wiring + researcher digest tests, writer section test, checkpoint round-trip; full suite + mypy green.
+- [x] E2E smoke test: critic-proposed paper analyzed, woven into report citations.
+
+## [Deep paper analysis] — self-audit fixes (logic fallacies found + fixed)
+
+### Found and fixed
+
+- [x] **Per-run analysis cap was per-call**: `run_paper_analysis_pass` capped each invocation at `deep_analysis_max_papers` but `state.deep_analysis_requested` only deduped — two critic rounds could analyze 2× the cap. Now the remaining budget subtracts already-requested papers, so the cap truly bounds the run. Repro + regression test (`test_cap_bounds_the_whole_run`).
+- [x] **Writer prompt truncation dropped the analyses section**: `_render_sections_for_prompt` appended "Deep paper analyses" after all drafts then truncated to 12k chars — long drafts silently removed the Phase-1 enrichment. Analyses are now rendered FIRST so they cannot be truncated. Repro + regression test (`test_deep_analyses_survive_long_drafts`).
+- [x] **Bibliography filter dropped academic Scholar citations**: the body-referenced filter (added for deep) only matched URLs; academic-mode synthesis cites papers as `arxiv:ID`, so Scholar citations (non-arxiv URLs) vanished from the CLI bibliography. `filter_citations_to_referenced` now also matches citations referenced by their arxiv_id. Repro + regression test (`test_keeps_arxiv_id_referenced_citations`).
+
+### Reviewed and accepted as design tradeoffs (documented)
+
+- Researcher JSON-listed citations are trusted even when not referenced in the answer prose (mitigated by `max_citations_per_researcher` cap).
+- Strict final-answer parsing can discard a usable answer if the model ends a turn with content + tool_calls and the turn budget expires.
+- Deep-analysis failures are not retried on checkpoint resume (requested-set persists by design).
+- Library-cache reconstruction of `PaperAnalysis` does not restore `relevance_score`/`figure_descriptions`/`extraction_text` (not needed by the writer digest).
+- The deep-analysis candidate pool is limited to papers researchers actually cited (post-gating citations), not all search hits.
+
+## [Coverage] — measured 86%, now 87% with a hard gate
+
+### Done
+
+- [x] Fresh full-suite coverage measurement: **86%** overall before hardening.
+- [x] Added `[tool.coverage.run] source = ["deep_research"]` + `[tool.coverage.report] fail_under = 80` to `pyproject.toml` — `coverage report` / `pytest --cov` now fail below 80%.
+- [x] Targeted tests raised the weakest recently-touched modules: `citations.py` 73% → **95%** (bibliography/graph/bibtex renderers, arxiv-id-referenced filter), `paper_analysis.py` 75% → **93%** (tool timeouts, render-failure downgrade, pass skip/timeout/archive-failure branches, library-cache error fallback, PDF archival, key-reference reconstruction validation).
+- [x] Hardened `_analysis_from_row`: string key references are now validated against the arXiv ID pattern (caught by a new test).
+- [x] Final total: **87%** (6401 statements, 820 missed). Gate verified: `--fail-under=88` exits 2 while `fail_under=80` passes.

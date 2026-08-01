@@ -1,8 +1,8 @@
 # Deep Research Agent — Master Plan
 
-> **Status**: v8 — final, proceeded to implementation (P1–P13 done). P12.5 (Web UI) implemented — see the P12.5 design section below and `docs/IMPLEMENTATION_LOG.md` for progress.
-> **Last update**: All phases P1–P12 implemented.
-> **Resume guidance**: If a session is interrupted, read this file first; it contains every locked-in decision. Then read `docs/IMPLEMENTATION_LOG.md` for progress state.
+> **Status**: v9 — all planned phases implemented (P1–P13, P12.5 Web UI, Scholar, dynamic Refine) plus the deep paper-analysis feature (critic-selected full PDF analysis with Phase-2 feedback into the research loop), citation-hygiene hardening, and an enforced ≥80% coverage gate.
+> **Last update**: 2026-08-01 — deep paper analysis (Phase 1 + Phase 2 core), used-only citation gating, body-referenced bibliographies, autolink citation style, coverage 87% (`fail_under = 80`).
+> **Resume guidance**: If a session is interrupted, read this file first; it contains every locked-in decision. Then read `docs/IMPLEMENTATION_LOG.md` for progress state. The deep paper-analysis design (formerly `docs/DEEP_PAPER_ANALYSIS.md`, now merged here) lives in the "Deep paper analysis" section below.
 
 ---
 
@@ -18,7 +18,8 @@ A standalone Python agent that performs web/deep/academic research with the assi
 - Searches Tavily (primary) + SearXNG (fallback) + direct page scrape.
 - Fetches arXiv papers + downloads PDFs + reads them (text + vision).
 - Searches Reddit via PRAW (stubbed in v1).
-- Produces Markdown reports with inline citations and bibliography; for academic mode, also emits a BibTeX citation graph.
+- Produces Markdown reports with inline autolink citations and a bibliography that contains only sources actually cited in the body; for academic mode, also emits a BibTeX citation graph.
+- In deep mode, the critic decides which arXiv papers deserve full PDF analysis (abstract relevance / notable referencing / foundational work); analyses enrich the final report and feed back into the research loop (Phase 2).
 - Ships a CLI now, but the core `await run_research(query, config) -> Report` is the public microservice entrypoint.
 
 ---
@@ -40,6 +41,11 @@ A standalone Python agent that performs web/deep/academic research with the assi
 13. **Recursive reference mining (academic mode)**: bounded by `max_depth=2`, `max_papers=15`. LLM-only reference scoring (reuses `analyze_paper` call, zero extra cost).
 14. **URL-source mode**: auto-detect first URL in query via regex; remaining text treated as the optional query. Single-source scope only. Follow-up to `deep` path **only on explicit request** (gated by conservative phrase list, configurable via yaml).
 15. **Package manager**: `uv` (Rust-based, fast, modern).
+16. **Deep paper analysis (critic-driven)**: the deep-path critic selects arXiv papers for full PDF analysis using three criteria — abstract relevance, notable referencing (multi-draft mention count or citation count), and foundational/seminal status. Selection is bounded per RUN by `deep_analysis_max_papers` (default 3; 0 disables), filtered by `deep_analysis_min_priority` (0.6), run concurrently (`deep_analysis_concurrency` 2) under a per-paper `deep_analysis_timeout_s` (900s). Analyses reuse the academic pipeline via the shared `nodes/paper_analysis.py` and reuse library-cached analyses when available. Phase 2 feeds analyses into the next critic round (gaps + key-reference chasing) and into later researchers via `prior_context`.
+17. **Report role of deep analyses**: analyses are woven into the report prose as authoritative sources with inline autolinks — not rendered as a separate appendix.
+18. **Citation hygiene**: a researcher returns only sources it actually used (prose-referenced or explicitly listed, capped at `max_citations_per_researcher`); the final bibliography includes only sources referenced in the report body (by URL or arXiv id). Citation style is inline autolinks `<https://…>`, never bracket-URL text. Turn-budget exhaustion mid-tool-call is treated as a researcher failure, not an answer.
+19. **Failed deep analyses never fail a run**: failures/timeouts are logged and skipped; the requested-set persists across checkpoints (no same-run retry, by design).
+20. **Coverage gate**: test coverage must stay above 80% — enforced via `[tool.coverage.report] fail_under = 80` in `pyproject.toml`.
 
 ---
 
@@ -204,6 +210,22 @@ deep_research/
    6. return Report (analyze mode) or chained Report (follow-up mode)
 ```
 
+**Deep path detail (current implementation):**
+
+```
+paths.deep: per iteration
+  planner -> researchers (parallel, used-only citation gating)
+  -> critic (sufficient? gaps? papers_to_analyze?)
+  -> deep paper-analysis pass (critic-selected arXiv papers:
+     download -> extract -> render(optional) -> analyze_paper)
+  -> refinements/gaps flush -> next iteration
+
+final: writer (drafts + deep-analyses digest + citations) -> Report
+
+Phase 2 feedback: analyses digest is fed to the NEXT critic round
+(gaps + key-reference chasing) and to later researchers via prior_context.
+```
+
 ---
 
 ## Phase plan (canonical — single source of truth)
@@ -231,6 +253,9 @@ deep_research/
 | **P13** | Library-first recall — prior-knowledge injection before web search. Uses existing FTS5 index over prior analyses. Every path checks the library before hitting the web; delta-only fetching. | `nodes/recall.py` + integration into deep + academic + quick paths. | done |
 | **Scholar** | Google Scholar discovery backend (Serper primary, SearXNG fallback). Parallel arxiv+scholar seed gathering in academic path. Abstract-only analysis for paywalled hits. | `scholar_search` tool + academic-path integration + abstract-only leaf-node handling. | done |
 | **Refine** | Dynamic refinement during deep-path research. Researchers emit `refine` tool calls mid-loop (drill_deeper, chase_reference, revise_strategy). Refinements collected via `ScopedToolRegistry`, absorbed into state, flushed into plan *after* the critic (and researched even when the critic says "sufficient"). Three-level cap hierarchy; the per-iteration cap is soft — overflow stays pending, never dropped. | `ScopedToolRegistry` + `refine` tool + state/config/prompt changes + tests. | done |
+| **Deep paper analysis** | Critic-selected full PDF analysis in deep mode. Phase 1: analyses enrich the final report. Phase 2: analyses feed the next critic round (gaps + key-reference chasing) and later researchers (`prior_context`). Shared pipeline module factored from the academic path; library cache reuse; per-run caps. | `nodes/paper_analysis.py`, `Critique.papers_to_analyze`, writer "Deep paper analyses" section, `deep_analysis_*` config knobs, academic refactor. | done |
+| **Citation hygiene & report quality** | Researchers return only used citations; final bibliography = sources referenced in the report body (URL or arXiv id); inline autolinks; strict final-answer parsing (turn-budget exhaustion = failure); no citations on fetch_page error results. | citation gating, `filter_citations_to_referenced`, prompt updates, `max_citations_per_researcher`. | done |
+| **Coverage gate** | ≥80% test coverage enforced in tooling. | `[tool.coverage] fail_under = 80`; targeted tests (citations.py 95%, paper_analysis.py 93%, total 87%). | done |
 
 > **Rule**: any new phase sub-rows must be added to THIS table. The detailed P10.0 / P10.5a / P10.5b / P10.6 sections later in this document are *expositions* of the rows above — they do not introduce new phases. If the table and the prose disagree, the table wins.
 
@@ -258,6 +283,12 @@ agent:
   max_refinement_per_researcher: 3  # max refine calls per single researcher
   max_total_refinements_per_iteration: 6  # global cap per iteration
   max_subquestion_retries: 3      # max researcher failures per sub-q before forced coverage
+  max_citations_per_researcher: 10   # cap on citations a researcher may return (3-8 typical)
+  deep_analysis_max_papers: 3        # critic-selected full PDF analyses per deep run (0 disables)
+  deep_analysis_min_priority: 0.6    # drop critic proposals below this priority
+  deep_analysis_concurrency: 2       # parallel downloads/analyses
+  deep_analysis_timeout_s: 900.0     # per-paper wall-clock cap (incl. vision)
+  deep_analysis_use_library_cache: true  # reuse prior analyses from the library
   classifier:
     enabled: true
     force_path: null  # null | "quick" | "deep" | "academic" | "url_source"
@@ -413,6 +444,13 @@ Risks for already-shipped work (P1–P9) first, then P10.x and later. New risks 
 29. Cross-run rule-based glossary dedup misses semantically-same definitions with different wording → flagged for P12's LLM reconcile pass (opt-in CLI command). (`P10.6`)
 30. Glossary `UNIQUE(term_canonical)` constraint requires `acronym_expansion` to share its row with the acronym's row (not stored as a separate row). Mitigated by the schema fix below (single row per canonical term; `acronym_expansion` is a nullable column on the same row). (`P10.6`)
 
+31. Deep paper analysis cost/latency: each analysis = PDF download + text extraction (+vision) + 1–2 LLM calls. Bounded by the per-RUN cap (`deep_analysis_max_papers`), priority threshold, concurrency, and per-paper timeout; failures are skipped, never fatal. (`Deep paper analysis`)
+32. Weak local model pads the researcher's final citation array: JSON-listed citations are trusted even when not referenced in the answer prose — capped by `max_citations_per_researcher` (default 10). (`Citation hygiene`)
+33. Strict final-answer parsing can discard a usable answer when the turn budget expires right after a content+tool-call message; the researcher retries from scratch. Accepted tradeoff (rejects "Let me search…" chatter). (`Citation hygiene`)
+34. Deep-analysis failures are not retried on checkpoint resume — the requested-set persists across checkpoints by design. (`Deep paper analysis`)
+35. Library-cache reconstruction of `PaperAnalysis` restores summary/findings/references but not `relevance_score`/`figure_descriptions`/`extraction_text` (not needed by the writer digest). (`Deep paper analysis`)
+36. Deep-analysis candidate pool is limited to papers researchers actually cited (post-gating); a seminal paper never cited by any researcher is invisible to the critic. (`Deep paper analysis`)
+
 ---
 
 ## Follow-up trigger phrases (URL-source follow-up mode)
@@ -431,9 +469,107 @@ what else, what other
 User can extend via `config.url_source.follow_up_trigger_phrases: []`.
 
 ---
+## Deep paper analysis — critic-selected full PDF analysis (implemented)
+
+> Merged from the former `docs/DEEP_PAPER_ANALYSIS.md` (2026-08-01). Design + implementation are complete (Phase 1 + Phase 2 core); progress details live in `docs/IMPLEMENTATION_LOG.md`.
+
+### Motivation
+
+`--deep` treats sources as text snippets: a researcher cites a paper, the writer synthesizes from abstracts/snippets, and nobody opens the PDF. `--academic` runs a full per-paper pipeline for *every* paper, which is expensive and unjudged. This feature gives the deep path the best of both: the critic's holistic view of research state selects only papers where full analysis pays off, then the proven academic machinery runs on them.
+
+Selection criteria:
+1. **Abstract relevance** — the abstract clearly shows the paper is directly relevant to the research.
+2. **Notable referencing** — referenced noticeably by other sources (appears in multiple sub-question drafts, or carries a high citation count).
+3. **Foundational/seminal** — the paper is foundational/seminal work that deserves full reading.
+
+### Architecture
+
+```
+researchers finish (per iteration)
+        |
+        v
+critic review ──── adds "papers_to_analyze" (arxiv_id + rationale + priority)
+        |
+        v
+deep paper-analysis pass (capped, deduped, concurrent)
+        download -> extract -> render (vision, optional) -> analyze_paper
+        |  (library cache reuse; PDF -> abstract-only -> skip fallback)
+        v
+state.deep_analyses[arxiv_id] = PaperAnalysis   (checkpoint-safe)
+        |
+        +---> writer prompt gets "Deep paper analyses" section (rendered FIRST,
+        |     before drafts, so truncation cannot drop it)
+        |
+        +---> Phase 2: next critic round sees the digest (gaps + key-reference
+              chasing); later researchers get it via prior_context
+```
+
+### Data model (`deep_research/state.py`)
+
+- `PaperAnalysisRequest{arxiv_id, rationale, reason, priority_score (0..1), expected_title}`.
+- `Critique.papers_to_analyze: list[PaperAnalysisRequest]` (default `[]` — backward compatible).
+- `ResearchState.deep_analyses: dict[str, PaperAnalysis]` and `deep_analysis_requested: list[str]` (defaults; old checkpoints load unchanged).
+
+### Critic selection (`nodes/critic.py` + `prompts/critic.txt`)
+
+- `_render_paper_candidates(state)` builds a candidate table from the arxiv citations researchers actually used: title, first author + year, ~250-char abstract, `referenced_by_count` (code-side scan of drafts — zero extra API cost), `cited_by_count` when known. Papers already analyzed/requested are excluded; capped at 40 candidates.
+- Prompt task 4: select papers using the three criteria; `[]` when nothing qualifies. Task 5 (Phase 2): use the analyses digest to propose follow-up gaps and nominate `key_references` as next-round candidates.
+- Validation: arxiv-id pattern only (`\d{4}\.\d{4,5}(v\d+)?`); priority clamped to [0,1]; dedupe by arxiv_id keeping highest priority; web-only/scholar-only entries rejected (v1 analyzes downloadable arXiv PDFs only).
+
+### Shared pipeline (`nodes/paper_analysis.py`)
+
+- PDF helpers factored from `paths/academic.py`: `download_pdf_once`, `extract_text`, `render_pages`, `fetch_paper_text_fallback` — one implementation for both paths.
+- `analyze_paper_deep(arxiv_id, ...) -> DeepAnalysisResult | None`: full PDF (text + optional vision when `pdf_vision.enabled`) → abstract-only via `arxiv_resolve` → skip.
+- `run_paper_analysis_pass(state, requests, ...)`: filter by min priority, dedupe, sort by priority, **cap bounds the whole run** (remaining budget = cap − already-requested), mark requested up-front, run under a concurrency semaphore with per-paper `wait_for` timeout, store successes in `state.deep_analyses`, absorb a citation for each analyzed paper, archive PDF + record analysis in the library. Failures are logged/skipped, never fatal.
+
+### Deep loop wiring (`paths/deep.py`)
+
+The pass runs immediately after each critic call, before the sufficient/break checks — so analyses happen even when the loop ends, and Phase 2 can feed them into the next critic iteration. Checkpoints save `deep_analyses`/`deep_analysis_requested`.
+
+### Writer integration (`nodes/writer.py` + `prompts/writer.txt`)
+
+- "Deep paper analyses" section (per paper: summary ~600 chars, top 5 findings, relevance, limitations) is rendered **before** sub-question drafts so the trailing 12k-char truncation cap can never drop it.
+- Prompt instructs the writer to treat these as the most authoritative sources and cite them inline with autolinks; the body-referenced citation filter then includes them in the bibliography only when actually cited.
+
+### Config (`agent.*`)
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `deep_analysis_max_papers` | 3 | Max full PDF analyses per deep **run** (0 disables the feature) |
+| `deep_analysis_min_priority` | 0.6 | Drop critic proposals below this priority |
+| `deep_analysis_concurrency` | 2 | Parallel downloads/analyses |
+| `deep_analysis_timeout_s` | 900.0 | Per-paper wall-clock cap (download+extract+render worst case + LLM calls) |
+| `deep_analysis_use_library_cache` | true | Reuse prior `analyze_paper` analyses from the personal library |
+
+Vision is not a new knob — reuse `pdf_vision.enabled`.
+
+### Decisions (user-confirmed)
+
+1. Defaults: 3 papers/run, concurrency 2, min priority 0.6, timeout 900s.
+2. Library cache reuse in Phase 1.
+3. Analyses are incorporated into the prose (inline autolinks), not a separate appendix.
+4. Phase 2 entry: both — critic sees an analyses digest (gaps + key-reference chasing) AND later researchers receive it via `prior_context`.
+
+### Risks / residual limitations
+
+- **Cost**: each analysis = download + extraction (+vision) + 1–2 LLM calls — bounded by the per-run cap, priority threshold, concurrency, and timeouts.
+- **Vision**: requires poppler + `pdf_vision.enabled`; degrades to text-only automatically.
+- **Weak local model**: `analyze_paper` degrades gracefully; the pass skips on total failure.
+- **Resume behavior**: failed analyses are not retried on checkpoint resume (requested-set persists, by design).
+- **Cache reconstruction**: library-cached analyses restore summary/findings/references but not `relevance_score`/`figure_descriptions`/`extraction_text` (not needed by the writer digest).
+- **Candidate pool**: limited to papers researchers actually cited (post-gating citations), not all search hits.
+- **Scholar signal**: `cited_by_count` is usually absent in the deep path; multi-draft mention count is the v1 "notable referencing" proxy.
+
+### Out of scope (future ideas)
+
+- Web-PDF deep analysis via `fetch_page` in the deep path.
+- Scholar `cited_by_count` enrichment for deep-path candidates.
+- Per-iteration analysis budget (spreading analyses across iterations).
+- Analysis-driven report structure (auto-generated "Key papers" appendix).
+
+---
 
 ## Resume guidance
-
 If implementation gets disrupted mid-session, do the following in the new session:
 
 1. Read this file (`docs/PLAN.md`) — single source of truth.

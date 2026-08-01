@@ -4,6 +4,12 @@ Tasks:
 1. For each sub-question, judge whether it is sufficiently answered (multiple credible sources, coherent synthesis).
 2. Identify *gaps* — aspects of the original query not yet covered, with conflicting evidence, or where follow-up research would meaningfully improve the report.
 3. Produce a small set of new sub-questions for follow-up research, OR declare the research sufficient.
+4. Decide whether any candidate arXiv paper deserves full PDF deep analysis. Select a paper only when at least one of these holds:
+   - Its abstract is clearly and directly relevant to the original query.
+   - It is referenced noticeably by other sources (appears in multiple drafts, or has a high citation count).
+   - It is foundational/seminal work for the topic.
+   Do NOT select papers that are only tangentially related. Return an empty list when nothing qualifies.
+5. When a "Deep paper analyses" digest is present, use it to propose follow-up research: contradictions between analyzed papers, methodology comparisons, open questions, and key references worth chasing. Key references may be nominated in papers_to_analyze (they will be analyzed next round) or turned into gaps/sub-questions.
 
 Return JSON only:
 {{
@@ -16,6 +22,15 @@ Return JSON only:
       "tool_hint": "general-web",
       "rationale": "<why this gap matters>"
     }}
+  ],
+  "papers_to_analyze": [
+    {{
+      "arxiv_id": "2401.12345",
+      "rationale": "<why this paper needs full PDF analysis>",
+      "reason": "abstract_relevance | notable_citations | foundational | other",
+      "priority_score": 0.9,
+      "expected_title": "<title>"
+    }}
   ]
 }}
 
@@ -24,3 +39,6 @@ Original user query:
 
 Current sub-questions + draft answers:
 <<{sections}>>
+
+Paper candidates for deep analysis (arxiv_id, title, abstract, referenced-in-drafts count):
+<<{candidates}>>

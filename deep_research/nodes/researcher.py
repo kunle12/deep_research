@@ -13,6 +13,7 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+from deep_research.citations import extract_urls_from_markdown, normalize_url
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult, run_with_tools
 from deep_research.state import Citation, SubQuestion
 from deep_research.util import coerce_float
@@ -94,6 +95,7 @@ async def research(
     max_refinement_per_researcher: int = 3,
     max_refinement_depth: int = 2,
     max_context_tokens: int = 131072,
+    max_citations_per_researcher: int = 10,
 ) -> tuple[str, list[Citation], list[SubQuestion]]:
     """Run the researcher loop for one sub-question.
 
@@ -159,7 +161,20 @@ async def research(
     )
 
     answer_md, extra_citations = _parse_final_assistant(final_messages)
-    citations.extend(extra_citations)
+
+    if not answer_md or answer_md.strip() == "(no answer synthesized)":
+        # The model never produced a final answer (e.g. the turn budget
+        # expired mid-tool-call). Treat the whole researcher as failed so the
+        # deep loop retries / marks the sub-question stuck instead of shipping
+        # a garbage draft.
+        raise RuntimeError("researcher produced no final answer")
+
+    citations = _gate_citations(
+        answer_md,
+        citations,
+        extra_citations,
+        max_citations_per_researcher=max_citations_per_researcher,
+    )
 
     refinements: list[SubQuestion] = []
     ref_depth = sub_q.refinement_depth + 1
@@ -197,6 +212,65 @@ async def research(
     return (answer_md, citations, refinements)
 
 
+def _gate_citations(
+    answer_md: str,
+    tool_citations: list[Citation],
+    json_citations: list[Citation],
+    *,
+    max_citations_per_researcher: int,
+) -> list[Citation]:
+    """Keep only citations the researcher actually used.
+
+    Three sources feed this function:
+    - *tool_citations*: every citation attached to tool results (search hits,
+      fetched pages). These are *candidates* the model saw, not sources it
+      used — most get dropped here.
+    - *json_citations*: the URLs the model explicitly listed in its final
+      answer's ``citations`` array. These are kept by definition.
+    - URLs referenced anywhere in *answer_md* (autolinks or bare URLs) are
+      kept too; if no citation object exists for one, a minimal Citation is
+      synthesized so the bibliography can still point at it.
+
+    The result is capped at *max_citations_per_researcher* (prose-referenced
+    URLs first, then by confidence) so a chatty model cannot flood the final
+    report's bibliography.
+    """
+    referenced = extract_urls_from_markdown(answer_md)
+    used = set(referenced) | {normalize_url(c.url) for c in json_citations}
+
+    best: dict[str, Citation] = {}
+    # Tool citations carry richer metadata (source_type, discovered_by,
+    # arxiv_id, authors...), so prefer them when the URL is used.
+    for c in tool_citations:
+        norm = normalize_url(c.url)
+        if norm in used and norm not in best:
+            best[norm] = c
+    for c in json_citations:
+        norm = normalize_url(c.url)
+        if norm in used and norm not in best:
+            best[norm] = c
+    # Referenced URLs with no matching citation object — synthesize one.
+    for norm, original in referenced.items():
+        if norm not in best:
+            best[norm] = Citation(
+                url=original,
+                title=original,
+                source_type="web",
+                confidence_score=0.5,
+            )
+
+    out = list(best.values())
+    if max_citations_per_researcher > 0 and len(out) > max_citations_per_researcher:
+        out.sort(
+            key=lambda c: (
+                normalize_url(c.url) not in referenced,
+                -c.confidence_score,
+            )
+        )
+        out = out[:max_citations_per_researcher]
+    return out
+
+
 def _hint_blurb(tool_hint: str, available: list[str]) -> str:
     """Render a short instruction nudging the researcher toward tool_hint.
 
@@ -224,14 +298,20 @@ def _hint_blurb(tool_hint: str, available: list[str]) -> str:
 
 
 def _parse_final_assistant(messages: list[dict]) -> tuple[str, list[Citation]]:
-    """Pull the last assistant message and try to parse it as JSON answer+citations."""
-    last_assistant = None
-    for m in reversed(messages):
-        if m.get("role") == "assistant" and m.get("content"):
-            last_assistant = m["content"]
-            break
-    if not last_assistant:
+    """Pull the FINAL assistant answer and try to parse it as JSON answer+citations.
+
+    Only the last message counts as the answer. If the tool loop was cut off
+    by the turn budget, the last message is a tool-call message or a tool
+    result with no synthesized answer; callers must treat that as a failed
+    researcher instead of recycling intermediate chatter like "Let me search
+    for that." as the sub-question's answer.
+    """
+    if not messages:
         return ("(no answer synthesized)", [])
+    last = messages[-1]
+    if last.get("role") != "assistant" or not last.get("content") or last.get("tool_calls"):
+        return ("(no answer synthesized)", [])
+    last_assistant = last["content"]
     try:
         data = json.loads(last_assistant)
         if not isinstance(data, dict):

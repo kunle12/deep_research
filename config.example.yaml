@@ -14,6 +14,7 @@ agent:
   # rounds. Lower these back to the defaults (3 / 6) for faster, cheaper runs.
   max_iterations: 4               # critic-loop depth cap (3 = default; 4-5 = deeper gap-following)
   max_subquestions: 8             # planner breadth cap (6 = default; 8-10 = wider coverage)
+  max_citations_per_researcher: 10  # cap on citations a single researcher may return (keeps bibliographies clean)
   max_concurrent_tools: 8        # asyncio.Semaphore bound on parallel tool dispatch
   researcher_timeout_s: 5400      # per-researcher wall-clock cap (PDF fetch + LLM turns)
   researcher_max_turns: 16        # per-researcher tool-loop turn budget (must fit researcher_timeout_s: turns x llm.timeout_s + tool I/O)
@@ -22,6 +23,12 @@ agent:
   max_refinement_depth: 3         # how deep refinements (chase_reference / drill_deeper) may nest
   max_refinement_per_researcher: 4  # per-researcher refinement budget per iteration
   max_total_refinements_per_iteration: 10  # cap on refinements flushed into the plan each iteration
+  # Deep-mode paper deep-analysis: critic-selected full PDF analysis (0 disables)
+  deep_analysis_max_papers: 3
+  deep_analysis_min_priority: 0.6
+  deep_analysis_concurrency: 2
+  deep_analysis_timeout_s: 900.0
+  deep_analysis_use_library_cache: true
   classifier:
     enabled: true
     force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"

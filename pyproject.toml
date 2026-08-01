@@ -102,6 +102,14 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q --strict-markers"
 
+[tool.coverage.run]
+source = ["deep_research"]
+
+[tool.coverage.report]
+# Hard gate: coverage must stay above 80% (project requirement).
+fail_under = 80
+show_missing = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

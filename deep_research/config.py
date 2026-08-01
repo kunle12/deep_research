@@ -89,6 +89,24 @@ class AgentConfig(BaseModel):
     # How many times a sub-question may fail (timeout / error) before it is
     # forcibly marked "covered" with an empty draft to prevent infinite loops.
     max_subquestion_retries: int = 3
+    # Upper bound on the citations one researcher may return, so a chatty
+    # model cannot flood the final bibliography. The researcher prompt asks
+    # for 3-8 sources per sub-question.
+    max_citations_per_researcher: int = 10
+    # Deep-mode paper deep-analysis: the critic selects a small set of arxiv
+    # papers for full PDF analysis (download -> extract -> render -> analyze).
+    # Set deep_analysis_max_papers to 0 to disable the feature entirely.
+    deep_analysis_max_papers: int = 3
+    # Drop critic proposals below this priority (0..1).
+    deep_analysis_min_priority: float = 0.6
+    # Parallel downloads/analyses in the deep-analysis pass.
+    deep_analysis_concurrency: int = 2
+    # Per-paper wall-clock cap: worst-case download+extract+render plus LLM
+    # calls on vision runs can exceed 600s, so default is 900s.
+    deep_analysis_timeout_s: float = 900.0
+    # Reuse prior analyze_paper results from the personal library instead of
+    # re-running the LLM analysis for papers already analyzed.
+    deep_analysis_use_library_cache: bool = True
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
 
 

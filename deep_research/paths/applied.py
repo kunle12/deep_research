@@ -116,7 +116,7 @@ async def _synthesize_applied(
                 "sources, write a 1-3 section markdown report answering the user's "
                 "research query. Focus on practical implementation details, code "
                 "examples (when available), and key takeaways. Cite each blog post "
-                "inline using the bare-URL form."
+                "inline with an autolink like <https://example.com/post>."
             ),
         },
         {

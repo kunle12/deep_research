@@ -19,6 +19,8 @@ from deep_research.state import (
     Citation,
     ClassifiedQuery,
     Critique,
+    PaperAnalysis,
+    PaperAnalysisRequest,
     QueryPlan,
     ResearchPlan,
     SubQuestion,
@@ -100,7 +102,7 @@ class TestDeepHappyPath:
             ),
             patch(
                 "deep_research.paths.deep.writer_write",
-                return_value="# Deep Report\n\nConclusion about X.",
+                return_value="# Deep Report\n\nConclusion about X.\n\nSource: https://a",
             ),
         ):
             client = MagicMock()  # not used by patched nodes
@@ -130,7 +132,10 @@ class TestDeepHappyPath:
                 "deep_research.paths.deep.critic_review",
                 return_value=Critique(sufficient=True, rationale="r", gaps=[]),
             ),
-            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+            patch(
+                "deep_research.paths.deep.writer_write",
+                return_value="# Report\n\nSee https://high and https://low",
+            ),
         ):
             client = MagicMock()
             reg = _registry_with_search()
@@ -388,6 +393,71 @@ class TestConfigIntegration:
             reg = _registry_with_search()
             report = await deep_research(_classified("Q"), "Q", client, reg, cfg)
             assert report.iterations <= 1
+
+    @pytest.mark.asyncio
+    async def test_researcher_receives_deep_analysis_digest(self, cfg: AgentTopConfig) -> None:
+        """Later researchers get analyzed-paper context via prior_context."""
+        from unittest.mock import AsyncMock
+
+        from deep_research.paths.deep import _run_one_researcher_with_recall
+
+        with (
+            patch("deep_research.paths.deep.recall_run", new=AsyncMock(return_value=[])),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                new=AsyncMock(return_value=("ans", [])),
+            ) as mock_researcher,
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            await _run_one_researcher_with_recall(
+                _sub_q(),
+                client,
+                cfg,
+                reg,
+                storage=None,
+                deep_analyses={"2401.00001": PaperAnalysis(title="Deep Paper", summary="s")},
+            )
+        prior = mock_researcher.await_args.kwargs["prior_context"]
+        assert "Deep paper analyses" in prior
+        assert "arxiv:2401.00001" in prior
+
+    @pytest.mark.asyncio
+    async def test_critic_papers_trigger_deep_analysis_pass(self, cfg: AgentTopConfig) -> None:
+        """Critic-selected papers must be handed to the deep analysis pass."""
+        plan_result = _plan([_sub_q(id="sq1", question="Q?")])
+        with (
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch("deep_research.paths.deep.researcher_run", return_value=("ans", [])),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(
+                    sufficient=True,
+                    rationale="r",
+                    gaps=[],
+                    papers_to_analyze=[
+                        PaperAnalysisRequest(
+                            arxiv_id="2401.00001",
+                            rationale="seminal",
+                            priority_score=0.9,
+                        )
+                    ],
+                ),
+            ),
+            patch("deep_research.paths.deep.run_paper_analysis_pass") as mock_pass,
+            patch(
+                "deep_research.paths.deep.writer_write",
+                return_value="# Report\n\nSee https://arxiv.org/abs/2401.00001",
+            ),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            report = await deep_research(_classified("Q"), "Q", client, reg, cfg)
+            mock_pass.assert_awaited_once()
+            args, _kwargs = mock_pass.call_args
+            assert args[0].query == "Q"
+            assert args[1][0].arxiv_id == "2401.00001"
+            assert report.path == "deep"
 
     @pytest.mark.asyncio
     async def test_breadth_hint_from_classified(self, cfg: AgentTopConfig) -> None:

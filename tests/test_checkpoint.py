@@ -23,7 +23,7 @@ from deep_research.checkpoint import (
     load_checkpoint,
     save_checkpoint,
 )
-from deep_research.state import Citation, ResearchPlan, ResearchState, SubQuestion
+from deep_research.state import Citation, PaperAnalysis, ResearchPlan, ResearchState, SubQuestion
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -95,6 +95,21 @@ def test_load_checkpoint_corrupt_json() -> None:
     path.write_text("not valid json")
     result = load_checkpoint(run_id)
     assert result is None
+    discard_checkpoint(run_id)
+
+
+def test_deep_analyses_survive_roundtrip(sample_state: ResearchState) -> None:
+    run_id = "test_deep_analyses_001"
+    sample_state.deep_analyses["2401.00001"] = PaperAnalysis(
+        title="Deep Paper", summary="s", key_findings=["k1"]
+    )
+    sample_state.deep_analysis_requested = ["2401.00001"]
+    save_checkpoint(sample_state, run_id)
+    loaded, _ = load_checkpoint(run_id)
+    assert loaded is not None
+    assert loaded.deep_analyses["2401.00001"].title == "Deep Paper"
+    assert loaded.deep_analyses["2401.00001"].key_findings == ["k1"]
+    assert loaded.deep_analysis_requested == ["2401.00001"]
     discard_checkpoint(run_id)
 
 
