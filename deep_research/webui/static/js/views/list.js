@@ -65,6 +65,7 @@ export function renderList(root, searchInput) {
     { rootMargin: "300px" },
   );
   io.observe(sentinel);
+  let requestSeq = 0;
 
   const onSearch = (event) => {
     state.q = event.detail;
@@ -96,6 +97,7 @@ export function renderList(root, searchInput) {
   }
 
   async function load(reset) {
+    const seq = ++requestSeq;
     const offset = reset ? 0 : state.offset;
     state.loading = true;
     state.error = "";
@@ -108,14 +110,18 @@ export function renderList(root, searchInput) {
         tag: state.tag || undefined,
         path: state.path || undefined,
       });
+      if (seq !== requestSeq) return; // superseded by a newer request
       state.items = reset ? body.items : [...state.items, ...body.items];
       state.total = body.total;
       state.offset = offset + body.items.length;
     } catch (err) {
+      if (seq !== requestSeq) return;
       state.error = err.message;
     } finally {
-      state.loading = false;
-      render();
+      if (seq === requestSeq) {
+        state.loading = false;
+        render();
+      }
     }
   }
 

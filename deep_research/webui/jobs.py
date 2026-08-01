@@ -157,10 +157,10 @@ class ResearchJobManager:
             del self._jobs[job.job_id]
 
     async def _run(self, job: ResearchJob) -> None:
-        config = AgentTopConfig.load_yaml(self._config_path)
         reporter = JobProgressReporter(self, job)
         run_id = uuid.uuid4().hex[:16]
         try:
+            config = AgentTopConfig.load_yaml(self._config_path)
             report = await self._runner(config, job.query, job.path_override, reporter, run_id)
             if job.status != "running":
                 return  # cancelled while the runner was finishing

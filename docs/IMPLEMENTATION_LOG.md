@@ -1326,6 +1326,21 @@ tracker merged below). FastAPI backend + zero-dependency vanilla-JS frontend.
 - Headless-Chrome smoke checks pass for list, report, modal, and stats views
   (no live LLM runs were triggered during verification).
 
+### Bug-fix pass (post-commit review)
+
+- `jobs.py`: config loading moved inside the job's `try` — a malformed config
+  at job time now marks the job `failed` and releases the concurrency slot
+  instead of leaving it stuck `running` forever.
+- `markdown.js`: intraword underscores are no longer treated as emphasis
+  (`foo_bar_baz` stays literal); autolinked and explicit URLs with balanced
+  parentheses are parsed whole; the inline scanner keeps URLs intact (special
+  chars inside a URL no longer split the run); the `javascript:`-link safety
+  test now asserts at the render layer (`safeUrl`) where protection applies.
+- `views/list.js`: request sequencing prevents a stale in-flight response
+  from overwriting a newer filter's results.
+- `views/research.js`: closing the modal after `done` cancels the delayed
+  auto-navigation instead of navigating anyway.
+
 ### Phase-by-phase tracker
 
 > All items below are complete.

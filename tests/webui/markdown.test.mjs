@@ -3,7 +3,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parse, parseInline } from "../../deep_research/webui/static/js/markdown.js";
+import {
+  parse,
+  parseInline,
+  safeUrl,
+} from "../../deep_research/webui/static/js/markdown.js";
 
 test("headings", () => {
   const blocks = parse("# Title\n\n## Sub\n\n### Deep");
@@ -51,6 +55,26 @@ test("bare URLs are autolinked", () => {
   const link = tokens.find((t) => t.type === "link");
   assert.ok(link);
   assert.ok(link.url.startsWith("https://arxiv.org"));
+});
+
+test("intraword underscores are not emphasis", () => {
+  const tokens = parseInline("foo_bar_baz and _em_ here");
+  assert.equal(tokens.some((t) => t.type === "em" && t.children[0].text === "bar"), false);
+  assert.ok(tokens.some((t) => t.type === "em" && t.children[0].text === "em"));
+});
+
+test("URLs with balanced parentheses autolink fully", () => {
+  const tokens = parseInline("see https://en.wikipedia.org/wiki/R_(programming_language) ok");
+  const link = tokens.find((t) => t.type === "link");
+  assert.ok(link);
+  assert.equal(link.url, "https://en.wikipedia.org/wiki/R_(programming_language)");
+});
+
+test("explicit links with parentheses in the URL", () => {
+  const tokens = parseInline("[x](https://a.example/p_(q)) done");
+  const link = tokens.find((t) => t.type === "link");
+  assert.ok(link);
+  assert.equal(link.url, "https://a.example/p_(q)");
 });
 
 test("math spans are captured", () => {
@@ -112,9 +136,13 @@ test("empty input", () => {
   assert.deepEqual(parseInline(""), []);
 });
 
-test("no javascript: links leak through parse", () => {
+test("no javascript: links survive the renderer", () => {
   const tokens = parseInline("[bad](javascript:alert(1))");
   const link = tokens.find((t) => t.type === "link");
   assert.ok(link);
-  assert.notEqual(link.url, "javascript:alert(1)");
+  assert.equal(safeUrl(link.url, "https://example.com"), "#");
+  assert.equal(
+    safeUrl("https://example.com/a", "https://example.com"),
+    "https://example.com/a",
+  );
 });

@@ -167,3 +167,30 @@ def test_concurrency_cap(runner):
         second = client.post("/api/research", json={"query": "second"})
         assert second.status_code == 409
         assert client.post(f"/api/research/jobs/{first['job_id']}/cancel").status_code == 200
+
+
+async def test_job_config_error_releases_concurrency_slot(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("pdl: [unclosed\n", encoding="utf-8")
+    manager = ResearchJobManager(str(bad), runner=FakeRunner())
+
+    job = manager.start("hello")
+    assert job is not None
+    for _ in range(50):
+        if job.status != "running":
+            break
+        await asyncio.sleep(0.02)
+    assert job.status == "failed"
+    assert job.error is not None
+
+    # The failed job must not hold the concurrency slot forever: a new job
+    # must be able to start (it also fails here — same bad config — but the
+    # slot was released, which is the regression being guarded).
+    job2 = manager.start("again")
+    assert job2 is not None
+    for _ in range(50):
+        if job2.status != "running":
+            break
+        await asyncio.sleep(0.02)
+    assert job2.status != "running"
+    assert job2.completed_at is not None

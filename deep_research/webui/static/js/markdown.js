@@ -9,12 +9,14 @@
 
 import { el } from "./dom.js";
 
-const URL_RE = /https?:\/\/[^\s<>()]+/g;
+const URL_START_RE = /https?:\/\//g;
 const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
-export function safeUrl(url) {
+export function safeUrl(url, base) {
+  const origin =
+    base ?? (typeof window !== "undefined" ? window.location.origin : "http://localhost");
   try {
-    const parsed = new URL(url, window.location.origin);
+    const parsed = new URL(url, origin);
     if (SAFE_PROTOCOLS.has(parsed.protocol)) return parsed.href;
   } catch {
     /* fall through */
@@ -32,20 +34,60 @@ function slugify(text) {
   return slug || "section";
 }
 
+function matchUrlAt(text, start) {
+  const m = /^https?:\/\/[^\s<>]*/.exec(text.slice(start));
+  if (!m) return null;
+  let url = m[0];
+  let opens = 0;
+  let closes = 0;
+  for (const ch of url) {
+    if (ch === "(") opens++;
+    else if (ch === ")") closes++;
+  }
+  // Drop trailing ")" only while unbalanced (keeps balanced parens intact).
+  while (closes > opens && url.endsWith(")")) {
+    url = url.slice(0, -1);
+    closes--;
+  }
+  const cleaned = url.replace(/[.,;:!?]+$/, "");
+  return { url: cleaned, end: start + cleaned.length };
+}
+
 function splitUrls(text) {
   const parts = [];
   let last = 0;
-  URL_RE.lastIndex = 0;
+  URL_START_RE.lastIndex = 0;
   let match;
-  while ((match = URL_RE.exec(text)) !== null) {
+  while ((match = URL_START_RE.exec(text)) !== null) {
     if (match.index > last) parts.push({ type: "text", text: text.slice(last, match.index) });
-    const url = match[0].replace(/[.,;:!?)]+$/, "");
-    parts.push({ type: "link", label: [{ type: "text", text: url }], url });
-    last = match.index + match[0].length;
+    const urlMatch = matchUrlAt(text, match.index);
+    if (urlMatch) {
+      parts.push({
+        type: "link",
+        label: [{ type: "text", text: urlMatch.url }],
+        url: urlMatch.url,
+      });
+      last = urlMatch.end;
+    } else {
+      last = match.index + match[0].length;
+    }
+    URL_START_RE.lastIndex = last;
   }
   if (last < text.length) parts.push({ type: "text", text: text.slice(last) });
   if (!parts.length && text) parts.push({ type: "text", text });
   return parts;
+}
+
+function findClosingParen(text, start) {
+  let depth = 0;
+  for (let k = start; k < text.length; k++) {
+    if (text[k] === "(") depth++;
+    else if (text[k] === ")") {
+      if (depth === 0) return k;
+      depth--;
+    }
+  }
+  return -1;
 }
 
 function expandAutolinks(tokens) {
@@ -115,16 +157,21 @@ export function parseInline(text) {
     if (ch === "*" || ch === "_") {
       const end = text.indexOf(ch, i + 1);
       if (end !== -1) {
-        tokens.push({ type: "em", children: parseInline(text.slice(i + 1, end)) });
-        i = end + 1;
-        continue;
+        const prev = i > 0 ? text[i - 1] : "";
+        const next = end + 1 < n ? text[end + 1] : "";
+        const intraword = ch === "_" && (/[A-Za-z0-9]/.test(prev) || /[A-Za-z0-9]/.test(next));
+        if (!intraword) {
+          tokens.push({ type: "em", children: parseInline(text.slice(i + 1, end)) });
+          i = end + 1;
+          continue;
+        }
       }
     }
 
     if (text.startsWith("![", i)) {
       const close = text.indexOf("]", i + 2);
       if (close !== -1 && text[close + 1] === "(") {
-        const end = text.indexOf(")", close + 2);
+        const end = findClosingParen(text, close + 2);
         if (end !== -1) {
           tokens.push({
             type: "image",
@@ -140,7 +187,7 @@ export function parseInline(text) {
     if (ch === "[") {
       const close = text.indexOf("]", i + 1);
       if (close !== -1 && text[close + 1] === "(") {
-        const end = text.indexOf(")", close + 2);
+        const end = findClosingParen(text, close + 2);
         if (end !== -1) {
           const label = text.slice(i + 1, close);
           const url = text.slice(close + 2, end).trim();
@@ -156,7 +203,22 @@ export function parseInline(text) {
     }
 
     let j = i + 1;
-    while (j < n && !"`$*_~[!".includes(text[j])) j++;
+    let urlActive = false;
+    while (j < n) {
+      const ch = text[j];
+      if (!urlActive && j >= i + 2 && text.slice(j - 2, j + 1) === "://") urlActive = true;
+      if (urlActive) {
+        // Keep URLs intact — special chars inside a URL must not split the
+        // run before autolinking gets a chance to see the whole thing.
+        if (/\s/.test(ch)) urlActive = false;
+        else {
+          j++;
+          continue;
+        }
+      }
+      if ("`$*_~[!".includes(ch)) break;
+      j++;
+    }
     tokens.push({ type: "text", text: text.slice(i, j) });
     i = j;
   }

@@ -65,6 +65,7 @@ export function openResearchModal() {
   let jobId = null;
   let running = false;
   let reconnectChecked = false;
+  let closed = false;
 
   function setRunning(value) {
     running = value;
@@ -76,6 +77,8 @@ export function openResearchModal() {
   }
 
   function close() {
+    if (closed) return;
+    closed = true;
     if (es) {
       es.close();
       es = null;
@@ -134,6 +137,7 @@ export function openResearchModal() {
         if (event.run_id) {
           appendFeed(el("div", { class: "feed-line feed-done", text: "Opening report…" }));
           setTimeout(() => {
+            if (closed) return;
             close();
             window.location.hash = `#/report/${encodeURIComponent(event.run_id)}`;
           }, 900);
