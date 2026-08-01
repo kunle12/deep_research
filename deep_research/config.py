@@ -349,6 +349,11 @@ class PDLConfig(BaseModel):
     root_dir: str = ".deep_research_library"
     storage: PDLStorageConfig = Field(default_factory=PDLStorageConfig)
     refresh: PDLRefreshConfig = Field(default_factory=PDLRefreshConfig)
+    # Opt-in: after each run, download + archive PDFs for citations that carry
+    # an arxiv_id so the web UI can serve local copies. Deep-path citations
+    # reference arXiv papers without downloading them, so without this they
+    # fall back to the upstream link.
+    archive_cited_arxiv_pdfs: bool = False
 
 
 class AgentTopConfig(BaseModel):

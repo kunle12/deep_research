@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -9,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.citation_archive import archive_cited_pdf
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.client import LLMClient
 from deep_research.llm.tool_loop import ToolRegistry
@@ -16,12 +18,14 @@ from deep_research.nodes.auto_tag import auto_tag_report
 from deep_research.nodes.glossarize import extract_glossary_from_report
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
+    Citation,
     ClassifiedQuery,
     QueryPlan,
     Report,
 )
 from deep_research.tools import build_tool_registry
 from deep_research.tools.url_detector import extract_first_url, strip_url_from_query
+from deep_research.util import strip_arxiv_version
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +121,21 @@ async def run_research(
                 writer,
                 run_id,
             )
+
+            # Optional post-run pass: archive PDFs for citations that carry an
+            # arXiv id (deep-path researchers cite papers without downloading
+            # them, so the web UI would otherwise fall back to the upstream
+            # link). Opt-in via pdl.archive_cited_arxiv_pdfs.
+            if (
+                config.pdl.enabled
+                and config.pdl.archive_cited_arxiv_pdfs
+                and isinstance(writer, LibraryWriter)
+                and run_id
+            ):
+                try:
+                    await _archive_cited_arxiv_pdfs(report, tools, writer, config, run_id)
+                except Exception:
+                    logger.warning("cited-arxiv-pdf archiving failed", exc_info=True)
 
             # P10.6: dedicated glossary extraction from report text
             if report.markdown:
@@ -349,6 +368,48 @@ async def _dispatch_url_source(
     return await url_source(
         url, remainder, client, tools, config, reporter, writer=writer, run_id=run_id
     )
+
+
+async def _archive_cited_arxiv_pdfs(
+    report: Report,
+    tools: ToolRegistry,
+    writer: LibraryWriter,
+    config: AgentTopConfig,
+    run_id: str,
+) -> int:
+    """Download + archive PDFs for citations that carry an arxiv_id.
+
+    Enabled via ``pdl.archive_cited_arxiv_pdfs``. Papers already archived are
+    skipped (by arxiv_id), and per-paper failures are logged and ignored so a
+    single unreachable PDF never fails the run.
+    """
+    if (
+        not report.citations
+        or not config.arxiv.enabled
+        or not config.arxiv.download_pdfs
+        or "arxiv_download_pdf" not in tools.names()
+    ):
+        return 0
+
+    sem = asyncio.Semaphore(max(1, config.arxiv.concurrency))
+    seen: set[str] = set()
+    archived = 0
+
+    async def _archive_one(citation: Citation) -> None:
+        nonlocal archived
+        aid = (citation.arxiv_id or "").strip()
+        base = strip_arxiv_version(aid)
+        if not aid or aid.startswith("scholar:") or base in seen:
+            return
+        seen.add(base)
+        async with sem:
+            if await archive_cited_pdf(aid, title=citation.title, tools=tools, writer=writer):
+                archived += 1
+
+    await asyncio.gather(*[_archive_one(c) for c in report.citations])
+    if archived:
+        logger.info("run %s: archived %d cited arXiv PDF(s)", run_id, archived)
+    return archived
 
 
 @asynccontextmanager

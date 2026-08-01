@@ -2,7 +2,7 @@
 
 import { el, clear } from "../dom.js";
 import { formatDate, plural } from "../format.js";
-import { addReportTag, deleteReport, getReport, removeReportTag } from "../api.js";
+import { addReportTag, deleteReport, fetchArxivPdf, getReport, removeReportTag } from "../api.js";
 import { parse, renderBlocks, safeUrl } from "../markdown.js";
 
 export function renderReport(root, runId) {
@@ -171,22 +171,38 @@ function refCard(citation) {
   if (citation.year) metaParts.push(String(citation.year));
   if (citation.venue) metaParts.push(citation.venue);
 
-  const actions = [];
-  if (citation.arxiv_id) {
-    const arxivHref = citation.local_pdf_url || `https://arxiv.org/abs/${citation.arxiv_id}`;
-    actions.push(
-      refLink(
-        "arXiv",
-        arxivHref,
-        citation.local_pdf_url ? "Archived PDF copy in library" : "View abstract on arXiv.org",
-      ),
-    );
+  const actionsEl = el("div", { class: "ref-actions" });
+
+  function renderActions() {
+    clear(actionsEl);
+    const actions = [];
+    // Scholar-only hits carry a synthetic "scholar:<hash>" id — they are real
+    // papers but have no arXiv record, so never render arXiv-style buttons.
+    const isArxiv =
+      Boolean(citation.arxiv_id) && !String(citation.arxiv_id).startsWith("scholar:");
+    if (isArxiv) {
+      const local = Boolean(citation.local_pdf_url);
+      if (local) {
+        actions.push(refLink("arXiv PDF", citation.local_pdf_url, "Archived PDF copy in library"));
+      } else {
+        actions.push(refLink("arXiv", `https://arxiv.org/abs/${citation.arxiv_id}`, "View abstract on arXiv.org"));
+        actions.push(downloadPdfButton(citation, renderActions));
+      }
+    }
+    if (citation.pdf_url) actions.push(refLink("PDF", citation.pdf_url));
+    if (citation.doi) actions.push(refLink("DOI", `https://doi.org/${citation.doi}`));
+    // Hide the URL button only when it duplicates the arXiv button itself
+    // (same abs page). When a local PDF exists, arXiv opens the local copy
+    // and URL remains the official abstract page.
+    const urlDuplicatesArxiv =
+      isArxiv && !citation.local_pdf_url && /arxiv\.org\/abs\//i.test(citation.url || "");
+    if (citation.url && !urlDuplicatesArxiv) {
+      actions.push(refLink("URL", citation.url));
+    }
+    for (const action of actions) actionsEl.append(action);
   }
-  if (citation.pdf_url) actions.push(refLink("PDF", citation.pdf_url));
-  if (citation.doi) actions.push(refLink("DOI", `https://doi.org/${citation.doi}`));
-  if (citation.url && !(citation.arxiv_id && /arxiv\.org\/abs\//i.test(citation.url))) {
-    actions.push(refLink("URL", citation.url));
-  }
+
+  renderActions();
 
   return el(
     "div",
@@ -194,8 +210,38 @@ function refCard(citation) {
     el("h3", { class: "ref-title", text: title }),
     metaParts.length ? el("p", { class: "ref-meta", text: metaParts.join(" · ") }) : null,
     citation.snippet ? el("p", { class: "ref-snippet", text: citation.snippet }) : null,
-    actions.length ? el("div", { class: "ref-actions" }, ...actions) : null,
+    actionsEl,
   );
+}
+
+function downloadPdfButton(citation, rerender) {
+  let btn = null;
+  async function onClick() {
+    btn.disabled = true;
+    btn.textContent = "Downloading…";
+    try {
+      const res = await fetchArxivPdf(citation.arxiv_id);
+      if (res.local_pdf_url) {
+        citation.local_pdf_url = res.local_pdf_url;
+        rerender();
+        return;
+      }
+      btn.textContent = "Retry";
+      btn.title = res.error || "Download failed";
+    } catch (err) {
+      btn.textContent = "Retry";
+      btn.title = err.message;
+    }
+    btn.disabled = false;
+  }
+  btn = el("button", {
+    class: "btn btn-sm",
+    type: "button",
+    text: "Get PDF",
+    title: "Download and archive this paper's PDF",
+    onclick: onClick,
+  });
+  return btn;
 }
 
 function refLink(label, url, title) {

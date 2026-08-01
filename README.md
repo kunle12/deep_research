@@ -408,6 +408,7 @@ By default, every research artifact is archived to `.deep_research_library/`:
 - **Postgres backend**: set `pdl.storage.backend: "postgres"` with `DEEP_RESEARCH_PG_DSN`
 - **Refresh daemon**: `deep-research-scheduler` probes upstream URLs for changes
 - **Glossary**: dedicated post-synthesis LLM extraction (JSON-only prompt, `response_format=json_object`), cross-run dedup, FTS5 search. Export via `--glossary-out` on the main CLI or `deep-research-library glossary --out glossary.json`.
+- **Cited-PDF archiving**: with `pdl.archive_cited_arxiv_pdfs: true`, every run downloads and archives the PDFs for citations that carry an arXiv ID, so the web UI's **arXiv** reference button opens the library's local copy (labeled "arXiv PDF") instead of the upstream page. Papers without a local copy get a **Get PDF** button that downloads and archives them on demand.
 
 PDF rendering uses weasyprint (falls back to xhtml2pdf if system deps missing).
 Install native deps for best results:

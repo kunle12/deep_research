@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, Request
 
+from deep_research.config import AgentTopConfig
 from deep_research.library.storage.base import StorageBackend
 
 
@@ -15,6 +16,14 @@ def get_storage(request: Request) -> StorageBackend:
     if backend is None:
         raise HTTPException(status_code=503, detail="storage backend not initialized")
     return backend
+
+
+def get_config(request: Request) -> AgentTopConfig:
+    """Resolve the loaded agent config from app state."""
+    cfg = getattr(request.app.state, "config", None)
+    if cfg is None:
+        raise HTTPException(status_code=503, detail="server config not initialized")
+    return cfg
 
 
 def get_root_dir(request: Request) -> Path:

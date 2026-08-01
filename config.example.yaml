@@ -146,6 +146,10 @@ blog_search:
 pdl:
   enabled: true                          # archive artifacts by default
   root_dir: ".deep_research_library"     # path to library root
+  # Opt-in: after each run, download + archive PDFs for citations that carry
+  # an arXiv id so the web UI can serve local copies. Deep-path citations
+  # otherwise fall back to the upstream arXiv link.
+  archive_cited_arxiv_pdfs: false
   storage:
     backend: "sqlite"                    # "sqlite" | "postgres" (postgres requires asyncpg)
     sqlite:

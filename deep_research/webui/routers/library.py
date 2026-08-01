@@ -12,9 +12,15 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from deep_research.config import AgentTopConfig
+from deep_research.library.citation_archive import archive_cited_pdf
 from deep_research.library.storage.base import StorageBackend
 from deep_research.library.storage.rows import AnalysisRow, ArtifactRow, CitationEdgeRow, TagRow
-from deep_research.webui.deps import get_root_dir, get_storage
+from deep_research.library.writer import LibraryWriter
+from deep_research.llm.tool_loop import ToolRegistry
+from deep_research.tools import arxiv as arxiv_tool
+from deep_research.util import strip_arxiv_version
+from deep_research.webui.deps import get_config, get_root_dir, get_storage
 from deep_research.webui.format import citation_count, make_snippet, parse_citations
 from deep_research.webui.models import (
     AnalysisInfo,
@@ -36,6 +42,16 @@ router = APIRouter(prefix="/api", tags=["library"])
 
 class TagBody(BaseModel):
     tag: str = Field(min_length=1, max_length=64)
+
+
+class ArxivPdfBody(BaseModel):
+    arxiv_id: str = Field(min_length=3, max_length=64)
+
+
+class ArxivPdfResponse(BaseModel):
+    local_pdf_url: str | None = None
+    archived: bool = False
+    error: str | None = None
 
 
 async def _report_items(backend: StorageBackend, reports) -> list[ReportListItem]:
@@ -260,6 +276,37 @@ async def get_artifact_pdf(artifact_id: str, request: Request) -> FileResponse:
     return FileResponse(
         file_path, media_type="application/pdf", filename=f"{artifact.artifact_id}.pdf"
     )
+
+
+@router.post("/arxiv/pdf", response_model=ArxivPdfResponse)
+async def archive_cited_arxiv_pdf(body: ArxivPdfBody, request: Request) -> ArxivPdfResponse:
+    """On-demand: download + archive one arXiv paper PDF from a reference card."""
+    backend = get_storage(request)
+    root = get_root_dir(request)
+    cfg: AgentTopConfig = get_config(request)
+    aid = body.arxiv_id.strip()
+    base = strip_arxiv_version(aid)
+    if not base or base.startswith("scholar:"):
+        raise HTTPException(status_code=422, detail="invalid arxiv id")
+
+    existing = await backend.find_artifact_by_arxiv_id(base)
+    if existing is not None and existing.kind == "pdf" and existing.bytes_path:
+        return ArxivPdfResponse(local_pdf_url=f"/api/artifacts/{existing.artifact_id}/pdf")
+
+    if not cfg.arxiv.enabled or not cfg.arxiv.download_pdfs:
+        return ArxivPdfResponse(error="arxiv pdf downloads are disabled in config")
+
+    reg = ToolRegistry()
+    try:
+        await arxiv_tool.register(reg, cfg)
+        writer = LibraryWriter(backend, str(root))
+        artifact_id = await archive_cited_pdf(aid, title=None, tools=reg, writer=writer)
+    finally:
+        await reg.close()
+
+    if not artifact_id:
+        return ArxivPdfResponse(error="download failed - paper may not be open access")
+    return ArxivPdfResponse(local_pdf_url=f"/api/artifacts/{artifact_id}/pdf", archived=True)
 
 
 @router.post("/reports/{run_id}/tags", response_model=TagUpdateResponse)

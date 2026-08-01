@@ -251,6 +251,46 @@ def test_artifact_pdf(client):
     assert client.get("/api/artifacts/nope/pdf").status_code == 404
 
 
+def test_archive_arxiv_pdf_already_archived(client):
+    r = client.post("/api/arxiv/pdf", json={"arxiv_id": "2401.00001"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["archived"] is False
+    assert body["local_pdf_url"] == "/api/artifacts/art_b/pdf"
+
+
+def test_archive_arxiv_pdf_download(monkeypatch, client):
+    async def _fake_archive(arxiv_id, *, title, tools, writer, timeout_s=180.0):
+        assert arxiv_id == "2401.99999"
+        return "art_new"
+
+    import deep_research.webui.routers.library as lib
+
+    monkeypatch.setattr(lib, "archive_cited_pdf", _fake_archive)
+    r = client.post("/api/arxiv/pdf", json={"arxiv_id": "2401.99999"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["archived"] is True
+    assert body["local_pdf_url"] == "/api/artifacts/art_new/pdf"
+
+
+def test_archive_arxiv_pdf_failure(monkeypatch, client):
+    async def _fake_archive(arxiv_id, *, title, tools, writer, timeout_s=180.0):
+        return None
+
+    import deep_research.webui.routers.library as lib
+
+    monkeypatch.setattr(lib, "archive_cited_pdf", _fake_archive)
+    r = client.post("/api/arxiv/pdf", json={"arxiv_id": "2401.99998"})
+    assert r.status_code == 200
+    assert r.json()["error"]
+
+
+def test_archive_arxiv_pdf_invalid(client):
+    assert client.post("/api/arxiv/pdf", json={"arxiv_id": "scholar:abc"}).status_code == 422
+    assert client.post("/api/arxiv/pdf", json={"arxiv_id": ""}).status_code == 422
+
+
 def test_add_and_remove_tags(client):
     r = client.post("/api/reports/run_a/tags", json={"tag": "  nlp  "})
     assert r.status_code == 200

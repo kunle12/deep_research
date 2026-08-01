@@ -76,6 +76,14 @@ export function getJob(jobId) {
   return request(`/api/research/jobs/${encodeURIComponent(jobId)}`);
 }
 
+export function fetchArxivPdf(arxivId) {
+  return request("/api/arxiv/pdf", {
+    method: "POST",
+    body: JSON.stringify({ arxiv_id: arxivId }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export function cancelJob(jobId) {
   return request(`/api/research/jobs/${encodeURIComponent(jobId)}/cancel`, {
     method: "POST",
