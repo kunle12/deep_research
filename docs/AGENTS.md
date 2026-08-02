@@ -202,9 +202,14 @@ Both `web_search.py` and `scholar.py` use the same fallback pattern:
 3. The inner `_call` iterates backends; on failure logs a warning and tries next
 4. If all backends fail, returns `ToolResult(error=...)`
 
-**Key behaviors added recently:**
+**Key behaviors:**
+- **Empty result falls through**: a backend that returns 0 hits (no error) does
+  NOT short-circuit the chain — the loop `continue`s to the next backend.
+  Only a non-empty result `break`s out. (scholar.py)
 - **Rate-limit retry**: Tavily 429/rate-limit/timeout errors get exponential backoff
-  retry (`rate_limit_retries` config) before falling through to SearXNG
+  retry (`rate_limit_retries` config) before falling through to SearXNG. On the
+  final retry the actual exception is re-raised (never a generic
+  `RuntimeError`) so callers/logs keep the real cause. (web_search.py)
 - **Proactive quota fallback**: `max_calls_per_session` config — after N calls,
   the tool skips the paid backend and uses SearXNG directly
 - **Keyless mode handling**: `TavilyKeylessLimitError` is caught and retried using
@@ -387,7 +392,10 @@ the old defaults.
   snapshot, then live events with 15s keepalives; it ends after
   `done`/`error`/`cancelled`.
 - Cancelling calls `task.cancel()` — cooperative cleanup inside the agent is
-  not guaranteed; the job is marked `cancelled`.
+  not guaranteed. `cancel()` marks the job `cancelling` and emits a
+  `cancelling` event immediately (the `CancelledError` handler only runs at the
+  next await point, so without this a cancel would return while the job still
+  read `running`); the terminal `cancelled` event fires when the handler runs.
 
 ### Frontend conventions
 
@@ -467,6 +475,23 @@ the old defaults.
 
 ## Concurrency Safety Patterns
 
+### Serialize shared-connection DB ops (sqlite_backend.py)
+`SqliteStorageBackend` owns ONE shared `aiosqlite` connection, so every public
+method is wrapped with `@_serialized` — an `asyncio.Lock` (`self._op_lock`)
+held across the whole operation (including its final `commit()`). Without it,
+multi-statement writes (e.g. `delete_report`: several DELETEs + one commit)
+interleave their awaited statements with other handlers' statements, merging
+independent implicit transactions on the single connection.
+
+- Decorate EVERY public method (writes **and** reads — a read interleaving into
+  an open write transaction would see partial uncommitted rows). Keep
+  `connect`/`close`/`ensure_schema`/private `_*` helpers undecorated (they run
+  once at eager `connect()`).
+- Never call a decorated method from inside another decorated method — the
+  lock is non-reentrant and would deadlock. Extract a private `_` helper for
+  the shared body (e.g. `upsert_glossary_entries` calls `_upsert_glossary_entry`,
+  not the public `upsert_glossary_entry`).
+
 ### Call-count quota checks (web_search.py, scholar.py)
 Quota read + increment must be atomic under concurrent calls. Use `asyncio.Lock`:
 ```python
@@ -527,6 +552,14 @@ clean `ToolResult.error` instead.
 **`0` disables the guard**: `build_tool_registry()` treats `tool_timeout_s <= 0`
 as "no per-call timeout" (`set_tool_timeout(float("inf"))`). Disable per-call
 timeouts in tests with `reg.set_tool_timeout(float("inf"))`.
+
+**Nested tool calls must use `call_internal`, not `call`**: `ToolRegistry.call`
+acquires the registry-wide semaphore (`max_concurrent_tools`). A tool that
+internally invokes another tool (e.g. `fetch_page` calling `pdf_extract_text`
+or `browser_navigate`) must call `reg.call_internal(...)` instead — it runs the
+tool WITHOUT the semaphore (the outer call already holds one permit, and
+re-acquiring the same non-reentrant semaphore would self-deadlock a batch that
+saturates concurrency). The per-call timeout still applies.
 
 Inner timeouts are what make the outer `wait_for` cancellation actually unblock.
 Heavy sync blockers (`_sync_extract` in `tools/pdf.py`, `trafilatura.extract`,
@@ -698,6 +731,15 @@ config_file = Path(request.config_path).resolve()
 if not config_file.is_relative_to(_ALLOWED_CONFIG_DIR):   # _ALLOWED_CONFIG_DIR is .resolve()d
     raise HTTPException(status_code=400, detail="config_path outside allowed directory")
 ```
+
+### Request timeout must not block on cancellation (microservice.py)
+Do NOT use `asyncio.wait_for(run_research(...), 600)` for the HTTP deadline:
+the agent runs blocking work via `asyncio.to_thread`, which cannot be
+cancelled, so `wait_for` blocks until cancellation completes and the 600s cap
+is defeated. Instead run the agent as a child task and use `asyncio.wait(...,
+timeout=...)`; on timeout `task.cancel()` + `await asyncio.gather(task,
+return_exceptions=True)` so the response returns promptly while the thread
+finishes in the background.
 
 ### Citation URL validation (researcher.py)
 Reject non-HTTP URLs and non-dict citation entries from LLM output:

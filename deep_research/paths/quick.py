@@ -64,9 +64,17 @@ async def quick_search(
         fetches = [tools.call("fetch_page", {"url": u}) for u in top_urls]
         fetched = await asyncio.gather(*fetches, return_exceptions=True)
         for u, fr in zip(top_urls, fetched):
+            # tools.call never raises for normal failures — it returns a
+            # ToolResult with an `error` field set. Treat any error as a failed
+            # fetch (skip it) instead of surfacing an empty "fetched page" to
+            # the LLM.
             if isinstance(fr, Exception):
                 logger.warning("fetch_page failed for %s: %s", u, fr)
                 reporter.step("fetch.fail", f"{u}: {type(fr).__name__}")
+                continue
+            if fr.error:
+                logger.warning("fetch_page error for %s: %s", u, fr.error)
+                reporter.step("fetch.fail", f"{u}: {fr.error[:80]}")
                 continue
             reporter.step("fetch.ok", u[:80])
             pages_text.append(f"=== Source: {u} ===\n{fr.content[:4000]}\n")
@@ -170,15 +178,23 @@ async def _synthesize(
                     url = c.get("url")
                     if not url:
                         continue
-                    citations.append(
-                        Citation(
-                            url=url,
-                            title=str(c.get("title", "") or ""),
-                            snippet=str(c.get("snippet", "") or ""),
-                            confidence_score=coerce_float(c.get("confidence_score"), 0.6),
-                            source_type="web",
+                    # Clamp confidence to [0,1] and validate each citation in a
+                    # nested try/except so one malformed entry (e.g. an
+                    # out-of-range confidence or a non-string url) cannot
+                    # discard the whole answer + all citations.
+                    conf = max(0.0, min(1.0, coerce_float(c.get("confidence_score"), 0.6)))
+                    try:
+                        citations.append(
+                            Citation(
+                                url=url,
+                                title=str(c.get("title", "") or ""),
+                                snippet=str(c.get("snippet", "") or ""),
+                                confidence_score=conf,
+                                source_type="web",
+                            )
                         )
-                    )
+                    except Exception as e:
+                        logger.warning("skipping malformed citation %r: %s", url, e)
         except json.JSONDecodeError:
             answer_md = raw
     except Exception as e:

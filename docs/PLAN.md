@@ -87,7 +87,7 @@ deep_research/
 │   ├── __main__.py               # deep-research → cli.app()
 │   ├── agent.py                  # run_research(query, config) → Report
 │   ├── config.py                 # AgentTopConfig (pydantic, Strict)
-│   ├── state.py                  # ResearchState + AcademicState + CitationGraph
+│   ├── state.py                  # ResearchState + CitationGraph
 │   ├── citations.py              # Citation model; dedup; bibliography + .bib generator
 │   ├── progress.py               # ProgressReporter Protocol + NullReporter (P9)
 │   │

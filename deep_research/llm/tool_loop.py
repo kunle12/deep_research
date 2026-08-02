@@ -165,7 +165,64 @@ class ToolRegistry:
                     error=f"tool {name} timed out after {self._tool_timeout_s:.1f}s",
                 )
 
-        if self._semaphore is not None:
+        return await self._run_guarded(name, arguments, acquire_semaphore=True)
+
+    async def call_internal(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """Run a tool call WITHOUT acquiring the registry-wide semaphore.
+
+        Tools that internally invoke other tools (e.g. ``fetch_page`` calling
+        ``pdf_extract_text`` / ``browser_navigate``) must use this so a batch
+        that saturates ``max_concurrent_tools`` does not self-deadlock: the
+        outer call already holds a semaphore permit, and re-acquiring the same
+        non-reentrant semaphore would block every nested call until the
+        per-tool timeout fires. The per-call timeout still applies.
+        """
+        return await self._run_guarded(name, arguments, acquire_semaphore=False)
+
+    async def _run_guarded(
+        self, name: str, arguments: dict[str, Any], *, acquire_semaphore: bool
+    ) -> ToolResult:
+        func = self._tools.get(name)
+        if func is None:
+            return ToolResult(content="", error=f"unknown tool: {name}")
+
+        # Run under the registry-wide semaphore if configured
+        async def _run() -> ToolResult:
+            try:
+                return await func(**arguments)
+            except Exception as e:
+                logger.exception("tool %s raised", name)
+                return ToolResult(content="", error=f"{type(e).__name__}: {e}")
+            except BaseException:
+                # Re-raise KeyboardInterrupt, SystemExit, CancelledError
+                # so they propagate up and are not swallowed.
+                raise
+
+        async def _guarded() -> ToolResult:
+            # Inner timeout protects a single tool call from infinite hangs.
+            # We use asyncio.wait_for instead of asyncio.timeout because
+            # wait_for actually cancels the inner task when the deadline
+            # passes, preventing orphaned tool calls from consuming
+            # resources indefinitely.
+            if self._tool_timeout_s == float("inf"):
+                return await _run()
+            try:
+                return await asyncio.wait_for(
+                    _run(),
+                    timeout=self._tool_timeout_s,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "tool %s exceeded per-call timeout %.1fs",
+                    name,
+                    self._tool_timeout_s,
+                )
+                return ToolResult(
+                    content="",
+                    error=f"tool {name} timed out after {self._tool_timeout_s:.1f}s",
+                )
+
+        if acquire_semaphore and self._semaphore is not None:
             async with self._semaphore:
                 return await _guarded()
         return await _guarded()

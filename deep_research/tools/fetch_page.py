@@ -556,7 +556,11 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 pdf_extract_available = "pdf_extract_text" in reg.names()
                 text = ""
                 if pdf_extract_available:
-                    extract_res = await reg.call("pdf_extract_text", {"file_path": str(pdf_path)})
+                    # call_internal: fetch_page already holds a semaphore permit
+                    # via the outer ToolRegistry.call; re-acquiring the shared
+                    # semaphore here would self-deadlock when a batch saturates
+                    # max_concurrent_tools.
+                    extract_res = await reg.call_internal("pdf_extract_text", {"file_path": str(pdf_path)})
                     if extract_res.error is None:
                         text = extract_res.content or ""
                     else:
@@ -639,7 +643,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                 text_stripped_len,
                 url,
             )
-            browser_res = await reg.call("browser_navigate", {"url": url})
+            browser_res = await reg.call_internal("browser_navigate", {"url": url})
             if browser_res.error and browser_res.error.startswith(BLOCKED_PREFIX):
                 # Browser hit the same challenge — propagate the blocked verdict
                 # instead of degrading to the challenge page's raw HTML.

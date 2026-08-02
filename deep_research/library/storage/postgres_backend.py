@@ -18,6 +18,7 @@ from deep_research.library.storage.rows import (
     SearchHit,
     TagRow,
 )
+from deep_research.library.storage.sqlite_backend import SqliteStorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -809,6 +810,10 @@ class PostgresStorageBackend:
 
     async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
+        # plainto_tsquery parses boolean operators (& | !) and can raise a
+        # tsquery syntax error on arbitrary user input — sanitize the query
+        # the same way the SQLite backend does before passing it through.
+        safe_query = SqliteStorageBackend._sanitize_fts_query(query)
         if kind == "any":
             sql = """
                 SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
@@ -820,7 +825,7 @@ class PostgresStorageBackend:
                 )
                 LIMIT $2
             """
-            rows = await self._fetchall(sql, query, limit)
+            rows = await self._fetchall(sql, safe_query, limit)
         else:
             sql = """
                 SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
@@ -833,7 +838,7 @@ class PostgresStorageBackend:
                   )
                 LIMIT $3
             """
-            rows = await self._fetchall(sql, kind, query, limit)
+            rows = await self._fetchall(sql, kind, safe_query, limit)
         results: list[SearchHit] = []
         for r in rows:
             results.append(

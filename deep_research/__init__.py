@@ -19,7 +19,6 @@ from deep_research.agent import run_research  # noqa: E402  (imports after sys.p
 from deep_research.config import AgentTopConfig, BlogSearchConfig, PDLConfig  # noqa: E402
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter  # noqa: E402
 from deep_research.state import (  # noqa: E402
-    AcademicState,
     Citation,
     CitationGraph,
     ClassifiedQuery,
@@ -36,7 +35,6 @@ from deep_research.state import (  # noqa: E402
 )
 
 __all__ = [
-    "AcademicState",
     "AgentTopConfig",
     "BlogSearchConfig",
     "Citation",

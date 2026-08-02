@@ -492,6 +492,8 @@ async def url_source(
             tools=tools,
             config=config,
             progress=reporter,
+            writer=writer,
+            run_id=run_id,
         )
     else:
         reporter.phase("url.done", "no follow-up")
@@ -523,6 +525,8 @@ async def _maybe_run_follow_up(
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> tuple[str, list[Citation]]:
     """Run deep-path follow-up research seeded from the analysis's gaps/follow_ups.
     Returns (markdown_section, follow_up_citations).
@@ -559,7 +563,14 @@ async def _maybe_run_follow_up(
         search_hint=user_query or synthetic_query,
     )
     followup_report: Report = await deep_path(
-        classified, synthetic_query, client, tools, config, progress=progress
+        classified,
+        synthetic_query,
+        client,
+        tools,
+        config,
+        progress=progress,
+        writer=writer,
+        run_id=run_id,
     )
 
     if not followup_report.markdown:

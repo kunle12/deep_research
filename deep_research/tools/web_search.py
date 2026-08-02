@@ -106,6 +106,8 @@ async def _tavily_with_retry(
                 retries + 1,
                 retry_after,
             )
+            if attempt >= retries:
+                raise  # exhausted — propagate the real error
             await asyncio.sleep(retry_after)
         except UsageLimitExceededError:
             backoff = 2**attempt
@@ -115,6 +117,8 @@ async def _tavily_with_retry(
                 retries + 1,
                 backoff,
             )
+            if attempt >= retries:
+                raise  # exhausted — propagate the real error
             await asyncio.sleep(backoff)
         except TimeoutError:
             backoff = 2**attempt
@@ -124,6 +128,8 @@ async def _tavily_with_retry(
                 retries + 1,
                 backoff,
             )
+            if attempt >= retries:
+                raise  # exhausted — propagate the real error
             await asyncio.sleep(backoff)
         except (httpx.HTTPStatusError, httpx.TimeoutException):
             if attempt < retries:
@@ -135,7 +141,6 @@ async def _tavily_with_retry(
             # don't retry, let caller fall through to SearXNG.
             raise
     raise RuntimeError("Tavily retry loop exited unexpectedly")
-
 
 async def _searxng_search(
     query: str,

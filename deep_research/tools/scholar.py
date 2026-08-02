@@ -425,8 +425,10 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         name,
                     )
                     break
-                logger.info("scholar_search %s -> 0 hits via %s (no fallback)", repr(query), name)
-                break
+                # Backend returned 0 hits (no error) — fall through to the next
+                # backend in the chain rather than giving up immediately.
+                logger.info("scholar_search %s -> 0 hits via %s (trying next backend)", repr(query), name)
+                continue
             except Exception as e:
                 last_err = f"{type(e).__name__}: {e}"
                 logger.warning("scholar_search backend %s failed: %s", name, last_err)

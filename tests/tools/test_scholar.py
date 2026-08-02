@@ -152,12 +152,18 @@ async def test_serper_no_pdf_links(monkeypatch) -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_serper_empty_results(monkeypatch) -> None:
-    """Serper returns no organic hits — empty ToolResult."""
+    """Serper returns no organic hits — falls through to the SearXNG fallback.
+
+    When the primary backend returns 0 hits (no error) the chain must try the
+    next backend instead of short-circuiting, so the SearXNG fallback is also
+    mocked as empty to yield an empty ToolResult.
+    """
     cfg = _cfg()
     reg = await _register(monkeypatch, cfg)
 
     endpoint = cfg.scholar.serper.endpoint
     respx.post(endpoint).respond(status_code=200, json={"organic": []})
+    respx.get(cfg.scholar.searxng.url).respond(status_code=200, json={"results": []})
     result = await reg.call("scholar_search", {"query": "nonexistent", "max_results": 5})
     assert result.error is None
     assert len(result.citations) == 0

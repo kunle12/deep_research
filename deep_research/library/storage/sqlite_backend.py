@@ -5,6 +5,8 @@ Uses aiosqlite + stdlib sqlite3. WAL mode + busy_timeout for concurrent safety.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,25 @@ def _escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _serialized(func):
+    """Serialize an async StorageBackend method through the instance's op lock.
+
+    The backend owns a single shared aiosqlite connection. Without this,
+    multi-statement writes (e.g. ``delete_report``: several DELETEs + one
+    ``commit()``) interleave their awaited statements with other handlers'
+    statements, merging what should be independent implicit transactions on
+    the one connection. Holding the lock across each whole operation keeps
+    every method atomic.
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        async with self._op_lock:
+            return await func(self, *args, **kwargs)
+
+    return wrapper
+
+
 class SqliteStorageBackend:
     """SQLite implementation of StorageBackend.
 
@@ -42,6 +63,9 @@ class SqliteStorageBackend:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        # Serializes all DB operations on the shared connection (see
+        # _serialized). Created here so it exists before any method runs.
+        self._op_lock = asyncio.Lock()
 
     # -- Lifecycle --
 
@@ -94,11 +118,17 @@ class SqliteStorageBackend:
 
     async def _fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
         cursor = await self._execute(sql, params)
-        return await cursor.fetchone()
+        try:
+            return await cursor.fetchone()
+        finally:
+            await cursor.close()
 
     async def _fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
         cursor = await self._execute(sql, params)
-        return await cursor.fetchall()
+        try:
+            return await cursor.fetchall()
+        finally:
+            await cursor.close()
 
     async def _ensure_conn(self) -> None:
         if self._conn is None:
@@ -106,6 +136,7 @@ class SqliteStorageBackend:
 
     # -- Artifact ops --
 
+    @_serialized
     async def upsert_artifact(self, artifact: ArtifactRow) -> str:
         await self._ensure_conn()
         # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): a REPLACE would
@@ -162,6 +193,7 @@ class SqliteStorageBackend:
         await self._conn.commit()
         return artifact.artifact_id
 
+    @_serialized
     async def get_artifact(self, artifact_id: str) -> ArtifactRow | None:
         await self._ensure_conn()
         row = await self._fetchone("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
@@ -169,6 +201,7 @@ class SqliteStorageBackend:
             return None
         return self._row_to_artifact(row)
 
+    @_serialized
     async def get_artifacts(self, artifact_ids: list[str]) -> dict[str, ArtifactRow]:
         """Batch artifact fetch, keyed by artifact_id (missing ids omitted)."""
         if not artifact_ids:
@@ -181,6 +214,7 @@ class SqliteStorageBackend:
         )
         return {r[0]: self._row_to_artifact(r) for r in rows}
 
+    @_serialized
     async def find_artifact_by_url(self, url: str) -> ArtifactRow | None:
         await self._ensure_conn()
         row = await self._fetchone("SELECT * FROM artifacts WHERE source_url = ?", (url,))
@@ -188,6 +222,7 @@ class SqliteStorageBackend:
             return None
         return self._row_to_artifact(row)
 
+    @_serialized
     async def find_artifact_by_arxiv_id(self, arxiv_id: str) -> ArtifactRow | None:
         await self._ensure_conn()
         row = await self._fetchone("SELECT * FROM artifacts WHERE arxiv_id = ?", (arxiv_id,))
@@ -195,6 +230,7 @@ class SqliteStorageBackend:
             return None
         return self._row_to_artifact(row)
 
+    @_serialized
     async def artifacts_needing_refresh(
         self, scope_kind: str, scope_value: str, limit: int
     ) -> list[ArtifactRow]:
@@ -253,6 +289,7 @@ class SqliteStorageBackend:
 
     # -- Report ops --
 
+    @_serialized
     async def insert_report(self, report: ReportRow) -> None:
         await self._ensure_conn()
         # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): a resumed run reuses
@@ -295,6 +332,7 @@ class SqliteStorageBackend:
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_report(self, run_id: str) -> ReportRow | None:
         await self._ensure_conn()
         row = await self._fetchone("SELECT * FROM reports WHERE run_id = ?", (run_id,))
@@ -330,6 +368,7 @@ class SqliteStorageBackend:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, tuple(params)
 
+    @_serialized
     async def list_reports(
         self,
         limit: int,
@@ -346,6 +385,7 @@ class SqliteStorageBackend:
         )
         return [self._row_to_report(r) for r in rows]
 
+    @_serialized
     async def search_reports(
         self,
         query: str,
@@ -363,6 +403,7 @@ class SqliteStorageBackend:
         )
         return [self._row_to_report(r) for r in rows]
 
+    @_serialized
     async def count_reports(
         self,
         *,
@@ -375,6 +416,7 @@ class SqliteStorageBackend:
         row = await self._fetchone(f"SELECT count(*) FROM reports r{where}", params)
         return int(row[0]) if row else 0
 
+    @_serialized
     async def count_artifacts(self) -> int:
         await self._ensure_conn()
         row = await self._fetchone("SELECT count(*) FROM artifacts")
@@ -398,6 +440,7 @@ class SqliteStorageBackend:
 
     # -- Analysis ops --
 
+    @_serialized
     async def insert_analysis(self, analysis: AnalysisRow) -> str:
         await self._ensure_conn()
         # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): a REPLACE would
@@ -453,6 +496,7 @@ class SqliteStorageBackend:
         await self._conn.commit()
         return analysis.analysis_id
 
+    @_serialized
     async def get_analysis(self, analysis_id: str) -> AnalysisRow | None:
         await self._ensure_conn()
         row = await self._fetchone("SELECT * FROM analyses WHERE analysis_id = ?", (analysis_id,))
@@ -474,6 +518,7 @@ class SqliteStorageBackend:
             analyzed_at=row[12],
         )
 
+    @_serialized
     async def get_analyses_for_artifact(self, artifact_id: str) -> list[AnalysisRow]:
         await self._ensure_conn()
         rows = await self._fetchall("SELECT * FROM analyses WHERE artifact_id = ?", (artifact_id,))
@@ -500,6 +545,7 @@ class SqliteStorageBackend:
 
     # -- Citation edge ops --
 
+    @_serialized
     async def insert_citation_edge(self, edge: CitationEdgeRow) -> None:
         await self._ensure_conn()
         sql = """
@@ -521,6 +567,7 @@ class SqliteStorageBackend:
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_citation_edges_for_source(self, artifact_id: str) -> list[CitationEdgeRow]:
         await self._ensure_conn()
         rows = await self._fetchall(
@@ -542,6 +589,7 @@ class SqliteStorageBackend:
 
     # -- Tag ops --
 
+    @_serialized
     async def upsert_tag(self, tag: TagRow) -> None:
         await self._ensure_conn()
         sql = """
@@ -558,6 +606,7 @@ class SqliteStorageBackend:
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_tags_for_artifact(self, artifact_id: str) -> list[TagRow]:
         await self._ensure_conn()
         rows = await self._fetchall("SELECT * FROM tags WHERE artifact_id = ?", (artifact_id,))
@@ -566,6 +615,7 @@ class SqliteStorageBackend:
             results.append(TagRow(tag=r[0], artifact_id=r[1], applied_in_run=r[2]))
         return results
 
+    @_serialized
     async def get_tags_for_artifacts(self, artifact_ids: list[str]) -> dict[str, list[TagRow]]:
         if not artifact_ids:
             return {}
@@ -581,6 +631,7 @@ class SqliteStorageBackend:
             result.setdefault(tag.artifact_id, []).append(tag)
         return result
 
+    @_serialized
     async def list_tags(self, limit: int = 200) -> list[tuple[str, int]]:
         await self._ensure_conn()
         rows = await self._fetchall(
@@ -589,11 +640,13 @@ class SqliteStorageBackend:
         )
         return [(r[0], int(r[1])) for r in rows]
 
+    @_serialized
     async def get_artifacts_by_tag(self, tag: str) -> list[str]:
         await self._ensure_conn()
         rows = await self._fetchall("SELECT artifact_id FROM tags WHERE tag = ?", (tag,))
         return [r[0] for r in rows]
 
+    @_serialized
     async def delete_tag(self, tag: str, artifact_id: str) -> None:
         await self._ensure_conn()
         await self._execute(
@@ -602,6 +655,7 @@ class SqliteStorageBackend:
         )
         await self._conn.commit()
 
+    @_serialized
     async def rename_tag(self, old_tag: str, new_tag: str) -> None:
         await self._ensure_conn()
         await self._execute(
@@ -612,14 +666,8 @@ class SqliteStorageBackend:
 
     # -- Glossary ops --
 
-    async def upsert_glossary_entries(self, entries: list[GlossaryEntry], run_id: str) -> int:
-        count = 0
-        for e in entries:
-            await self.upsert_glossary_entry(e)
-            count += 1
-        return count
-
-    async def upsert_glossary_entry(self, entry: GlossaryEntry) -> None:
+    async def _upsert_glossary_entry(self, entry: GlossaryEntry) -> None:
+        """Private per-entry upsert (no op lock) — callers must already hold it."""
         await self._ensure_conn()
         # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): preserves term_id so
         # the content-backed glossary_fts rowid linkage stays valid, and keeps
@@ -660,6 +708,19 @@ class SqliteStorageBackend:
         )
         await self._conn.commit()
 
+    @_serialized
+    async def upsert_glossary_entry(self, entry: GlossaryEntry) -> None:
+        await self._upsert_glossary_entry(entry)
+
+    @_serialized
+    async def upsert_glossary_entries(self, entries: list[GlossaryEntry], run_id: str) -> int:
+        # Reuse the private per-entry helper (NOT the decorated public method)
+        # so a batch doesn't re-enter the op lock.
+        for e in entries:
+            await self._upsert_glossary_entry(e)
+        return len(entries)
+
+    @_serialized
     async def get_glossary_entry(self, term_canonical: str) -> GlossaryEntry | None:
         await self._ensure_conn()
         row = await self._fetchone(
@@ -683,6 +744,7 @@ class SqliteStorageBackend:
             last_updated=row[12],
         )
 
+    @_serialized
     async def list_glossary_entries(self) -> list[GlossaryEntry]:
         await self._ensure_conn()
         rows = await self._fetchall("SELECT * FROM glossary ORDER BY term_canonical")
@@ -709,6 +771,7 @@ class SqliteStorageBackend:
 
     # -- Refresh foundation --
 
+    @_serialized
     async def insert_artifact_version(
         self, old_id: str, new_id: str, reason: str, run_id: str
     ) -> None:
@@ -732,6 +795,7 @@ class SqliteStorageBackend:
         )
         await self._conn.commit()
 
+    @_serialized
     async def start_refresh_job(self, scope_kind: str, scope_value: str) -> str:
         await self._ensure_conn()
         import uuid
@@ -755,6 +819,7 @@ class SqliteStorageBackend:
         await self._conn.commit()
         return job_id
 
+    @_serialized
     async def complete_refresh_job(
         self,
         job_id: str,
@@ -788,6 +853,7 @@ class SqliteStorageBackend:
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_refresh_job(self, job_id: str) -> RefreshJobRow | None:
         await self._ensure_conn()
         sql = "SELECT * FROM refresh_jobs WHERE job_id = ?"
@@ -809,6 +875,7 @@ class SqliteStorageBackend:
 
     # -- Deletion --
 
+    @_serialized
     async def delete_report(self, run_id: str) -> None:
         """Delete a report and all its dependent rows (analyses, tags,
         citation_edges, search_index entries) — but NOT artifacts, since
@@ -840,6 +907,7 @@ class SqliteStorageBackend:
         await self._execute("DELETE FROM reports WHERE run_id = ?", (run_id,))
         await self._conn.commit()
 
+    @_serialized
     async def delete_artifact(self, artifact_id: str) -> None:
         """Delete an artifact and its dependent rows (analyses + FTS rows,
         tags, citation_edges, artifact_versions).
@@ -889,6 +957,7 @@ class SqliteStorageBackend:
         tokens = [t for t in tokens if t]
         return " ".join(tokens) if tokens else raw
 
+    @_serialized
     async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
         safe_query = self._sanitize_fts_query(query)
@@ -926,6 +995,7 @@ class SqliteStorageBackend:
             )
         return results
 
+    @_serialized
     async def glossary_search(self, query: str, limit: int) -> list[GlossaryEntry]:
         await self._ensure_conn()
         safe_query = self._sanitize_fts_query(query)

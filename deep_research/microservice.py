@@ -52,23 +52,34 @@ async def research_endpoint(request: ResearchRequest) -> ResearchResponse:
         raise HTTPException(status_code=400, detail="config_path outside allowed directory")
 
     config = AgentTopConfig.load_yaml(config_file)
-    try:
-        report = await asyncio.wait_for(
-            run_research(
-                query=request.query,
-                config=config,
-                path_override=request.path_override,
-            ),
-            timeout=_REQUEST_TIMEOUT_S,
+    # Run the agent as a child task and wait with a timeout. On timeout we
+    # cancel and return promptly (the thread-pool workers launched via
+    # asyncio.to_thread inside the agent can't be cancelled, so they keep
+    # running in the background) instead of letting wait_for block until
+    # cancellation completes — which would defeat the hard timeout whenever
+    # a request is stuck in a blocking call.
+    task = asyncio.create_task(
+        run_research(
+            query=request.query,
+            config=config,
+            path_override=request.path_override,
         )
-    except TimeoutError:
+    )
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=_REQUEST_TIMEOUT_S)
+    except Exception as e:
+        logger.exception("research failed")
+        task.cancel()
+        raise HTTPException(status_code=500, detail=str(e))
+    if task in done:
+        report = task.result()
+    else:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         raise HTTPException(
             status_code=504,
             detail=f"Research exceeded {_REQUEST_TIMEOUT_S}s timeout",
         )
-    except Exception as e:
-        logger.exception("research failed")
-        raise HTTPException(status_code=500, detail=str(e))
 
     return ResearchResponse(
         markdown=report.markdown,

@@ -87,7 +87,7 @@ Web-PDF deep analysis via `fetch_page`; Scholar `cited_by_count` enrichment; per
 - [x] Saved full plan at `docs/PLAN.md`
 - [x] `pyproject.toml` (uv-managed, all MIT deps, all-extras + dev install verified)
 - [x] `config.example.yaml` + `deep_research/config.py` (pydantic Strict config)
-- [x] `deep_research/state.py` (ResearchState, AcademicState, CitationGraph, Report, Citation, SubQuestion, Critique, PaperNode, PaperAnalysis, SourceAnalysis, ClassifiedQuery, QueryPlan, ToolName)
+- [x] `deep_research/state.py` (ResearchState, CitationGraph, Report, Citation, SubQuestion, Critique, PaperNode, PaperAnalysis, SourceAnalysis, ClassifiedQuery, QueryPlan, ToolName)
 - [x] `deep_research/citations.py` (dedup, bibliography + BibTeX + graph renderers; arxiv_id regex extractor)
 - [x] `deep_research/llm/` package: `client.py` (AsyncOpenAI lifecycle), `vision.py` (resize_for_vlm + image_url block builders + batch helper), `tool_loop.py` (ToolRegistry + async run_with_tools with parallel dispatch + concurrency sem)
 - [x] `deep_research/prompts/`: classifier, planner, researcher, critic, writer, quick_summary, analyze_paper, analyze_source (all loaded via Path.read_text in respective nodes)

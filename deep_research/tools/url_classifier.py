@@ -104,11 +104,7 @@ async def classify_url(
     return UrlType.html
 
 
-_ARXIV_PATH_RX = re.compile(
-    r"arxiv\.org/(?:abs|pdf)/([^\s/?#]+?)(v\d+)?(?:\.pdf)?(?:[/?#].*)?$",
-    re.IGNORECASE,
-)
-_ARXIV_VERSION_RX = re.compile(r"(v\d+)$")
+_ARXIV_PATH_RX = re.compile(r"arxiv\.org/(?:abs|pdf)/([^\s?#]+)", re.IGNORECASE)
 
 
 def extract_arxiv_id(url: str) -> str | None:
@@ -126,8 +122,11 @@ def extract_arxiv_id(url: str) -> str | None:
     m = _ARXIV_PATH_RX.search(url)
     if not m:
         return None
-    base, version = m.group(1), m.group(2) or ""
-    return base + version
+    base = m.group(1).split("?")[0].split("#")[0]
+    if base.endswith(".pdf"):
+        base = base[:-4]
+    # Keep the version suffix (e.g. v3); strip only the trailing ".pdf".
+    return base or None
 
 
 __all__ = [

@@ -258,12 +258,6 @@ class FetchPageConfig(BaseModel):
     # When a page is blocked (bot detection / HTTP error), retry it through the
     # Wayback Machine's latest snapshot before declaring it unavailable.
     archive_org_fallback: bool = True
-    # When a page is blocked (bot detection / HTTP error), retry it through the
-    # Wayback Machine's latest snapshot before declaring it unavailable.
-    archive_org_fallback: bool = True
-    # When a page is blocked (bot detection / HTTP error), retry it through the
-    # Wayback Machine's latest snapshot before declaring it unavailable.
-    archive_org_fallback: bool = True
 
 
 class CacheConfig(BaseModel):

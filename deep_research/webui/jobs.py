@@ -117,6 +117,11 @@ class ResearchJobManager:
         job = self._jobs.get(job_id)
         if job is None or job.status != "running" or job.task is None:
             return False
+        # Surface the transition immediately: the CancelledError handler only
+        # runs later (on the next await point), so without this a cancel
+        # returns while the job still reads "running".
+        job.status = "cancelling"
+        self.emit(job, {"type": "cancelling"})
         job.task.cancel()
         return True
 
@@ -163,7 +168,12 @@ class ResearchJobManager:
             config = AgentTopConfig.load_yaml(self._config_path)
             report = await self._runner(config, job.query, job.path_override, reporter, run_id)
             if job.status != "running":
-                return  # cancelled while the runner was finishing
+                # Cancelled while the runner was finishing (or already marked
+                # cancelling). The CancelledError handler won't run on this
+                # path, so emit the terminal event here.
+                job.status = "cancelled"
+                self.emit(job, {"type": "cancelled"})
+                return
             if report.path == "unclear" and report.markdown.strip().startswith("# Error"):
                 raise RuntimeError(report.markdown.strip().splitlines()[0])
             job.run_id = run_id

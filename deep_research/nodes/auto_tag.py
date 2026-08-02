@@ -66,7 +66,12 @@ async def auto_tag_report(
         return []
 
     if tags:
-        await writer.tag(artifact_id, tags, run_id=run_id)
+        try:
+            await writer.tag(artifact_id, tags, run_id=run_id)
+        except Exception as e:
+            # Persistence must never discard a finished report — log and drop.
+            logger.warning("auto-tag persistence failed: %s: %s", type(e).__name__, e)
+            return []
 
     return tags
 

@@ -135,8 +135,8 @@ class ResearchState(BaseModel):
     """Mutable state threaded through the deep-research loop.
 
     This is the only state object carried between planner / researcher /
-    critic / writer for the `deep` path. `academic` path uses
-    `AcademicState`; `quick` and `url_source` paths use local state.
+    critic / writer for the `deep` path. `academic` path uses local
+    variables; `quick` and `url_source` paths use local state.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -293,22 +293,6 @@ class CitationGraph(BaseModel):
             self.edges.setdefault(parent_id, []).append(child_id)
 
 
-class AcademicState(BaseModel):
-    """Mutable state for the academic-recursion path.
-
-    NOTE: Currently unused — the academic path uses local variables.
-    Kept for potential future checkpoint support.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    query: str
-    graph: CitationGraph = Field(default_factory=CitationGraph)
-    seed_papers: list[PaperNode] = Field(default_factory=list)
-    queue: list[PaperNode] = Field(default_factory=list)
-    processed_count: int = 0
-
-
 class SourceAnalysis(BaseModel):
     """LLM output of `analyze_source` (url_source mode)."""
 
@@ -387,7 +371,6 @@ class ClassifiedQuery(BaseModel):
 
 __all__ = [
     "BLOCKED_PREFIX",
-    "AcademicState",
     "BlockedSource",
     "Citation",
     "CitationGraph",
