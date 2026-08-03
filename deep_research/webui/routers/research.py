@@ -34,6 +34,7 @@ class ResearchJobStatus(BaseModel):
     detail: str = ""
     started_at: float = 0.0
     completed_at: float | None = None
+    paused_at: float | None = None
     run_id: str | None = None
     archived: bool = False
     error: str | None = None
@@ -49,6 +50,7 @@ def _status(job: ResearchJob) -> ResearchJobStatus:
         detail=job.detail,
         started_at=job.started_at,
         completed_at=job.completed_at,
+        paused_at=job.paused_at,
         run_id=job.run_id,
         archived=job.archived,
         error=job.error,
@@ -100,6 +102,39 @@ async def cancel_job(job_id: str, request: Request) -> ResearchJobStatus:
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     await manager.cancel(job_id)
+    return _status(job)
+
+
+@router.post("/jobs/{job_id}/pause", response_model=ResearchJobStatus)
+async def pause_job(job_id: str, request: Request) -> ResearchJobStatus:
+    manager = _jobs(request)
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if not await manager.pause(job_id):
+        raise HTTPException(status_code=409, detail="job is not running")
+    return _status(job)
+
+
+@router.post("/jobs/{job_id}/resume", response_model=ResearchJobStatus)
+async def resume_job(job_id: str, request: Request) -> ResearchJobStatus:
+    manager = _jobs(request)
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if not manager.resume(job_id):
+        raise HTTPException(status_code=409, detail="job is not paused (or another job is running)")
+    return _status(job)
+
+
+@router.post("/jobs/{job_id}/abandon", response_model=ResearchJobStatus)
+async def abandon_job(job_id: str, request: Request) -> ResearchJobStatus:
+    manager = _jobs(request)
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if not manager.abandon(job_id):
+        raise HTTPException(status_code=409, detail="job is running; cancel it first")
     return _status(job)
 
 

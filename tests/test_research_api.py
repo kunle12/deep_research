@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from deep_research.state import Report
 from deep_research.webui import create_app
-from deep_research.webui.jobs import ResearchJobManager
+from deep_research.webui.jobs import ResearchJob, ResearchJobManager
 
 
 class FakeRunner:
@@ -50,8 +50,12 @@ def runner() -> FakeRunner:
 
 
 @pytest.fixture
-def client(runner: FakeRunner):
-    app = create_app("config.yaml", research_runner=runner)
+def client(runner: FakeRunner, tmp_path):
+    app = create_app(
+        "config.yaml",
+        research_runner=runner,
+        checkpoint_dir=tmp_path / "checkpoints",
+    )
     with TestClient(app) as c:
         yield c
 
@@ -110,7 +114,8 @@ def test_job_failure(client, runner):
     job_id = r.json()["job_id"]
     status = _wait_status(client, job_id, {"failed"})
     assert status["error"] == "simulated research failure"
-    assert status["run_id"] is None
+    # run_id is assigned at task start (needed for pause/resume checkpointing)
+    assert status["run_id"] is not None
 
 
 def test_cancel_job(client, runner):
@@ -122,7 +127,9 @@ def test_cancel_job(client, runner):
     assert r.status_code == 200
     status = _wait_status(client, job_id, {"cancelled"})
     assert status["status"] == "cancelled"
-    assert status["run_id"] is None
+    # run_id is assigned at start; cancel discards the checkpoint but the job
+    # record keeps the run_id for reference.
+    assert status["run_id"] is not None
 
 
 def test_sse_stream_receives_events(client, runner):
@@ -197,10 +204,19 @@ def test_default_concurrency_is_single(client, runner):
     client.post(f"/api/research/jobs/{first.json()['job_id']}/cancel")
 
 
-def test_concurrency_cap(runner):
+def test_concurrency_cap(runner, tmp_path):
     runner.hold = asyncio.Event()
-    app = create_app("config.yaml", research_runner=runner)
-    app.state.jobs = ResearchJobManager("config.yaml", runner=runner, max_concurrent=1)
+    app = create_app(
+        "config.yaml",
+        research_runner=runner,
+        checkpoint_dir=tmp_path / "ck",
+    )
+    app.state.jobs = ResearchJobManager(
+        "config.yaml",
+        runner=runner,
+        max_concurrent=1,
+        checkpoint_dir=tmp_path / "ck",
+    )
     with TestClient(app) as client:
         first = client.post("/api/research", json={"query": "first"}).json()
         time.sleep(0.1)
@@ -234,3 +250,140 @@ async def test_job_config_error_releases_concurrency_slot(tmp_path):
         await asyncio.sleep(0.02)
     assert job2.status != "running"
     assert job2.completed_at is not None
+
+
+# ---------------------------------------------------------------------------
+# Pause / resume / restart-survival
+# ---------------------------------------------------------------------------
+
+
+def _write_checkpoint(checkpoint_dir, run_id: str, query: str) -> None:
+    import json
+    from pathlib import Path
+
+    d = Path(checkpoint_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": run_id,
+        "state": {"query": query, "iteration": 3},
+    }
+    (d / f"{run_id}.json").write_text(json.dumps(payload))
+
+
+def test_pause_job(client, runner):
+    runner.hold = asyncio.Event()
+    job_id = client.post("/api/research", json={"query": "pause me"}).json()["job_id"]
+    time.sleep(0.1)  # let the task reach the hold
+
+    r = client.post(f"/api/research/jobs/{job_id}/pause")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "paused"
+    assert body["run_id"] is not None
+    assert body["paused_at"] is not None
+
+    # A paused job must not hold the concurrency slot: a new job can start.
+    second = client.post("/api/research", json={"query": "second while paused"})
+    assert second.status_code == 202
+
+
+def test_resume_job_completes(client, runner):
+    runner.hold = asyncio.Event()
+    job_id = client.post("/api/research", json={"query": "resume me"}).json()["job_id"]
+    time.sleep(0.1)
+    paused = client.post(f"/api/research/jobs/{job_id}/pause").json()
+    assert paused["status"] == "paused"
+    run_id = paused["run_id"]
+
+    runner.hold.set()  # the resumed task's hold will now pass immediately
+    r = client.post(f"/api/research/jobs/{job_id}/resume")
+    assert r.status_code == 200
+    assert r.json()["status"] == "running"
+
+    status = _wait_status(client, job_id, {"done"})
+    assert status["status"] == "done"
+    assert status["run_id"] == run_id  # reused the same checkpoint run_id
+
+
+def test_resume_rejected_while_another_running(client, runner):
+    runner.hold = asyncio.Event()
+    first = client.post("/api/research", json={"query": "first"}).json()["job_id"]
+    time.sleep(0.1)
+    client.post(f"/api/research/jobs/{first}/pause")
+
+    runner.hold = asyncio.Event()  # re-arm so the second job blocks too
+    client.post("/api/research", json={"query": "second"}).json()["job_id"]
+    time.sleep(0.1)
+
+    r = client.post(f"/api/research/jobs/{first}/resume")
+    assert r.status_code == 409
+
+
+def test_pause_rejected_on_non_running(client):
+    job_id = client.post("/api/research", json={"query": "fast"}).json()["job_id"]
+    _wait_status(client, job_id, {"done"})
+    assert client.post(f"/api/research/jobs/{job_id}/pause").status_code == 409
+
+
+def test_cancel_discards_checkpoint(client, runner, tmp_path):
+    runner.hold = asyncio.Event()
+    job_id = client.post("/api/research", json={"query": "cancel ckpt"}).json()["job_id"]
+    time.sleep(0.1)
+    status = client.get(f"/api/research/jobs/{job_id}").json()
+    # Simulate the checkpoint the engine would have written for this run_id.
+    _write_checkpoint(tmp_path / "checkpoints", status["run_id"], "cancel ckpt")
+    assert (tmp_path / "checkpoints" / f"{status['run_id']}.json").exists()
+
+    client.post(f"/api/research/jobs/{job_id}/cancel")
+    _wait_status(client, job_id, {"cancelled"})
+    assert not (tmp_path / "checkpoints" / f"{status['run_id']}.json").exists()
+
+
+def test_abandon_removes_job_and_discards_checkpoint(client, runner, tmp_path):
+    runner.hold = asyncio.Event()
+    job_id = client.post("/api/research", json={"query": "abandon ckpt"}).json()["job_id"]
+    time.sleep(0.1)
+    paused = client.post(f"/api/research/jobs/{job_id}/pause").json()
+    assert paused["status"] == "paused"
+    _write_checkpoint(tmp_path / "checkpoints", paused["run_id"], "abandon ckpt")
+
+    r = client.post(f"/api/research/jobs/{job_id}/abandon")
+    assert r.status_code == 200
+    assert client.get(f"/api/research/jobs/{job_id}").status_code == 404
+    assert not (tmp_path / "checkpoints" / f"{paused['run_id']}.json").exists()
+
+
+def test_restore_paused_scans_checkpoints(tmp_path):
+    manager = ResearchJobManager(
+        "config.yaml",
+        runner=FakeRunner(),
+        checkpoint_dir=tmp_path / "checkpoints",
+    )
+    _write_checkpoint(tmp_path / "checkpoints", "run_aaa", "orphan query one")
+    _write_checkpoint(tmp_path / "checkpoints", "run_bbb", "orphan query two")
+
+    restored = manager.restore_paused()
+    assert len(restored) == 2
+    by_run = {j.run_id: j for j in restored}
+    assert by_run["run_aaa"].query == "orphan query one"
+    assert by_run["run_aaa"].status == "paused"
+    assert by_run["run_bbb"].query == "orphan query two"
+
+    # Second scan skips already-tracked checkpoints.
+    assert manager.restore_paused() == []
+
+
+def test_restore_paused_skips_tracked_and_corrupt(tmp_path):
+    manager = ResearchJobManager(
+        "config.yaml",
+        runner=FakeRunner(),
+        checkpoint_dir=tmp_path / "checkpoints",
+    )
+    _write_checkpoint(tmp_path / "checkpoints", "run_aaa", "orphan query")
+    # A corrupt file must be skipped without crashing.
+    (tmp_path / "checkpoints" / "junk.json").write_text("not json")
+    # A tracked job with the same query suppresses the orphan.
+    manager._jobs["tracked"] = ResearchJob(job_id="tracked", query="orphan query", status="running")
+
+    restored = manager.restore_paused()
+    assert restored == []

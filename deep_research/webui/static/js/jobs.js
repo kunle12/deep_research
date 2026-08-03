@@ -6,7 +6,7 @@
  * subscribe). The taskbar and the detail dialog both render from this state.
  */
 
-import { cancelJob, getJob, listJobs, researchStreamUrl } from "./api.js";
+import { abandonJob, cancelJob, getJob, listJobs, pauseJob, researchStreamUrl, resumeJob } from "./api.js";
 
 const TERMINAL = new Set(["done", "error", "cancelled"]);
 const ACTIVE = new Set(["running", "cancelling"]);
@@ -60,13 +60,17 @@ export function hasActiveJob() {
   return [...jobs.values()].some((j) => ACTIVE.has(j.status));
 }
 
+export function hasPausedJob() {
+  return [...jobs.values()].some((j) => j.status === "paused");
+}
+
 export function isActiveStatus(status) {
   return ACTIVE.has(status);
 }
 
-/** Human elapsed since start (or until completion), e.g. "2m 04s". */
+/** Human elapsed since start (or until completion/pause), e.g. "2m 04s". */
 export function fmtElapsed(job) {
-  const end = job.completed_at || Date.now() / 1000;
+  const end = job.completed_at || job.paused_at || Date.now() / 1000;
   let s = Math.max(0, Math.floor(end - (job.started_at || end)));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -86,6 +90,7 @@ function blankJob(jobId, query) {
     detail: "",
     started_at: null,
     completed_at: null,
+    paused_at: null,
     run_id: null,
     archived: false,
     error: null,
@@ -104,6 +109,11 @@ function applyEvent(job, event) {
       job.run_id = event.run_id ?? job.run_id;
       job.archived = event.archived ?? job.archived;
       job.error = event.error ?? job.error;
+      if (event.status === "paused") job.paused_at = job.paused_at || Date.now() / 1000;
+      if (event.status === "running") {
+        job.paused_at = null;
+        job.completed_at = null;
+      }
       return; // snapshot only — not a feed line
     case "phase":
       job.phase = event.phase;
@@ -238,6 +248,36 @@ export async function cancelTrackedJob(jobId) {
     await cancelJob(jobId);
   } catch {
     /* the SSE stream / status poll surfaces the outcome */
+  }
+}
+
+export async function pauseTrackedJob(jobId) {
+  try {
+    await pauseJob(jobId);
+  } catch {
+    /* surfaced via the SSE stream / status poll */
+  }
+}
+
+export async function resumeTrackedJob(jobId) {
+  try {
+    await resumeJob(jobId);
+    // A paused job restored after a restart has no open stream, so the UI
+    // wouldn't see the resume status event. (Re-)attaching is a no-op when a
+    // stream already exists (in-session pause keeps its stream alive).
+    attachStream(jobId);
+  } catch {
+    /* surfaced via the SSE stream / status poll */
+  }
+}
+
+export async function abandonTrackedJob(jobId) {
+  try {
+    await abandonJob(jobId);
+    // Optimistically drop the job; the server has already removed it.
+    dismissJob(jobId);
+  } catch {
+    /* surfaced via status poll */
   }
 }
 

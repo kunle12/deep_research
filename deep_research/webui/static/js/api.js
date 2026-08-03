@@ -94,6 +94,24 @@ export function cancelJob(jobId) {
   });
 }
 
+export function pauseJob(jobId) {
+  return request(`/api/research/jobs/${encodeURIComponent(jobId)}/pause`, {
+    method: "POST",
+  });
+}
+
+export function resumeJob(jobId) {
+  return request(`/api/research/jobs/${encodeURIComponent(jobId)}/resume`, {
+    method: "POST",
+  });
+}
+
+export function abandonJob(jobId) {
+  return request(`/api/research/jobs/${encodeURIComponent(jobId)}/abandon`, {
+    method: "POST",
+  });
+}
+
 export function researchStreamUrl(jobId) {
   return `/api/research/jobs/${encodeURIComponent(jobId)}/stream`;
 }

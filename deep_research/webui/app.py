@@ -43,12 +43,16 @@ def create_app(
     *,
     backend: StorageBackend | None = None,
     research_runner: ResearchRunner | None = None,
+    checkpoint_dir: Path | None = None,
 ) -> FastAPI:
     """Build the web UI application.
 
     `backend` is optional and mainly used by tests: when injected it is used
     as-is (and closed on shutdown); otherwise the backend is resolved from
     the YAML config at startup.
+
+    `checkpoint_dir` lets tests isolate pause/resume state to a temp dir;
+    production uses the engine's default checkpoint location.
     """
 
     @asynccontextmanager
@@ -58,6 +62,11 @@ def create_app(
         if app.state.backend is None:
             app.state.backend = await get_backend(cfg)
         logger.info("library backend ready (%s)", type(app.state.backend).__name__)
+        # A previous run's checkpoint files survive on disk; surface them as
+        # resumable paused jobs so nothing is lost after a restart.
+        restored = app.state.jobs.restore_paused()
+        if restored:
+            logger.info("restored %d paused research job(s) after restart", len(restored))
         yield
         if app.state.backend is not None:
             await app.state.backend.close()
@@ -74,6 +83,7 @@ def create_app(
     app.state.jobs = ResearchJobManager(
         config_path,
         runner=research_runner,
+        checkpoint_dir=checkpoint_dir,
     )
 
     @app.middleware("http")

@@ -623,9 +623,12 @@ button { font-family: inherit; font-size: inherit; }
 .feed-step { color: var(--text); }
 .feed-done { color: var(--accent); font-weight: 650; }
 .feed-error { color: var(--danger); }
+.feed-paused { color: #a35b00; }
 .feed-detail { opacity: 0.8; }
 
 /* ---------- Research taskbar (bottom progress bar) ---------- */
+
+.taskbar[hidden] { display: none; }
 
 .taskbar {
   position: fixed;
@@ -740,6 +743,7 @@ body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
 .taskbar-icon-done { color: #1f7a3d; }
 .taskbar-icon-failed { color: var(--danger); }
 .taskbar-icon-cancelled { color: var(--text-2); }
+.taskbar-icon-paused { color: #a35b00; }
 .taskbar-icon-lost { color: var(--danger); }
 
 .taskbar-text { flex: 1; min-width: 0; }
@@ -753,6 +757,7 @@ body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
 .taskbar-status { font-weight: 650; white-space: nowrap; }
 .taskbar-status-running { color: var(--accent); }
 .taskbar-status-cancelling { color: var(--text-2); }
+.taskbar-status-paused { color: #a35b00; }
 .taskbar-status-done { color: #1f7a3d; }
 .taskbar-status-failed { color: var(--danger); }
 .taskbar-status-cancelled { color: var(--text-2); }
@@ -832,6 +837,7 @@ body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
 
 .jobdialog-badge-running { color: var(--tag-ink); background: var(--tag-bg); border-color: var(--tag-ink); }
 .jobdialog-badge-cancelling { color: var(--text-2); }
+.jobdialog-badge-paused { color: #a35b00; background: #fdf0d8; border-color: #f0d7a4; }
 .jobdialog-badge-done { color: #1f7a3d; background: #e2f4e7; border-color: #b9e3c5; }
 .jobdialog-badge-failed { color: var(--danger); border-color: var(--danger); }
 .jobdialog-badge-cancelled { color: var(--text-2); }

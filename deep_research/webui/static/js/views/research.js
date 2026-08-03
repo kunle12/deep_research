@@ -7,7 +7,7 @@
 
 import { el } from "../dom.js";
 import { startResearch } from "../api.js";
-import { hasActiveJob, trackJob } from "../jobs.js";
+import { hasActiveJob, hasPausedJob, trackJob } from "../jobs.js";
 
 const PATHS = ["quick", "deep", "academic", "url_source"];
 
@@ -42,6 +42,8 @@ export function openResearchModal() {
   const statusEl = el("div", { class: "research-status", role: "status" });
   if (busy) {
     statusEl.textContent = "A research job is already running — track it in the bottom bar.";
+  } else if (hasPausedJob()) {
+    statusEl.textContent = "One or more research jobs are paused — resume or discard them in the bottom bar.";
   }
 
   const form = el(
@@ -88,7 +90,9 @@ export function openResearchModal() {
     if (busy) {
       statusEl.textContent = "A research job is already running — track it in the bottom bar.";
     } else if (!starting) {
-      statusEl.textContent = "";
+      statusEl.textContent = hasPausedJob()
+        ? "One or more research jobs are paused — resume or discard them in the bottom bar."
+        : "";
     }
     refreshStart();
   }

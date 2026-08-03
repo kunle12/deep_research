@@ -10,6 +10,7 @@
 
 import { el, clear } from "../dom.js";
 import {
+  abandonTrackedJob,
   cancelTrackedJob,
   dismissJob,
   fmtElapsed,
@@ -22,6 +23,7 @@ import { openJobDialog } from "./jobDialog.js";
 const STATUS_LABEL = {
   running: "Researching",
   cancelling: "Cancelling",
+  paused: "Paused",
   done: "Complete",
   failed: "Failed",
   cancelled: "Cancelled",
@@ -29,6 +31,7 @@ const STATUS_LABEL = {
 };
 
 const STATUS_ICON = {
+  paused: "❚❚",
   done: "✓",
   failed: "✕",
   cancelled: "–",
@@ -77,6 +80,7 @@ function makeRow(job) {
       const current = getTrackedJob(entry.job_id);
       if (!current) return;
       if (isActiveStatus(current.status)) cancelTrackedJob(current.job_id);
+      else if (current.status === "paused") abandonTrackedJob(current.job_id);
       else dismissJob(current.job_id);
     },
   });
@@ -115,8 +119,10 @@ function updateRow(entry, job) {
   if (active !== entry.active) {
     entry.active = active;
     entry.row.classList.toggle("taskbar-row-active", active);
-    entry.closeBtn.title = active ? "Cancel research" : "Dismiss";
-    entry.closeBtn.setAttribute("aria-label", entry.closeBtn.title);
+    const closeTitle =
+      active ? "Cancel research" : job.status === "paused" ? "Discard" : "Dismiss";
+    entry.closeBtn.title = closeTitle;
+    entry.closeBtn.setAttribute("aria-label", closeTitle);
   }
 
   const iconState = active ? "spinner" : job.status;

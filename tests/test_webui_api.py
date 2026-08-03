@@ -149,8 +149,11 @@ async def seeded_config(library_root: Path) -> Path:
 
 
 @pytest.fixture
-def client(seeded_config: Path):
-    app = create_app(config_path=str(seeded_config))
+def client(seeded_config: Path, tmp_path):
+    app = create_app(
+        config_path=str(seeded_config),
+        checkpoint_dir=tmp_path / "checkpoints",
+    )
     with TestClient(app) as c:
         yield c
 

@@ -11,14 +11,32 @@ uv run deep-research "Summarize https://arxiv.org/abs/2401.12345"
 
 ---
 
-## What you need
+## Prerequisites
+
+Before anything will run, you need:
 
 | Requirement | Default / how to get it |
 |---|---|
-| **LLM endpoint** (OpenAI-compatible) | Any service serving Qwen, Llama, GPT, etc. via `/v1` |
+| **A running, OpenAI-compatible LLM server** (vLLM, llama.cpp, SGLang, Ollama, DashScope, ...) | Must expose `/v1` (chat completions + tool/function calling). vLLM is a good choice: `python -m vllm.entrypoints.openai.api_server --model <model> --served-model-name <alias>` |
+| **The exact model alias from your config served on that endpoint** | `llm.text_model` and `llm.vision_model` must match a model/alias the server actually serves, e.g. `qwen3.5-122b`. A mismatch → every call 404s/400s. |
+| **A vision-capable model** (for PDF figure comprehension) | Optional but recommended for the academic/deep paths. Can be the same text model routed via multimodal content blocks. |
 | **Web search** (optional but recommended) | Tavily API key, or a local SearXNG instance |
 | **Python 3.11–3.13** | `uv` installed — see below |
 | **poppler** (for PDF vision) | `brew install poppler` / `apt-get install poppler-utils` |
+| **Node.js LTS** (only if you use the browser tool) | `brew install node` |
+| **pango + cairo** (for PDF report rendering) | `brew install pango cairo` / see the PDF section below |
+
+> **The LLM server is the one hard prerequisite** — the agent is unusable without it. It must:
+> - expose an OpenAI-compatible `/v1` chat-completions API,
+> - serve the exact `llm.text_model` (and, for PDF vision, `llm.vision_model`) alias you set in `config.yaml`,
+> - support **tool/function calling** (the researcher loop drives web search, page fetches, and PDF analysis through tool calls). Most vLLM/llama.cpp/Ollama/SGLang deployments do; a plain OpenAI endpoint does too.
+>
+> Verify before running:
+> ```bash
+> curl http://localhost:8000/v1/models | head
+> # then a minimal chat call against /v1/chat/completions with your text_model alias
+> ```
+> If `llm.base_url`/model are wrong, you'll see `404`/`400`/connection errors on every request — see [LLM connection errors](#llm-connection-errors) below.
 
 ---
 
@@ -483,3 +501,9 @@ uv run deep-research --quiet "..." > report.md
 MIT. See [`LICENSE`](LICENSE).
 
 All Python dependencies are MIT / BSD / Apache-2.0 licensed. The `poppler` system binary (invoked via subprocess by `pdf2image`) is GPL-licensed but runs as an external process — it does not affect the license of this package.
+
+---
+
+## Acknowledgements
+
+This software was built with the assistance of a combination of AI models, including **GLM 5.2**, **DeepSeek V4 Flash**, **Qwen 3.8 Max**, and **DeepSeek V4 Flash 0731**.

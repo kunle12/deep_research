@@ -10,17 +10,21 @@
 
 import { el, clear } from "../dom.js";
 import {
+  abandonTrackedJob,
   cancelTrackedJob,
   dismissJob,
   fmtElapsed,
   getTrackedJob,
   isActiveStatus,
+  pauseTrackedJob,
+  resumeTrackedJob,
 } from "../jobs.js";
 import { feedLine } from "./feed.js";
 
 const STATUS_LABEL = {
   running: "Researching",
   cancelling: "Cancelling…",
+  paused: "Paused",
   done: "Complete",
   failed: "Failed",
   cancelled: "Cancelled",
@@ -116,6 +120,35 @@ export function openJobDialog(jobId) {
           onclick: () => cancelTrackedJob(job.job_id),
         }),
       );
+      actionsEl.append(
+        el("button", {
+          class: "btn",
+          type: "button",
+          text: "Pause",
+          disabled: job.status !== "running",
+          onclick: () => pauseTrackedJob(job.job_id),
+        }),
+      );
+    } else if (job.status === "paused") {
+      actionsEl.append(
+        el("button", {
+          class: "btn btn-primary",
+          type: "button",
+          text: "Resume",
+          onclick: () => resumeTrackedJob(job.job_id),
+        }),
+      );
+      actionsEl.append(
+        el("button", {
+          class: "btn btn-danger",
+          type: "button",
+          text: "Discard",
+          onclick: () => {
+            abandonTrackedJob(job.job_id);
+            close();
+          },
+        }),
+      );
     } else {
       actionsEl.append(
         el("button", {
@@ -159,6 +192,14 @@ export function openJobDialog(jobId) {
       currentEl.append(el("span", { class: "feed-error", text: job.error || "Unknown error" }));
     } else if (job.status === "cancelled") {
       currentEl.append(el("span", { text: "The job was cancelled." }));
+    } else if (job.status === "paused") {
+      currentEl.append(
+        el(
+          "span",
+          { class: "feed-paused" },
+          "Paused — resume from the last checkpoint. Pausing is per-iteration: on resume it re-runs from the last completed research round.",
+        ),
+      );
     } else if (job.status === "lost") {
       currentEl.append(
         el("span", { text: "Connection lost — the job is no longer available (server restarted?)." }),

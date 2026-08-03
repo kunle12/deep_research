@@ -106,6 +106,34 @@ function initStats() {
     .catch(() => {});
 }
 
+const TERMINAL = new Set(["done", "failed", "cancelled", "lost"]);
+
+// Refresh the header counts when a research job reaches a terminal state —
+// e.g. a completed (archived) report changes the library totals, so the
+// "N reports · M artifacts" readout must not stay stale until a reload.
+function initStatsRefresh() {
+  const prev = new Map(); // job_id -> status
+  let timer = null;
+  document.addEventListener("dr:jobs", (event) => {
+    const list = (event.detail && event.detail.jobs) || [];
+    let changed = false;
+    for (const job of list) {
+      const old = prev.get(job.job_id);
+      if (old && old !== job.status && TERMINAL.has(job.status)) changed = true;
+      prev.set(job.job_id, job.status);
+    }
+    if (!changed) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      getStats()
+        .then((s) => {
+          statsEl.textContent = `${s.reports} reports · ${s.artifacts} artifacts`;
+        })
+        .catch(() => {});
+    }, 250);
+  });
+}
+
 function initNewResearch() {
   newResearchBtn.addEventListener("click", () => openResearchModal());
   // Deep link: /?new=1 opens the modal on load (also used by smoke tests).
@@ -119,6 +147,7 @@ initTheme();
 initSearch();
 initKeyboard();
 initStats();
+initStatsRefresh();
 initNewResearch();
 initTaskbar();
 restoreJobs();
