@@ -217,7 +217,9 @@ library: search and filter reports by tag or path, read reports as rendered
 markdown with a table of contents and a structured references panel (one-click
 links to arXiv / PDF / DOI / original URLs), manage tags, download the
 archived PDF or markdown, and kick off new research from the browser with
-live progress:
+live progress — a bottom taskbar shows the running job (spinner, current
+phase, elapsed time) and clicking it opens a dismissable detail dialog with
+the full progress feed:
 
 ```bash
 uv run deep-research-web
@@ -236,7 +238,8 @@ Notes:
   `0.0.0.0:8080` so the port can be forwarded.
 - Research jobs run in-process and live in memory — restarting the server
   cancels in-flight jobs (finished reports are already archived in the
-  library, so they are safe).
+  library, so they are safe). Only one research job runs at a time; the UI
+  disables Start while one is running.
 - The frontend is plain ES modules with no npm or build step. Interactive API
   docs are available at `/docs`.
 

@@ -1369,14 +1369,15 @@ tracker merged below). FastAPI backend + zero-dependency vanilla-JS frontend.
     tag cloud, artifact detail, search, stats
   - `routers/research.py` — `POST /api/research`, job status, cancel,
     SSE progress stream
-  - `jobs.py` — in-memory `ResearchJobManager` (max 2 concurrent, 50 retained,
-    pruned oldest); runs `run_research` as an asyncio task with generated
-    `run_id` + `progress` reporter; verifies archival after completion
+  - `jobs.py` — in-memory `ResearchJobManager` (1 concurrent by default, 50
+    retained, pruned oldest); runs `run_research` as an asyncio task with
+    generated `run_id` + `progress` reporter; verifies archival after completion
   - `progress.py` — `JobProgressReporter` bridges agent phase/step → SSE
   - `static/` — `index.html`, `styles.css` (design tokens, dark/light,
     responsive), vanilla ES modules: `app.js`, `api.js`, `dom.js`, `format.js`,
-    `state.js`, `markdown.js` (safe parser+renderer), `views/list.js`,
-    `views/report.js`, `views/research.js`
+    `state.js`, `markdown.js` (safe parser+renderer), `jobs.js` (global job
+    tracker), `views/list.js`, `views/report.js`, `views/research.js`,
+    `views/taskbar.js`, `views/jobDialog.js`, `views/feed.js`
 - [x] Storage protocol additions (both SQLite + Postgres): `list_reports`
   (offset/tag/path), `search_reports`, `count_reports`, `count_artifacts`,
   `list_tags`, `get_artifacts` — additive, CLI-compatible
@@ -1390,7 +1391,16 @@ tracker merged below). FastAPI backend + zero-dependency vanilla-JS frontend.
 ### Notes
 
 - Research jobs are in-memory only: a server restart cancels in-flight jobs;
-  finished reports are already archived and safe.
+  finished reports are already archived and safe. Only one job runs at a time
+  by default (a second start is rejected with 409).
+- **Progress UI**: the research modal only takes the query and closes; live
+  progress lives in a bottom floating taskbar (one row per job) and a
+  dismissable detail dialog with the full replayed feed. `js/jobs.js` is the
+  single source of truth — it restores jobs after a reload from
+  `GET /api/research/jobs`, and a `404` on a tracked stream marks the job
+  `lost` (server restart) instead of retrying a dead URL. Taskbar rows and
+  dialog badge/current/actions update **in place** (not rebuild-per-event) so
+  animations don't flicker and focused buttons survive SSE bursts.
 - The frontend is plain ES modules (no npm/build step). `static/package.json`
   only sets `"type": "module"` so node can import the parser in tests.
 - Markdown rendering never uses `innerHTML` with source text; links are
@@ -1509,12 +1519,13 @@ Storage protocol additions and the FastAPI library API.
 
 - [x] `jobs.py` ResearchJobManager
 - [x] SSE progress endpoint + progress reporter
-- [x] New-research modal with live feed + cancel
+- [x] New-research modal that starts the job and hands off to the taskbar
+  tracker (live feed moved to the taskbar + detail dialog)
 
 ##### Phase 4 notes
 
-- `webui/jobs.py`: in-memory `ResearchJobManager` (max 2 concurrent, 50 jobs
-  retained, oldest finished pruned). Each job runs `run_research` as an
+- `webui/jobs.py`: in-memory `ResearchJobManager` (1 concurrent by default,
+  50 jobs retained, oldest finished pruned). Each job runs `run_research` as an
   asyncio task with a generated `run_id`; on completion it verifies archival
   via the backend and emits a terminal `done` event with `run_id`.
 - `webui/progress.py`: `JobProgressReporter` forwards agent `phase`/`step`

@@ -387,7 +387,11 @@ the old defaults.
 - `ResearchJobManager` is in-memory only (jobs die on server restart; finished
   reports are already archived). It generates the `run_id`, passes it into
   `run_research(..., run_id=..., progress=reporter)`, and verifies archival via
-  the backend before emitting the terminal `done` event.
+  the backend before emitting the terminal `done` event. It runs **one job at a
+  time** by default (`max_concurrent=1`); a second `POST /api/research` is
+  rejected with 409.
+- `GET /api/research/jobs` lists all jobs (most recently started first) — used
+  by the frontend to restore tracked jobs after a reload.
 - `GET /api/research/jobs/{id}/stream` replays the event log, sends a status
   snapshot, then live events with 15s keepalives; it ends after
   `done`/`error`/`cancelled`.
@@ -407,10 +411,19 @@ the old defaults.
   DOM renderer. Text is only ever inserted via `textContent`; link protocols
   are restricted to http/https/mailto (`safeUrl`). Never feed raw markdown to
   `innerHTML`.
+- `jobs.js` is the single source of truth for research jobs: it owns one
+  `EventSource` per running job, keeps a replayable event feed per job,
+  restores jobs on reload from `GET /api/research/jobs` (a `404` on a tracked
+  stream marks the job `lost` rather than retrying a dead URL), and dispatches
+  a `dr:jobs` CustomEvent on every change. The taskbar and the progress dialog
+  both render from this state.
 - Views own their DOM and return a cleanup function; `app.js` disposes the
   previous view's cleanup on route change.
 - Hash routing: `#/` list, `#/report/<run_id>`. `?new=1` deep-links to the
   New Research modal.
+- Taskbar + dialog update rows **in place** (not rebuild-per-event) so entrance/
+  state animations don't flicker on every SSE update, and action buttons keep
+  focus across status bursts.
 
 ### Test conventions
 

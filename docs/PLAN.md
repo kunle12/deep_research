@@ -1553,6 +1553,7 @@ relevance ordering is a later polish item.
 | GET | `/api/search?q&limit` | Combined report + artifact search |
 | GET | `/api/stats` | Library counts (reports, artifacts, tags) |
 | POST | `/api/research` | Start background research job (Phase 4) |
+| GET | `/api/research/jobs` | List all jobs, most recent first (restore after reload) |
 | GET | `/api/research/jobs/{id}` | Job status (Phase 4) |
 | GET | `/api/research/jobs/{id}/stream` | SSE progress (Phase 4) |
 
@@ -1578,8 +1579,10 @@ Zero-dependency SPA served as static files from `deep_research/webui/static`.
   `target="_blank" rel="noopener"`).
 - The trailing `## Bibliography` markdown section is collapsed because the
   structured panel replaces it; `## Citation Graph` stays rendered.
-- **New research modal**: query, optional path override, live SSE progress
-  feed, cancel; on completion the UI jumps to the new report.
+- **New research modal**: query + optional path override. Starting a job hands
+  it to the global tracker and closes immediately — progress then lives in the
+  bottom taskbar and its detail dialog, so the library stays usable while
+  research runs.
 
 #### Styling
 
@@ -1608,11 +1611,15 @@ static/js/
 ├── app.js          # bootstrap, hash router, keyboard shortcuts
 ├── api.js          # thin fetch wrapper
 ├── markdown.js     # parser (pure AST) + DOM builder
+├── jobs.js         # global job tracker: SSE per job, feed, restore, dr:jobs events
 ├── state.js        # minimal pub/sub store
 └── views/
     ├── list.js
     ├── report.js
-    ├── research.js
+    ├── research.js  # query entry only; hands the job to the tracker and closes
+    ├── taskbar.js   # bottom floating progress bar (one row per job)
+    ├── jobDialog.js # dismissable detail dialog with full feed + actions
+    ├── feed.js      # shared phase/step/terminal/lost feed-line renderer
     └── toc.js
 ```
 
@@ -1623,10 +1630,15 @@ static/js/
 - In-process `ResearchJobManager` (`webui/jobs.py`) keeps job state in memory:
   status (`running` / `done` / `failed` / `cancelled`), phase, step, result
   (`run_id`), error. A restart drops in-flight jobs — acceptable for a
-  single-user local app; documented.
+  single-user local app; documented. It runs **one job at a time**
+  (`max_concurrent=1`); a second start returns 409 and the UI disables Start
+  while one runs.
 - A `ProgressReporter` implementation pushes `phase`/`step` events into the
   job's asyncio queue; `GET /api/research/jobs/{id}/stream` streams them as
   SSE.
+- `GET /api/research/jobs` lists all jobs so the frontend can rediscover
+  in-flight jobs after a reload; subscribing to a stream replays the event log,
+  rebuilding the feed.
 - `POST /api/research` validates the query and starts `run_research` as an
   `asyncio` task. The agent archives the report itself (`pdl.enabled`),
   so on completion the report is already in the library.
