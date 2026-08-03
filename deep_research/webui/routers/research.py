@@ -27,6 +27,7 @@ class ResearchStartResponse(BaseModel):
 
 class ResearchJobStatus(BaseModel):
     job_id: str
+    query: str = ""
     status: str
     phase: str = ""
     step: str = ""
@@ -41,6 +42,7 @@ class ResearchJobStatus(BaseModel):
 def _status(job: ResearchJob) -> ResearchJobStatus:
     return ResearchJobStatus(
         job_id=job.job_id,
+        query=job.query,
         status=job.status,
         phase=job.phase,
         step=job.step,
@@ -73,9 +75,14 @@ async def start_research(body: ResearchStartRequest, request: Request):
     if job is None:
         raise HTTPException(
             status_code=409,
-            detail="too many concurrent research jobs; wait for one to finish and retry",
+            detail="a research job is already running; wait for it to finish and retry",
         )
     return ResearchStartResponse(job_id=job.job_id, status=job.status)
+
+
+@router.get("/jobs", response_model=list[ResearchJobStatus])
+async def list_jobs(request: Request) -> list[ResearchJobStatus]:
+    return [_status(job) for job in _jobs(request).list_jobs()]
 
 
 @router.get("/jobs/{job_id}", response_model=ResearchJobStatus)

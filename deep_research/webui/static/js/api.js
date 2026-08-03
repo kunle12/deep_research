@@ -76,6 +76,10 @@ export function getJob(jobId) {
   return request(`/api/research/jobs/${encodeURIComponent(jobId)}`);
 }
 
+export function listJobs() {
+  return request("/api/research/jobs");
+}
+
 export function fetchArxivPdf(arxivId) {
   return request("/api/arxiv/pdf", {
     method: "POST",

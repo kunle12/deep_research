@@ -4,6 +4,8 @@ import { el, clear } from "./dom.js";
 import { renderList } from "./views/list.js";
 import { renderReport } from "./views/report.js";
 import { openResearchModal } from "./views/research.js";
+import { initTaskbar } from "./views/taskbar.js";
+import { restoreJobs } from "./jobs.js";
 import { getStats } from "./api.js";
 
 const app = document.getElementById("app");
@@ -69,8 +71,12 @@ function initKeyboard() {
       return;
     }
     if (event.key === "Escape") {
-      if (document.activeElement === searchInput) searchInput.blur();
-      else if (currentRoute.name === "report") window.location.hash = "#/";
+      if (document.activeElement === searchInput) {
+        searchInput.blur();
+      } else if (!document.querySelector(".modal-overlay") && currentRoute.name === "report") {
+        // An open modal/dialog owns Escape; don't navigate away underneath it.
+        window.location.hash = "#/";
+      }
       return;
     }
     if (inField) return;
@@ -114,4 +120,6 @@ initSearch();
 initKeyboard();
 initStats();
 initNewResearch();
+initTaskbar();
+restoreJobs();
 render();

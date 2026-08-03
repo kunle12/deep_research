@@ -14,6 +14,11 @@
   --tag-ink: #2f56b0;
   --danger: #c0392b;
   --shadow: 0 1px 3px rgba(16, 24, 40, 0.08);
+  --taskbar-bg: rgba(255, 255, 255, 0.8);
+  --taskbar-border: rgba(217, 222, 231, 0.75);
+  --taskbar-row-bg: rgba(238, 241, 245, 0.72);
+  --taskbar-shadow: 0 4px 12px rgba(16, 24, 40, 0.08), 0 18px 44px rgba(16, 24, 40, 0.18);
+  --accent-shimmer: rgba(59, 111, 224, 0.07);
   --radius: 10px;
   --radius-sm: 6px;
   --maxw: 1240px;
@@ -37,6 +42,11 @@
     --tag-ink: #b9cdfa;
     --danger: #e4776b;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --taskbar-bg: rgba(29, 35, 45, 0.8);
+    --taskbar-border: rgba(53, 64, 79, 0.75);
+    --taskbar-row-bg: rgba(38, 46, 58, 0.72);
+    --taskbar-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 18px 44px rgba(0, 0, 0, 0.5);
+    --accent-shimmer: rgba(109, 148, 240, 0.09);
   }
 }
 
@@ -54,6 +64,11 @@
   --tag-ink: #b9cdfa;
   --danger: #e4776b;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --taskbar-bg: rgba(29, 35, 45, 0.8);
+  --taskbar-border: rgba(53, 64, 79, 0.75);
+  --taskbar-row-bg: rgba(38, 46, 58, 0.72);
+  --taskbar-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 18px 44px rgba(0, 0, 0, 0.5);
+  --accent-shimmer: rgba(109, 148, 240, 0.09);
 }
 
 * { box-sizing: border-box; }
@@ -610,6 +625,218 @@ button { font-family: inherit; font-size: inherit; }
 .feed-error { color: var(--danger); }
 .feed-detail { opacity: 0.8; }
 
+/* ---------- Research taskbar (bottom progress bar) ---------- */
+
+.taskbar {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(700px, calc(100vw - 24px));
+  padding: 8px;
+  background: var(--taskbar-bg);
+  border: 1px solid var(--taskbar-border);
+  border-radius: 14px;
+  box-shadow: var(--taskbar-shadow);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  backdrop-filter: blur(14px) saturate(1.5);
+  transform: translateX(-50%);
+  animation: taskbar-in 0.28s cubic-bezier(0.21, 1.02, 0.55, 1.01);
+}
+@keyframes taskbar-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
+
+.taskbar-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--taskbar-row-bg);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.taskbar-row:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+  box-shadow: 0 3px 10px rgba(10, 14, 20, 0.12);
+}
+.taskbar-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.taskbar-row-enter { animation: taskbar-row-in 0.25s ease; }
+@keyframes taskbar-row-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+
+/* Shimmer wash + indeterminate progress strip on active rows. */
+.taskbar-row-active::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, var(--accent-shimmer) 50%, transparent 70%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: taskbar-shimmer 2.6s ease-in-out infinite;
+}
+@keyframes taskbar-shimmer {
+  0% { background-position: 130% 0; }
+  100% { background-position: -80% 0; }
+}
+.taskbar-row-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
+  background-size: 35% 100%;
+  background-repeat: no-repeat;
+  animation: taskbar-slide 1.8s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+}
+@keyframes taskbar-slide {
+  0% { background-position: -35% 0; }
+  100% { background-position: 135% 0; }
+}
+
+.taskbar-iconslot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.taskbar-spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: taskbar-spin 0.8s linear infinite;
+}
+@keyframes taskbar-spin { to { transform: rotate(360deg); } }
+
+.taskbar-icon {
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+  animation: taskbar-icon-in 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes taskbar-icon-in {
+  from { opacity: 0; transform: scale(0.3); }
+}
+.taskbar-icon-done { color: #1f7a3d; }
+.taskbar-icon-failed { color: var(--danger); }
+.taskbar-icon-cancelled { color: var(--text-2); }
+.taskbar-icon-lost { color: var(--danger); }
+
+.taskbar-text { flex: 1; min-width: 0; }
+.taskbar-line1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13.5px;
+}
+.taskbar-status { font-weight: 650; white-space: nowrap; }
+.taskbar-status-running { color: var(--accent); }
+.taskbar-status-cancelling { color: var(--text-2); }
+.taskbar-status-done { color: #1f7a3d; }
+.taskbar-status-failed { color: var(--danger); }
+.taskbar-status-cancelled { color: var(--text-2); }
+.taskbar-status-lost { color: var(--danger); }
+.taskbar-query {
+  min-width: 0;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.taskbar-line2 {
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.taskbar-elapsed {
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.taskbar-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 13px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.taskbar-close:hover { color: var(--danger); border-color: var(--danger); }
+
+/* ---------- Research progress dialog ---------- */
+
+.modal-overlay { animation: overlay-in 0.18s ease; }
+@keyframes overlay-in { from { opacity: 0; } }
+
+.jobdialog-overlay { align-items: center; padding-top: 4vh; }
+.jobdialog-overlay .modal {
+  animation: jobdialog-in 0.22s cubic-bezier(0.21, 1.02, 0.55, 1.01);
+}
+@keyframes jobdialog-in {
+  from { opacity: 0; transform: scale(0.96) translateY(10px); }
+}
+.jobdialog-query { margin: 0 0 10px; font-weight: 600; overflow-wrap: anywhere; }
+.jobdialog-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.jobdialog-elapsed { font-variant-numeric: tabular-nums; }
+.jobdialog-current { min-height: 1.5em; margin-bottom: 8px; font-size: 14px; }
+.jobdialog-feed {
+  max-height: 320px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.jobdialog-feed::-webkit-scrollbar { width: 8px; }
+.jobdialog-feed::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.jobdialog-feed::-webkit-scrollbar-track { background: transparent; }
+.jobdialog-feed .feed-line { animation: feed-line-in 0.22s ease; }
+@keyframes feed-line-in {
+  from { opacity: 0; transform: translateY(3px); }
+}
+
+.jobdialog-badge-running { color: var(--tag-ink); background: var(--tag-bg); border-color: var(--tag-ink); }
+.jobdialog-badge-cancelling { color: var(--text-2); }
+.jobdialog-badge-done { color: #1f7a3d; background: #e2f4e7; border-color: #b9e3c5; }
+.jobdialog-badge-failed { color: var(--danger); border-color: var(--danger); }
+.jobdialog-badge-cancelled { color: var(--text-2); }
+.jobdialog-badge-lost { color: var(--danger); border-color: var(--danger); }
+
 /* ---------- Status / empty / error ---------- */
 
 .list-status { padding: 24px 0; text-align: center; }
@@ -654,4 +881,25 @@ button { font-family: inherit; font-size: inherit; }
   .brand-text { display: none; }
   .stats { display: none; }
   #app { padding: 14px; }
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .taskbar,
+  .taskbar-row,
+  .taskbar-row-enter,
+  .taskbar-spinner,
+  .taskbar-icon,
+  .taskbar-row-active::before,
+  .taskbar-row-active::after,
+  .modal-overlay,
+  .jobdialog-overlay .modal,
+  .jobdialog-feed .feed-line {
+    animation: none;
+  }
+  .taskbar-row,
+  .taskbar-close {
+    transition: none;
+  }
 }

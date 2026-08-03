@@ -87,7 +87,7 @@ class ResearchJobManager:
         config_path: str,
         *,
         runner: ResearchRunner | None = None,
-        max_concurrent: int = 2,
+        max_concurrent: int = 1,
     ) -> None:
         self._config_path = config_path
         self._runner = runner or _default_runner
@@ -112,6 +112,10 @@ class ResearchJobManager:
 
     def get(self, job_id: str) -> ResearchJob | None:
         return self._jobs.get(job_id)
+
+    def list_jobs(self) -> list[ResearchJob]:
+        """All known jobs, most recently started first."""
+        return sorted(self._jobs.values(), key=lambda j: j.started_at, reverse=True)
 
     async def cancel(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)

@@ -157,6 +157,46 @@ def test_missing_job_404(client):
     assert client.get("/api/research/jobs/nope/stream").status_code == 404
 
 
+def test_list_jobs_empty(client):
+    r = client.get("/api/research/jobs")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_list_jobs_returns_query_and_status(client):
+    job_id = client.post("/api/research", json={"query": "list me"}).json()["job_id"]
+    _wait_status(client, job_id, {"done"})
+
+    r = client.get("/api/research/jobs")
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1
+    assert items[0]["job_id"] == job_id
+    assert items[0]["query"] == "list me"
+    assert items[0]["status"] == "done"
+
+
+def test_list_jobs_most_recent_first(client, runner):
+    runner.delay = 0.01
+    first = client.post("/api/research", json={"query": "one"}).json()["job_id"]
+    _wait_status(client, first, {"done"})
+    second = client.post("/api/research", json={"query": "two"}).json()["job_id"]
+    _wait_status(client, second, {"done"})
+
+    items = client.get("/api/research/jobs").json()
+    assert [j["query"] for j in items] == ["two", "one"]
+
+
+def test_default_concurrency_is_single(client, runner):
+    runner.hold = asyncio.Event()
+    first = client.post("/api/research", json={"query": "only one"})
+    assert first.status_code == 202
+    time.sleep(0.1)
+    second = client.post("/api/research", json={"query": "second should be rejected"})
+    assert second.status_code == 409
+    client.post(f"/api/research/jobs/{first.json()['job_id']}/cancel")
+
+
 def test_concurrency_cap(runner):
     runner.hold = asyncio.Event()
     app = create_app("config.yaml", research_runner=runner)
