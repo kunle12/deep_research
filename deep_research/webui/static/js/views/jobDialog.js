@@ -44,7 +44,7 @@ export function openJobDialog(jobId) {
   const elapsedEl = el("span", { class: "jobdialog-elapsed" });
   const metaEl = el("div", { class: "jobdialog-meta" }, badgeEl, elapsedEl);
   const currentEl = el("div", { class: "jobdialog-current", role: "status", "aria-live": "polite" });
-  const feedEl = el("div", { class: "research-feed jobdialog-feed" });
+  const feedEl = el("div", { class: "research-feed jobdialog-feed", hidden: "" });
   const actionsEl = el("div", { class: "modal-actions" });
 
   const dialog = el(
@@ -92,6 +92,9 @@ export function openJobDialog(jobId) {
       if (line) feedEl.append(line);
     }
     rendered = job.events.length;
+    // A fresh job has no events yet — don't leave a useless empty box above the
+    // action buttons. Show the feed only once there are lines to display.
+    feedEl.hidden = job.events.length === 0;
     if (stick) feedEl.scrollTop = feedEl.scrollHeight;
   }
 

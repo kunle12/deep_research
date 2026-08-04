@@ -625,6 +625,7 @@ button { font-family: inherit; font-size: inherit; }
 .feed-error { color: var(--danger); }
 .feed-paused { color: #a35b00; }
 .feed-detail { opacity: 0.8; }
+.research-feed[hidden] { display: none; }
 
 /* ---------- Research taskbar (bottom progress bar) ---------- */
 
