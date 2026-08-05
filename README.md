@@ -1,13 +1,48 @@
 # Deep Research Agent
 
-An async-first Python agent that performs **web / deep / academic / single-source URL** research with the assistance of an LLM. Give it a question — it searches, reads, analyzes, and writes a structured report. Multi-modal LLM support enables vision-based PDF figure comprehension.
+An async-first Python agent that performs **web, deep, academic, and single-source URL** research with the assistance of an LLM. Give it a question — it searches, reads, analyzes, and writes a structured report. Multi-modal LLM support enables vision-based comprehension of PDF figures.
+
+![Person Digital Library Web UI](docs/PersonaDigitalLibrary.png)
 
 ```bash
-# Quick start — auto-routes based on your query
+# Quick start — the agent auto-routes based on your query
 uv run deep-research "What is the capital of France?"
 uv run deep-research "Survey recent advances in RLHF"
 uv run deep-research "Summarize https://arxiv.org/abs/2401.12345"
 ```
+
+---
+
+## What this agent does for you
+
+Deep Research turns an open-ended question into a finished, well-sourced report. Instead of a single search-and-summarize pass, it runs a deliberate research workflow:
+
+- **Classifies your query** and picks the research strategy best suited to it.
+- **Plans** multi-faceted questions into sub-questions it can research in parallel.
+- **Searches and reads** the web — pages, papers, PDFs, blogs, and discussion — dispatching everything concurrently.
+- **Critiques its own work**, chasing references and drilling into gaps it finds.
+- **Writes a structured report** with citations and, for literature reviews, a BibTeX reference graph.
+- **Archives everything** into a personal, searchable research library you can browse from a web UI.
+
+The whole engine is built on raw `asyncio` — no LangChain, no LangGraph. Every page fetch, PDF download, and LLM call is dispatched concurrently.
+
+## How it works
+
+```
+query → URL detected? → url_source path (analyze single URL + optional follow-up)
+       → no URL        → classifier (one LLM call) decides:
+                          ├─ quick   → 1 search + summarize (~5-15s)
+                          ├─ deep    → planner → researcher → critic → writer loop
+                          ├─ academic→ arxiv + Google Scholar seed → recursive citation graph mining (depth ≤ 3, papers ≤ 30)
+                          └─ applied → blog-first research
+```
+
+PDFs are rendered page-by-page through a multimodal LLM (vision) for figure and equation comprehension. No external agent frameworks are required.
+
+---
+## AI Coding Acknowledgements
+
+This software was built with the assistance of a combination of AI models, including **GLM 5.2**, **Qwen 3.8 Max Preview**, **DeepSeek V4 Flash** and **DeepSeek V4 Flash 0731**.
 
 ---
 
@@ -254,10 +289,13 @@ Notes:
 
 - Binds to `127.0.0.1` by default. The Dockerfile runs the web UI on
   `0.0.0.0:8080` so the port can be forwarded.
-- Research jobs run in-process and live in memory — restarting the server
-  cancels in-flight jobs (finished reports are already archived in the
-  library, so they are safe). Only one research job runs at a time; the UI
-  disables Start while one is running.
+- **Pause & resume**: running research jobs can be paused from the UI at
+  per-iteration checkpoint granularity and resumed later from where they left
+  off. Jobs live in memory, so a server restart drops running jobs — but their
+  checkpoints survive on disk, and the UI **restores them automatically as
+  resumable paused jobs** after a restart, so an interrupted run is never lost.
+  Cancel abandons the job and discards its checkpoint.
+- Only one research job runs at a time; the UI disables Start while one is running.
 - The frontend is plain ES modules with no npm or build step. Interactive API
   docs are available at `/docs`.
 
@@ -304,25 +342,6 @@ Or run the web UI (library browser + new research) in Docker:
 docker build -t deep-research .
 docker run -p 8080:8080 deep-research
 ```
-
----
-
-## How it works
-
-```
-query → URL detected? → url_source path (analyze single URL + optional follow-up)
-       → no URL        → classifier (one LLM call) decides:
-                          ├─ quick   → 1 search + summarize (~5-15s)
-                          ├─ deep    → planner → researcher → critic → writer loop
-                          ├─ academic→ arxiv + Google Scholar seed → recursive citation graph mining (depth ≤ 3, papers ≤ 30)
-                          └─ applied → blog-first research
-```
-
-The agent uses raw `asyncio` for orchestration — no LangChain, no LangGraph.
-Every page fetch, PDF download, and LLM call is dispatched concurrently.
-
-PDFs are rendered page-by-page through a multimodal LLM (vision) for figure /
-equation comprehension. No external agent frameworks.
 
 ---
 
@@ -501,9 +520,3 @@ uv run deep-research --quiet "..." > report.md
 MIT. See [`LICENSE`](LICENSE).
 
 All Python dependencies are MIT / BSD / Apache-2.0 licensed. The `poppler` system binary (invoked via subprocess by `pdf2image`) is GPL-licensed but runs as an external process — it does not affect the license of this package.
-
----
-
-## Acknowledgements
-
-This software was built with the assistance of a combination of AI models, including **GLM 5.2**, **DeepSeek V4 Flash**, **Qwen 3.8 Max**, and **DeepSeek V4 Flash 0731**.
