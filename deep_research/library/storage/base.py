@@ -50,6 +50,20 @@ class StorageBackend(Protocol):
 
     async def get_report(self, run_id: str) -> ReportRow | None: ...
 
+    async def rename_report(self, run_id: str, new_query: str) -> None:
+        """Update `reports.original_query` (the display name of a research)."""
+        ...
+
+    async def reassign_run(self, old_run_id: str, new_run_id: str) -> None:
+        """Repoint all run-scoped references from one run to another.
+
+        Updates `analyses.run_id`, `citation_edges.discovered_in_run`,
+        `glossary.first_seen_run_id`, and `artifact_versions.discovered_in_run`.
+        Used before deleting a source report whose results should survive in a
+        merged report.
+        """
+        ...
+
     async def list_reports(
         self,
         limit: int,

@@ -5,7 +5,7 @@ import { formatDate, plural } from "../format.js";
 import { listReports, getTags, getStats } from "../api.js";
 
 const PAGE_SIZE = 50;
-const PATHS = ["quick", "deep", "academic", "url_source", "applied"];
+const PATHS = ["quick", "deep", "academic", "url_source", "applied", "merged"];
 
 export function renderList(root, searchInput) {
   clear(root);

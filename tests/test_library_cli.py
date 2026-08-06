@@ -370,3 +370,66 @@ def test_cli_tag_usage(runner):
     result = runner.invoke(library_app, ["tag", "--config", cfg])
     assert result.exit_code == 0
     assert "Usage" in result.stdout
+
+
+def test_cli_rename_with_data(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(library_app, ["rename", "run001", "brand new name", "--config", cfg])
+    assert result.exit_code == 0
+    assert "brand new name" in result.stdout
+    # Verify persisted
+    conn = sqlite3.connect(os.path.join(tmp, "pdl_root", "index.db"))
+    row = conn.execute("SELECT original_query FROM reports WHERE run_id = 'run001'").fetchone()
+    conn.close()
+    assert row and row[0] == "brand new name"
+
+
+def test_cli_rename_not_found(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(library_app, ["rename", "nonexistent", "x", "--config", cfg])
+    assert result.exit_code != 0
+    assert "No report found" in result.stdout
+
+
+def test_cli_merge_requires_two(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(library_app, ["merge", "run001", "--config", cfg])
+    assert result.exit_code != 0
+    assert "at least two" in result.stdout
+
+
+def test_cli_merge_with_data(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(
+        library_app, ["merge", "run001", "run002", "--name", "Combined", "--config", cfg]
+    )
+    assert result.exit_code == 0
+    assert "Merged report created" in result.stdout
+
+
+def test_cli_add_source_bad_url(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(library_app, ["add-source", "run001", "not-a-url", "--config", cfg])
+    assert result.exit_code != 0
+    assert "http(s)://" in result.stdout
+
+
+def test_cli_add_source_not_found(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(
+        library_app, ["add-source", "nonexistent", "https://example.com/x", "--config", cfg]
+    )
+    assert result.exit_code != 0
+    assert "No report found" in result.stdout

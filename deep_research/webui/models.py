@@ -122,3 +122,18 @@ class StatsResponse(BaseModel):
 class DeleteReportResponse(BaseModel):
     ok: bool = True
     removed_files: list[str] = Field(default_factory=list)
+
+
+class RenameReportRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+
+
+class MergeReportsRequest(BaseModel):
+    other_run_ids: list[str] = Field(min_length=1, max_length=19)
+    name: str | None = Field(default=None, max_length=1000)
+    delete_sources: bool = False
+
+
+class MergeReportsResponse(BaseModel):
+    run_id: str
+    query: str

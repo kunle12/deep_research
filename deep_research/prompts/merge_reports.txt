@@ -1,0 +1,17 @@
+You are merging existing research reports on closely related topics into a SINGLE unified research report.
+
+The merged report's title/topic is:
+{merged_name}
+
+Below are the existing reports, separated by markers. Each is the final output of an independent research run on a related topic. Reports may overlap, contradict, or cover complementary aspects.
+
+{reports}
+
+Instructions:
+- Produce ONE coherent Markdown document titled "{merged_name}".
+- Synthesize the content of all reports: eliminate redundancy and resolve or note contradictions, keeping the most precise and best-supported statements.
+- Organize the result into clear sections that flow logically — do NOT paste each source report one after another.
+- Preserve inline citations (autolinks like <https://example.com/source> or arxiv references) where a specific fact came from a source.
+- Do NOT include a Bibliography section (it is managed separately).
+- Target a depth comparable to the combined source material.
+- Respond with ONLY the Markdown report — no code fences, no preamble, no commentary.

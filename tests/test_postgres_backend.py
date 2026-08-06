@@ -495,6 +495,35 @@ async def test_delete_artifact(backend, mock_conn):
 
 
 @pytest.mark.asyncio
+async def test_rename_report(backend, mock_conn):
+    await backend.rename_report("run001", "new name")
+    assert mock_conn.execute.called
+    args = mock_conn.execute.call_args.args
+    assert "UPDATE reports" in args[0]
+    assert "original_query" in args[0]
+    assert args[1:] == ("new name", "run001")
+
+
+@pytest.mark.asyncio
+async def test_reassign_run(backend, mock_conn):
+    await backend.reassign_run("old", "new")
+    # All four UPDATEs run inside one transaction on the same connection.
+    calls = [c.args[0] for c in mock_conn.execute.call_args_list]
+    assert any("analyses" in c for c in calls)
+    assert any("citation_edges" in c for c in calls)
+    assert any("glossary" in c for c in calls)
+    assert any("artifact_versions" in c for c in calls)
+    for c in mock_conn.execute.call_args_list:
+        assert c.args[1:] == ("new", "old")
+
+
+@pytest.mark.asyncio
+async def test_reassign_run_self_is_noop(backend, mock_conn):
+    await backend.reassign_run("same", "same")
+    assert not mock_conn.execute.called
+
+
+@pytest.mark.asyncio
 async def test_full_text_search(backend, mock_conn):
     mock_conn.fetch = AsyncMock(
         return_value=[

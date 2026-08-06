@@ -27,6 +27,9 @@ from deep_research.webui.models import (
     ArtifactDetail,
     CitationEdgeInfo,
     DeleteReportResponse,
+    MergeReportsRequest,
+    MergeReportsResponse,
+    RenameReportRequest,
     ReportDetail,
     ReportListItem,
     ReportListResponse,
@@ -362,6 +365,61 @@ async def delete_report(
             pass
     await backend.delete_report(run_id)
     return DeleteReportResponse(removed_files=removed)
+
+
+@router.patch("/reports/{run_id}", response_model=ReportDetail)
+async def rename_report(run_id: str, body: RenameReportRequest, request: Request) -> ReportDetail:
+    """Rename a research report (updates its display name/title)."""
+    backend = get_storage(request)
+    report = await backend.get_report(run_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="report not found")
+    await backend.rename_report(run_id, body.query.strip())
+    return await get_report_detail(run_id, request)
+
+
+@router.post("/reports/{run_id}/merge", response_model=MergeReportsResponse)
+async def merge_report(
+    run_id: str, body: MergeReportsRequest, request: Request
+) -> MergeReportsResponse:
+    """Merge this report with the given others into one unified report.
+
+    Runs inline (a single LLM call). Returns the new merged report's run_id.
+    """
+    backend = get_storage(request)
+    cfg = get_config(request)
+    root = get_root_dir(request)
+
+    all_ids = list(dict.fromkeys([run_id] + [x.strip() for x in body.other_run_ids if x.strip()]))
+    if len(all_ids) < 2:
+        raise HTTPException(status_code=422, detail="merge requires at least two distinct reports")
+    for rid in all_ids:
+        if await backend.get_report(rid) is None:
+            raise HTTPException(status_code=404, detail=f"report not found: {rid}")
+
+    from deep_research.library.merge import merge_reports
+    from deep_research.library.writer import LibraryWriter
+    from deep_research.llm.client import LLMClient
+
+    writer = LibraryWriter(backend, str(root))
+    try:
+        async with LLMClient(cfg.llm) as llm:
+            new_run_id = await merge_reports(
+                backend,
+                writer,
+                all_ids,
+                llm,
+                cfg.llm.text_model,
+                name=body.name,
+                delete_sources=body.delete_sources,
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    new_report = await backend.get_report(new_run_id)
+    return MergeReportsResponse(
+        run_id=new_run_id,
+        query=(new_report.original_query if new_report else "") or "",
+    )
 
 
 @router.get("/tags", response_model=list[TagInfo])

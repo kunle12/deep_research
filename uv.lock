@@ -653,6 +653,11 @@ reddit = [
     { name = "asyncpraw" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pre-commit" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20,<1.0" },
@@ -690,6 +695,9 @@ requires-dist = [
     { name = "xhtml2pdf", marker = "extra == 'pdf-fallback'", specifier = ">=0.2,<0.3" },
 ]
 provides-extras = ["reddit", "pdf-fallback", "postgres", "dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pre-commit", specifier = ">=4.6.0" }]
 
 [[package]]
 name = "defusedxml"

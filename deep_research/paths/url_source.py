@@ -296,6 +296,132 @@ async def _fetch_html_source(
     return (res.content, list(res.citations), res.error or "")
 
 
+class FetchedSource:
+    """Result of classify + fetch + archive for a single source URL.
+
+    Shared by the `url_source` path and the attach-source flow so both reuse
+    the exact same fetch/archive pipeline.
+    """
+
+    __slots__ = (
+        "artifact_id",
+        "arxiv_id",
+        "citations",
+        "content_text",
+        "fetch_error",
+        "page_image_data_urls",
+        "url",
+        "url_type",
+    )
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        url_type: UrlType,
+        arxiv_id: str | None,
+        content_text: str,
+        citations: list[Citation],
+        fetch_error: str,
+        page_image_data_urls: list[str],
+        artifact_id: str = "",
+    ) -> None:
+        self.url = url
+        self.url_type = url_type
+        self.arxiv_id = arxiv_id
+        self.content_text = content_text
+        self.citations = citations
+        self.fetch_error = fetch_error
+        self.page_image_data_urls = page_image_data_urls
+        self.artifact_id = artifact_id
+
+
+async def fetch_source(
+    url: str,
+    tools: ToolRegistry,
+    config: AgentTopConfig,
+    *,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
+) -> FetchedSource:
+    """Classify, fetch, and archive a single source URL.
+
+    Dispatches to the module-global `_fetch_*` helpers (kept so the existing
+    url_source tests can monkeypatch them). Returns a `FetchedSource` with the
+    archived artifact_id resolved from the library when a writer is active.
+    """
+    url_type = await classify_url(url, head_probe_timeout_s=config.url_source.head_probe_timeout_s)
+    arxiv_id = extract_arxiv_id(url) if url_type == UrlType.arxiv else None
+    render_pdf = config.pdf_vision.enabled
+    max_pdf_pages = 25
+
+    citations: list[Citation] = []
+    content_text = ""
+    fetch_error = ""
+    page_image_data_urls: list[str] = []
+
+    if url_type == UrlType.arxiv and arxiv_id:
+        content_text, _title, citations, page_image_data_urls = await _fetch_arxiv_source(
+            arxiv_id,
+            tools,
+            render_pages=render_pdf,
+            max_pages=max_pdf_pages,
+            writer=writer,
+            run_id=run_id,
+        )
+    elif url_type == UrlType.pdf:
+        content_text, citations, page_image_data_urls = await _fetch_pdf_source(
+            url,
+            tools,
+            render_pages=render_pdf,
+            max_pages=max_pdf_pages,
+            writer=writer,
+            run_id=run_id,
+            pdf_cache_dir=config.arxiv.pdf_cache_dir,
+            archive_fallback=config.fetch_page.archive_org_fallback,
+        )
+    elif url_type == UrlType.html:
+        content_text, citations, fetch_error = await _fetch_html_source(
+            url,
+            tools,
+            config,
+            writer=writer,
+            run_id=run_id,
+        )
+    else:
+        fetch_error = f"unsupported URL type: {url_type.value}"
+
+    artifact_id = ""
+    if isinstance(writer, LibraryWriter) and run_id:
+        try:
+            art = None
+            if url_type == UrlType.arxiv and arxiv_id:
+                art = await writer.storage.find_artifact_by_arxiv_id(arxiv_id)
+                if art is None:
+                    from deep_research.util import strip_arxiv_version
+
+                    art = await writer.storage.find_artifact_by_arxiv_id(
+                        strip_arxiv_version(arxiv_id)
+                    )
+            if art is None:
+                art = await writer.storage.find_artifact_by_url(url)
+            if art is not None:
+                artifact_id = art.artifact_id
+        except Exception as e:
+            logger.warning("artifact lookup after fetch failed: %s", e)
+
+    return FetchedSource(
+        url=url,
+        url_type=url_type,
+        arxiv_id=arxiv_id,
+        content_text=content_text,
+        citations=citations,
+        fetch_error=fetch_error,
+        page_image_data_urls=page_image_data_urls,
+        artifact_id=artifact_id,
+    )
+
+
 def _render_analysis_markdown(
     url: str,
     source_type: str,
@@ -580,4 +706,9 @@ async def _maybe_run_follow_up(
     return ("## Follow-up Research\n\n" + followup_report.markdown, followup_report.citations)
 
 
-__all__ = ["query_asks_for_follow_up", "url_source"]
+__all__ = [
+    "FetchedSource",
+    "fetch_source",
+    "query_asks_for_follow_up",
+    "url_source",
+]

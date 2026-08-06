@@ -280,6 +280,45 @@ class PostgresStorageBackend:
             return None
         return self._row_to_report(row)
 
+    async def rename_report(self, run_id: str, new_query: str) -> None:
+        """Update `reports.original_query` (the research's display name)."""
+        await self._ensure_conn()
+        await self._execute(
+            "UPDATE reports SET original_query = $1 WHERE run_id = $2",
+            new_query,
+            run_id,
+        )
+
+    async def reassign_run(self, old_run_id: str, new_run_id: str) -> None:
+        """Repoint analyses/citation_edges/glossary/artifact_versions from
+        `old_run_id` to `new_run_id`. Run BEFORE `delete_report(old_run_id)`.
+        No-op when `old == new`. Multi-statement update runs in one
+        transaction so the merged report either owns all results or none."""
+        await self._ensure_conn()
+        if old_run_id == new_run_id:
+            return
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE analyses SET run_id = $1 WHERE run_id = $2",
+                new_run_id,
+                old_run_id,
+            )
+            await conn.execute(
+                "UPDATE citation_edges SET discovered_in_run = $1 WHERE discovered_in_run = $2",
+                new_run_id,
+                old_run_id,
+            )
+            await conn.execute(
+                "UPDATE glossary SET first_seen_run_id = $1 WHERE first_seen_run_id = $2",
+                new_run_id,
+                old_run_id,
+            )
+            await conn.execute(
+                "UPDATE artifact_versions SET discovered_in_run = $1 WHERE discovered_in_run = $2",
+                new_run_id,
+                old_run_id,
+            )
+
     def _report_filter_sql(
         self,
         *,

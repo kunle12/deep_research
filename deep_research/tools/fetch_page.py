@@ -560,7 +560,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     # via the outer ToolRegistry.call; re-acquiring the shared
                     # semaphore here would self-deadlock when a batch saturates
                     # max_concurrent_tools.
-                    extract_res = await reg.call_internal("pdf_extract_text", {"file_path": str(pdf_path)})
+                    extract_res = await reg.call_internal(
+                        "pdf_extract_text", {"file_path": str(pdf_path)}
+                    )
                     if extract_res.error is None:
                         text = extract_res.content or ""
                     else:

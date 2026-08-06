@@ -69,9 +69,7 @@ async def extract_glossary_from_report(
             await writer.upsert_glossary_entries(glossary_entries, run_id)
         except Exception as e:
             # Persistence must never discard a finished report — log and drop.
-            logger.warning(
-                "glossary persistence failed: %s: %s", type(e).__name__, e
-            )
+            logger.warning("glossary persistence failed: %s: %s", type(e).__name__, e)
             return []
     return glossary_entries
 

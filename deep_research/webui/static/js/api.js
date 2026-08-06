@@ -64,10 +64,34 @@ export function deleteReport(runId) {
   });
 }
 
-export function startResearch(query, pathOverride) {
+export function renameReport(runId, query) {
+  return request(`/api/reports/${encodeURIComponent(runId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ query }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function mergeReports(runId, otherRunIds, name, deleteSources) {
+  return request(`/api/reports/${encodeURIComponent(runId)}/merge`, {
+    method: "POST",
+    body: JSON.stringify({
+      other_run_ids: otherRunIds,
+      name: name || null,
+      delete_sources: Boolean(deleteSources),
+    }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function startResearch(query, pathOverride, attachToRunId) {
   return request("/api/research", {
     method: "POST",
-    body: JSON.stringify({ query, path_override: pathOverride || null }),
+    body: JSON.stringify({
+      query,
+      path_override: pathOverride || null,
+      attach_to_run_id: attachToRunId || null,
+    }),
     headers: { "Content-Type": "application/json" },
   });
 }

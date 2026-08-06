@@ -123,15 +123,17 @@ export function openJobDialog(jobId) {
           onclick: () => cancelTrackedJob(job.job_id),
         }),
       );
-      actionsEl.append(
-        el("button", {
-          class: "btn",
-          type: "button",
-          text: "Pause",
-          disabled: job.status !== "running",
-          onclick: () => pauseTrackedJob(job.job_id),
-        }),
-      );
+      if (!job.attach_to) {
+        actionsEl.append(
+          el("button", {
+            class: "btn",
+            type: "button",
+            text: "Pause",
+            disabled: job.status !== "running",
+            onclick: () => pauseTrackedJob(job.job_id),
+          }),
+        );
+      }
     } else if (job.status === "paused") {
       actionsEl.append(
         el("button", {
@@ -186,9 +188,13 @@ export function openJobDialog(jobId) {
     if (job.status === "done") {
       currentEl.append(
         el("span", {
-          text: job.archived
-            ? "Report saved to the library."
-            : "Report finished, but not archived (is pdl.enabled set?).",
+          text: job.attach_status === "skipped"
+            ? "This source was already attached to the research — no changes were made."
+            : job.attach_to
+              ? "Source analyzed and attached to the research."
+              : job.archived
+                ? "Report saved to the library."
+                : "Report finished, but not archived (is pdl.enabled set?).",
         }),
       );
     } else if (job.status === "failed") {

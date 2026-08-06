@@ -21,6 +21,7 @@ repos:
     rev: v1.16.1
     hooks:
       - id: mypy
+        files: ^deep_research/
         additional_dependencies:
           - pydantic>=2.7
         args: [--ignore-missing-imports]

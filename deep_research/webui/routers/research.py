@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/research", tags=["research"])
 class ResearchStartRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     path_override: Literal["quick", "deep", "academic", "url_source"] | None = None
+    attach_to_run_id: str | None = Field(default=None, max_length=64)
 
 
 class ResearchStartResponse(BaseModel):
@@ -38,6 +39,7 @@ class ResearchJobStatus(BaseModel):
     run_id: str | None = None
     archived: bool = False
     error: str | None = None
+    attach_to: str | None = None
 
 
 def _status(job: ResearchJob) -> ResearchJobStatus:
@@ -54,6 +56,7 @@ def _status(job: ResearchJob) -> ResearchJobStatus:
         run_id=job.run_id,
         archived=job.archived,
         error=job.error,
+        attach_to=job.attach_to,
     )
 
 
@@ -73,7 +76,19 @@ async def start_research(body: ResearchStartRequest, request: Request):
     query = body.query.strip()
     if not query:
         raise HTTPException(status_code=422, detail="query must not be blank")
-    job = _jobs(request).start(query, body.path_override)
+
+    # Attach mode: query must be a URL and the target report must exist.
+    if body.attach_to_run_id:
+        if not query.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="attach query must be an http(s) URL")
+        from deep_research.webui.deps import get_storage
+
+        backend = get_storage(request)
+        target = await backend.get_report(body.attach_to_run_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="target report not found")
+
+    job = _jobs(request).start(query, body.path_override, attach_to=body.attach_to_run_id)
     if job is None:
         raise HTTPException(
             status_code=409,

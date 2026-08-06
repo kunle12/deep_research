@@ -451,6 +451,76 @@ the old defaults.
 
 ---
 
+## Merge & Attach Patterns (library lifecycle)
+
+Two user-facing operations keep the personal library tidy over time.
+
+### Merge (combine related researches into one)
+
+`library/merge.py::merge_reports(storage, writer, run_ids, llm, model, ...)`
+creates a NEW report row (fresh run_id, `path_taken="merged"`) and returns its
+run_id. Key behaviors:
+
+- **LLM synthesis with deterministic fallback**: one call to
+  `prompts/merge_reports.txt` produces the unified markdown (each source capped
+  at `_MAX_SOURCE_CHARS`); on any failure a `_stitch_fallback` concatenates the
+  sources under sub-headers so merge never hard-fails.
+- **Citations** = union deduped by `citations.normalize_url`.
+- **Tags**: the union of all source artifacts' tags is copied onto the merged
+  artifact via `writer.tag`.
+- **`delete_sources` order matters**: `reassign_run(old, new)` is called for
+  EVERY source BEFORE `delete_report(old)`. `reassign_run` (both backends)
+  repoints `analyses.run_id`, `citation_edges.discovered_in_run`,
+  `glossary.first_seen_run_id`, `artifact_versions.discovered_in_run` — so the
+  sources' expensive per-paper analyses survive the cascade delete. Tag rows
+  with `applied_in_run = old` are killed by `delete_report`'s cascade, hence the
+  tag-union copy must happen before deleting sources. The now-unreferenced
+  source report artifact is best-effort deleted via `delete_artifact`.
+- Default keeps sources and tags them `merged` (applied_in_run=None so they
+  survive future cascade deletes).
+
+### Attach (analyze a new URL into an existing research)
+
+`library/attach.py::attach_source(url, run_id, storage, writer, config, llm, ...)`
+reuses the url_source pipeline end to end. Entry points: CLI `add-source`, web
+`POST /api/research` with `attach_to_run_id` (dispatched by an injectable
+`AttachRunner` in `webui/jobs.py`).
+
+- Fetch uses `paths/url_source.py::fetch_source` — the shared classify+fetch
+  helper (returns a `FetchedSource` incl. the archived `artifact_id`). It
+  dispatches to the module-global `_fetch_*` helpers so existing monkeypatch
+  tests keep intercepting. `url_source()` itself was NOT refactored onto it —
+  both call the same helpers; keep it that way.
+- The target report's `original_query` is passed as `user_query` to
+  `analyze_source` so `relevance_to_query` is meaningful.
+- `record_analysis` gets a MAPPED dict (not the SourceAnalysis directly):
+  `key_claims` → flattened `key_findings` strings, and `limitations`/`gaps`/
+  `follow_ups` JSON-serialized (those columns are raw TEXT; passing a list
+  fails the sqlite bind).
+- Report update: the rendered analysis section is inserted BEFORE the
+  Bibliography heading (report views strip it) and the citation merged by URL.
+- **Re-archive caveats (the upsert overwrites these — carry them over):**
+  `path_taken`, `iterations`, `classifier_rationale`, `config_snapshot`,
+  `original_query`. `started_at` is insert-only so it survives.
+- **Tags hang off `reports.artifact_id`**: re-archiving creates a NEW
+  content-sha artifact, so tags must be migrated old→new and the orphaned old
+  artifact deleted (`storage.delete_artifact`). Failing to migrate silently
+  untags the report.
+- Stale on-disk files: capture `completed_at` BEFORE re-archive, and call
+  `library/writer.py::remove_report_files` BEFORE `archive_report`. Order
+  matters: `archive_report` writes the new `{run_id}.md/.pdf` under TODAY's
+  date dir, and when the report was completed today, `completed_at` resolves
+  to that same dir — removing AFTER would delete the brand-new files (the
+  artifact would point at a missing file). Removing first is always safe.
+- Guards: target must exist; URL must be http(s); duplicate URL (an
+  `analyze_source` analysis already exists for that artifact under the target
+  run) is skipped; fetch/analyze failure leaves the research untouched.
+- Attach jobs are NOT pausable (`pause()` returns False when `job.attach_to`
+  is set) — they write no checkpoints, so a resume would re-run and duplicate
+  the section. The UI hides the pause button for them.
+
+---
+
 ## Common Pitfalls for AI Agents
 
 1. **Module-level globals**: if you add genuinely module-level mutable state,

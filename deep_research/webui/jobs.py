@@ -35,12 +35,17 @@ ResearchRunner = Callable[
     [AgentTopConfig, str, str | None, ProgressReporter, str], Awaitable[Report]
 ]
 
+# Attach runner: (config, url, target_run_id, progress) -> dict. Runs the
+# attach-source flow (fetch + analyze + append to an existing report).
+AttachRunner = Callable[[AgentTopConfig, str, str, ProgressReporter], Awaitable[dict]]
+
 
 @dataclass
 class ResearchJob:
     job_id: str
     query: str
     path_override: str | None = None
+    attach_to: str | None = None
     status: str = "running"  # running | done | failed | cancelled
     phase: str = ""
     step: str = ""
@@ -83,6 +88,36 @@ async def _default_runner(
     )
 
 
+async def _default_attach_runner(
+    config: AgentTopConfig,
+    url: str,
+    run_id: str,
+    progress: ProgressReporter,
+) -> dict:
+    """Fetch + analyze + attach *url* to the research *run_id*."""
+    from deep_research.library.attach import attach_source
+    from deep_research.library.storage import get_backend
+    from deep_research.library.writer import LibraryWriter
+    from deep_research.llm.client import LLMClient
+
+    backend = await get_backend(config)
+    try:
+        writer = LibraryWriter(backend, config.pdl.root_dir)
+        async with LLMClient(config.llm) as llm:
+            return await attach_source(
+                url,
+                run_id,
+                backend,
+                writer,
+                config,
+                llm,
+                config.llm.text_model,
+                progress=progress,
+            )
+    finally:
+        await backend.close()
+
+
 class ResearchJobManager:
     """Owns research jobs and their SSE subscriber queues."""
 
@@ -91,17 +126,25 @@ class ResearchJobManager:
         config_path: str,
         *,
         runner: ResearchRunner | None = None,
+        attach_runner: AttachRunner | None = None,
         max_concurrent: int = 1,
         checkpoint_dir: Path | None = None,
     ) -> None:
         self._config_path = config_path
         self._runner = runner or _default_runner
+        self._attach_runner = attach_runner or _default_attach_runner
         self._max_concurrent = max_concurrent
         self._checkpoint_dir = checkpoint_dir or _CHECKPOINT_DIR
         self._jobs: dict[str, ResearchJob] = {}
         self._running = 0
 
-    def start(self, query: str, path_override: str | None = None) -> ResearchJob | None:
+    def start(
+        self,
+        query: str,
+        path_override: str | None = None,
+        *,
+        attach_to: str | None = None,
+    ) -> ResearchJob | None:
         """Start a research job, or return None when at the concurrency cap."""
         if self._running >= self._max_concurrent:
             return None
@@ -109,7 +152,13 @@ class ResearchJobManager:
             job_id=uuid.uuid4().hex[:16],
             query=query,
             path_override=path_override,
+            attach_to=attach_to,
         )
+        if attach_to:
+            # Attach jobs mutate an existing report; use its run_id so the
+            # `done` event points at the updated research and archival check
+            # resolves against the existing report.
+            job.run_id = attach_to
         self._jobs[job.job_id] = job
         self._running += 1
         job.task = asyncio.create_task(self._run(job))
@@ -149,9 +198,13 @@ class ResearchJobManager:
 
         The engine writes a checkpoint after each iteration, so a paused job
         resumes from the last completed iteration (per-iteration granularity).
+        Attach jobs have no checkpoints and cannot be paused (resume would
+        re-run and duplicate the analysis section).
         """
         job = self._jobs.get(job_id)
         if job is None or job.status != "running" or job.task is None:
+            return False
+        if job.attach_to:
             return False
         job.status = "paused"
         job.paused_at = time.time()
@@ -240,8 +293,7 @@ class ResearchJobManager:
             # Skip checkpoints that belong to jobs we already track (e.g. a
             # running job whose checkpoint exists mid-run).
             if any(
-                j.run_id == run_id or (j.query and j.query == query)
-                for j in self._jobs.values()
+                j.run_id == run_id or (j.query and j.query == query) for j in self._jobs.values()
             ):
                 continue
             job = ResearchJob(
@@ -299,6 +351,28 @@ class ResearchJobManager:
         job.run_id = run_id
         try:
             config = AgentTopConfig.load_yaml(self._config_path)
+            if job.attach_to:
+                result = await self._attach_runner(config, job.query, job.attach_to, reporter)
+                if job.status != "running":
+                    # Cancelled while the attach runner was finishing.
+                    job.status = "cancelled"
+                    self.emit(job, {"type": "cancelled"})
+                    return
+                # The target report already exists in the library.
+                job.archived = True
+                job.status = "done"
+                self.emit(
+                    job,
+                    {
+                        "type": "done",
+                        "run_id": job.attach_to,
+                        "archived": True,
+                        "path": "attach",
+                        "query": job.query,
+                        "attach_status": result.get("status", "attached"),
+                    },
+                )
+                return
             report = await self._runner(config, job.query, job.path_override, reporter, run_id)
             if job.status != "running":
                 # Cancelled while the runner was finishing (or already marked

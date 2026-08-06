@@ -34,6 +34,22 @@ async def _get_backend_and_writer(config_path: str):
     return cfg, backend, writer
 
 
+async def _resolve_report(backend, run_id_prefix: str):
+    """Resolve a run_id prefix to a unique report; echo ambiguity/missing."""
+    reports = await backend.list_reports(limit=1000)
+    matched = [r for r in reports if r.run_id.startswith(run_id_prefix)]
+    if len(matched) == 0:
+        typer.echo(f"No report found with run_id starting with '{run_id_prefix}'.")
+        return None
+    if len(matched) > 1:
+        typer.echo(f"Multiple reports match prefix '{run_id_prefix}':")
+        for r in matched:
+            typer.echo(f"  {r.run_id[:16]}  {r.started_at[:19]}  {r.original_query[:60]}")
+        typer.echo("Use a longer prefix to select a single report.")
+        return None
+    return matched[0]
+
+
 @library_app.command("ls")
 def library_ls(
     source_type: str | None = typer.Option(
@@ -230,6 +246,122 @@ def library_delete(
         # Delete DB records
         await backend.delete_report(r.run_id)
         typer.echo("  Deleted from database.")
+        await backend.close()
+
+    asyncio.run(_run())
+
+
+@library_app.command("rename")
+def library_rename(
+    run_id: str = typer.Argument(..., help="Run ID (or prefix) of the report to rename"),
+    new_name: str = typer.Argument(..., help="New name for the research"),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Rename a research report (updates its display name/title)."""
+
+    async def _run():
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        r = await _resolve_report(backend, run_id)
+        if r is None:
+            await backend.close()
+            raise typer.Exit(code=1)
+        await backend.rename_report(r.run_id, new_name)
+        typer.echo(f"Renamed '{r.original_query[:60]}' -> '{new_name}'")
+        await backend.close()
+
+    asyncio.run(_run())
+
+
+@library_app.command("merge")
+def library_merge(
+    run_ids: list[str] = typer.Argument(..., help="Two or more run ID prefixes to merge"),
+    name: str | None = typer.Option(None, "--name", help="New name for the merged research"),
+    delete_sources: bool = typer.Option(
+        False, "--delete-sources", help="Delete the source reports after merging"
+    ),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Merge two or more research reports into a single unified report."""
+
+    async def _run():
+        cfg, backend, writer = await _get_backend_and_writer(config_path)
+        if len(run_ids) < 2:
+            typer.echo("merge requires at least two run IDs.")
+            await backend.close()
+            raise typer.Exit(code=1)
+
+        resolved = []
+        for prefix in run_ids:
+            r = await _resolve_report(backend, prefix)
+            if r is None:
+                await backend.close()
+                raise typer.Exit(code=1)
+            resolved.append(r.run_id)
+
+        typer.echo(
+            f"Merging {len(resolved)} report(s): "
+            + ", ".join(f"{rid[:16]}" for rid in resolved)
+            + "..."
+        )
+        from deep_research.library.merge import merge_reports
+        from deep_research.llm.client import open_llm
+
+        async with open_llm(cfg.llm) as llm:
+            new_run_id = await merge_reports(
+                backend,
+                writer,
+                resolved,
+                llm,
+                cfg.llm.text_model,
+                name=name,
+                delete_sources=delete_sources,
+            )
+        typer.echo(f"Merged report created: {new_run_id}")
+        await backend.close()
+
+    asyncio.run(_run())
+
+
+@library_app.command("add-source")
+def library_add_source(
+    run_id: str = typer.Argument(..., help="Run ID (or prefix) of the research"),
+    url: str = typer.Argument(..., help="URL of the paper/doc/blog to attach"),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Fetch, fully analyze, and attach a new source to an existing research."""
+
+    async def _run():
+        cfg, backend, writer = await _get_backend_and_writer(config_path)
+        r = await _resolve_report(backend, run_id)
+        if r is None:
+            await backend.close()
+            raise typer.Exit(code=1)
+        if not url.startswith(("http://", "https://")):
+            typer.echo(f"URL must start with http(s):// (got: {url!r})")
+            await backend.close()
+            raise typer.Exit(code=1)
+
+        from deep_research.library.attach import attach_source
+        from deep_research.llm.client import open_llm
+
+        typer.echo(f"Attaching {url} to '{r.original_query[:60]}'...")
+        async with open_llm(cfg.llm) as llm:
+            result = await attach_source(
+                url,
+                r.run_id,
+                backend,
+                writer,
+                cfg,
+                llm,
+                cfg.llm.text_model,
+            )
+        if result.get("status") == "skipped":
+            typer.echo(f"Skipped: {result.get('reason')}")
+        else:
+            typer.echo(
+                f"Attached. artifact_id={result.get('artifact_id', '-')} "
+                f"analysis_id={result.get('analysis_id', '-')}"
+            )
         await backend.close()
 
     asyncio.run(_run())

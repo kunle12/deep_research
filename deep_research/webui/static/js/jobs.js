@@ -80,10 +80,11 @@ export function fmtElapsed(job) {
   return `${s}s`;
 }
 
-function blankJob(jobId, query) {
+function blankJob(jobId, query, attachTo = null) {
   return {
     job_id: jobId,
     query: query || "",
+    attach_to: attachTo,
     status: "running",
     phase: "",
     step: "",
@@ -94,6 +95,7 @@ function blankJob(jobId, query) {
     run_id: null,
     archived: false,
     error: null,
+    attach_status: null,
     events: [],
   };
 }
@@ -127,6 +129,7 @@ function applyEvent(job, event) {
       job.status = "done";
       job.run_id = event.run_id ?? job.run_id;
       job.archived = event.archived ?? job.archived;
+      job.attach_status = event.attach_status || null;
       job.completed_at = job.completed_at || Date.now() / 1000;
       break;
     case "error":
@@ -204,9 +207,9 @@ function closeStream(jobId) {
   }
 }
 
-/** Start tracking a freshly created job (from the research modal). */
-export function trackJob(jobId, query) {
-  const job = blankJob(jobId, query);
+/** Start tracking a freshly created job (from the research modal / attach). */
+export function trackJob(jobId, query, attachTo = null) {
+  const job = blankJob(jobId, query, attachTo);
   jobs.set(jobId, job);
   dismissed.delete(jobId);
   notify();
@@ -234,6 +237,7 @@ export async function restoreJobs() {
     job.run_id = item.run_id;
     job.archived = item.archived;
     job.error = item.error;
+    job.attach_to = item.attach_to || null;
     jobs.set(item.job_id, job);
     if (ACTIVE.has(item.status)) {
       // Subscribe replays the event log, rebuilding the feed.

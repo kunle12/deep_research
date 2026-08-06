@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from deep_research.config import AgentTopConfig
 from deep_research.library.storage import get_backend
 from deep_research.library.storage.base import StorageBackend
-from deep_research.webui.jobs import ResearchJobManager, ResearchRunner
+from deep_research.webui.jobs import AttachRunner, ResearchJobManager, ResearchRunner
 from deep_research.webui.routers.library import router as library_router
 from deep_research.webui.routers.research import router as research_router
 
@@ -43,6 +43,7 @@ def create_app(
     *,
     backend: StorageBackend | None = None,
     research_runner: ResearchRunner | None = None,
+    attach_runner: AttachRunner | None = None,
     checkpoint_dir: Path | None = None,
 ) -> FastAPI:
     """Build the web UI application.
@@ -83,6 +84,7 @@ def create_app(
     app.state.jobs = ResearchJobManager(
         config_path,
         runner=research_runner,
+        attach_runner=attach_runner,
         checkpoint_dir=checkpoint_dir,
     )
 

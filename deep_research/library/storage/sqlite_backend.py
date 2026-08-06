@@ -340,6 +340,43 @@ class SqliteStorageBackend:
             return None
         return self._row_to_report(row)
 
+    @_serialized
+    async def rename_report(self, run_id: str, new_query: str) -> None:
+        """Update `reports.original_query` (the research's display name)."""
+        await self._ensure_conn()
+        await self._execute(
+            "UPDATE reports SET original_query = ? WHERE run_id = ?",
+            (new_query, run_id),
+        )
+        await self._conn.commit()
+
+    @_serialized
+    async def reassign_run(self, old_run_id: str, new_run_id: str) -> None:
+        """Repoint analyses/citation_edges/glossary/artifact_versions from
+        `old_run_id` to `new_run_id`. Run BEFORE `delete_report(old_run_id)`
+        so the source report's results survive in the merged report. No-op when
+        `old == new` (e.g. merging a self-reference).
+        """
+        await self._ensure_conn()
+        if old_run_id == new_run_id:
+            return
+        await self._execute(
+            "UPDATE analyses SET run_id = ? WHERE run_id = ?", (new_run_id, old_run_id)
+        )
+        await self._execute(
+            "UPDATE citation_edges SET discovered_in_run = ? WHERE discovered_in_run = ?",
+            (new_run_id, old_run_id),
+        )
+        await self._execute(
+            "UPDATE glossary SET first_seen_run_id = ? WHERE first_seen_run_id = ?",
+            (new_run_id, old_run_id),
+        )
+        await self._execute(
+            "UPDATE artifact_versions SET discovered_in_run = ? WHERE discovered_in_run = ?",
+            (new_run_id, old_run_id),
+        )
+        await self._conn.commit()
+
     def _report_filter_sql(
         self,
         *,

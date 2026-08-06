@@ -2,8 +2,19 @@
 
 import { el, clear } from "../dom.js";
 import { formatDate, plural } from "../format.js";
-import { addReportTag, deleteReport, fetchArxivPdf, getReport, removeReportTag } from "../api.js";
+import {
+  addReportTag,
+  deleteReport,
+  fetchArxivPdf,
+  getReport,
+  listReports,
+  mergeReports,
+  removeReportTag,
+  renameReport,
+  startResearch,
+} from "../api.js";
 import { parse, renderBlocks, safeUrl } from "../markdown.js";
+import { hasActiveJob, trackJob } from "../jobs.js";
 
 export function renderReport(root, runId) {
   clear(root);
@@ -68,6 +79,20 @@ function buildReport(report) {
     el(
       "div",
       { class: "report-actions" },
+      el("button", {
+        class: "btn",
+        type: "button",
+        text: "Rename",
+        title: "Rename this research",
+        onclick: () => promptRename(report),
+      }),
+      el("button", {
+        class: "btn",
+        type: "button",
+        text: "Add source",
+        title: "Analyze a new URL and attach it to this research",
+        onclick: () => openAddSource(report),
+      }),
       report.has_pdf
         ? el("a", { class: "btn", href: report.pdf_url, target: "_blank", rel: "noopener", text: "Open PDF" })
         : null,
@@ -123,6 +148,7 @@ function buildReport(report) {
       refsList(report.citations),
     ),
     tagEditor(report),
+    mergePanel(report),
     el(
       "div",
       { class: "panel" },
@@ -334,4 +360,184 @@ function confirmDelete(report) {
     .catch((err) => {
       window.alert(`Delete failed: ${err.message}`);
     });
+}
+
+function promptRename(report) {
+  const name = window.prompt("New name for this research:", report.query || report.run_id);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) {
+    window.alert("Name cannot be blank.");
+    return;
+  }
+  renameReport(report.run_id, trimmed)
+    .then((updated) => {
+      report.query = updated.query;
+      window.location.reload();
+    })
+    .catch((err) => {
+      window.alert(`Rename failed: ${err.message}`);
+    });
+}
+
+function openAddSource(report) {
+  if (hasActiveJob()) {
+    window.alert("A research job is already running — wait for it to finish, then try again.");
+    return;
+  }
+  const url = window.prompt(
+    "Enter the URL of the paper / document / blog to analyze and attach to this research:",
+    "",
+  );
+  if (url === null) return;
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) {
+    window.alert("Please enter a valid http(s):// URL.");
+    return;
+  }
+  startResearch(trimmed, "url_source", report.run_id)
+    .then((res) => {
+      trackJob(res.job_id, trimmed, report.run_id);
+      window.alert(
+        "Analysis started — track its progress in the bottom taskbar. The report will update when it finishes.",
+      );
+    })
+    .catch((err) => {
+      const msg = String(err.message);
+      window.alert(
+        msg.includes("409")
+          ? "A research job is already running — wait for it to finish, then try again."
+          : `Failed to start: ${msg}`,
+      );
+    });
+}
+
+function mergePanel(report) {
+  const listWrap = el("div", { class: "tag-cloud" });
+  const input = el("input", {
+    class: "search-input",
+    type: "text",
+    placeholder: "Search reports to merge…",
+    "aria-label": "Search reports to merge",
+  });
+  const nameInput = el("input", {
+    class: "search-input",
+    type: "text",
+    placeholder: "New merged name (optional)",
+    "aria-label": "New merged name",
+  });
+  const delCheck = el("input", { type: "checkbox", id: "merge-del-src", "aria-label": "Delete sources" });
+  const statusEl = el("p", { class: "hint", role: "status" });
+  const selected = [];
+
+  function renderSelected() {
+    clear(listWrap);
+    if (!selected.length) {
+      listWrap.append(el("p", { class: "hint", text: "No other reports selected yet." }));
+      return;
+    }
+    for (const item of selected) {
+      listWrap.append(
+        el(
+          "button",
+          {
+            class: "chip chip-active",
+            type: "button",
+            title: `Remove ${item.query}`,
+            onclick: () => {
+              const idx = selected.indexOf(item);
+              if (idx !== -1) selected.splice(idx, 1);
+              renderSelected();
+            },
+          },
+          item.query,
+          el("span", { class: "chip-count", text: "×" }),
+        ),
+      );
+    }
+  }
+
+  let searchSeq = 0;
+  let currentResults = [];
+  async function onSearch(value) {
+    const seq = ++searchSeq;
+    if (!value.trim()) {
+      currentResults = [];
+      return;
+    }
+    try {
+      const body = await listReports({ q: value.trim(), limit: 8 });
+      if (seq !== searchSeq) return;
+      currentResults = body.items.filter((r) => r.run_id !== report.run_id);
+    } catch {
+      currentResults = [];
+    }
+  }
+
+  const addBtn = el("button", {
+    class: "btn btn-sm",
+    type: "button",
+    text: "Add",
+    onclick: async () => {
+      const value = input.value.trim();
+      if (!value) return;
+      await onSearch(value);
+      input.value = "";
+      if (!currentResults.length) {
+        statusEl.textContent = "No matching reports found.";
+        return;
+      }
+      const match = currentResults[0];
+      if (!selected.includes(match)) selected.push(match);
+      currentResults = [];
+      renderSelected();
+      statusEl.textContent = "";
+    },
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addBtn.click();
+  });
+
+  const mergeBtn = el("button", {
+    class: "btn btn-sm",
+    type: "button",
+    text: "Merge now",
+    onclick: async () => {
+      if (!selected.length) {
+        statusEl.textContent = "Select at least one other report first.";
+        return;
+      }
+      mergeBtn.disabled = true;
+      statusEl.textContent = "Merging…";
+      try {
+        const res = await mergeReports(
+          report.run_id,
+          selected.map((r) => r.run_id),
+          nameInput.value.trim() || null,
+          delCheck.checked,
+        );
+        window.location.hash = `#/report/${encodeURIComponent(res.run_id)}`;
+      } catch (err) {
+        mergeBtn.disabled = false;
+        statusEl.textContent = err.message;
+      }
+    },
+  });
+
+  renderSelected();
+  return el(
+    "div",
+    { class: "panel merge-panel" },
+    el("h2", { class: "panel-title", text: "Merge with another report" }),
+    el(
+      "label",
+      { class: "field-label", text: "Search" },
+      el("div", { class: "add-row" }, input, addBtn),
+    ),
+    listWrap,
+    el("label", { class: "field-label", text: "Merged name" }, nameInput),
+    el("label", { class: "check-row" }, delCheck, el("span", { text: "Delete source reports" })),
+    el("div", { class: "add-row" }, mergeBtn),
+    statusEl,
+  );
 }

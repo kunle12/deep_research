@@ -142,6 +142,7 @@ async def _tavily_with_retry(
             raise
     raise RuntimeError("Tavily retry loop exited unexpectedly")
 
+
 async def _searxng_search(
     query: str,
     max_results: int,

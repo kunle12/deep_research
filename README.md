@@ -251,6 +251,9 @@ uv run deep-research-library tag <id> <tag>                # add a tag
 uv run deep-research-library tag --remove <id> <tag>       # remove a tag
 uv run deep-research-library tag --list <artifact_id>      # list tags for an artifact
 uv run deep-research-library tag --rename-old <o> --rename-new <n>  # rename a tag globally
+uv run deep-research-library rename <run_id> "New name"    # rename a research
+uv run deep-research-library merge <id1> <id2> [--name "Combined"] [--delete-sources]  # merge reports
+uv run deep-research-library add-source <run_id> <url>     # analyze a URL into an existing research
 uv run deep-research-library stats                         # library statistics
 uv run deep-research-library delete <run_id_prefix>        # delete a single report
 uv run deep-research-library prune --older-than 90         # prune old reports
@@ -262,6 +265,24 @@ uv run deep-research-library glossary --term RLHF          # detail view of one 
 uv run deep-research-library glossary --filter-tag "nlp"   # filter by domain tag
 uv run deep-research-library glossary --out glossary.json  # export as JSON
 ```
+
+**Merge, rename & attach** — keep your personal library tidy as topics evolve:
+
+- `rename <run_id> "New name"` — update a research's display name (the web UI
+  has a Rename button on the report page).
+- `merge <run_id1> <run_id2> [more...] [--name "Combined"] [--delete-sources]` —
+  combine two or more related researches into a single unified report. An LLM
+  synthesizes the sources into one coherent report (deduping citations and
+  merging tags); a deterministic stitch is used if the LLM call fails. Source
+  reports are kept and tagged `merged` unless `--delete-sources` is passed, in
+  which case their analyses are reassigned to the merged report before they are
+  deleted. The web UI has a "Merge with…" panel on the report page.
+- `add-source <run_id> <url>` — when you find a relevant paper/document/blog
+  after the fact, fully analyze it (reusing the url_source pipeline, including
+  PDF vision) and attach it to an existing research: the analysis is recorded
+  against that research, a "Added source" section is appended to its report,
+  and its citation is added to the references. The web UI has an "Add source"
+  button on the report page (runs as a tracked job with live progress).
 
 ### Web UI (library browser)
 
@@ -278,6 +299,12 @@ the full progress feed:
 uv run deep-research-web
 # open http://127.0.0.1:8080
 ```
+
+The report page also supports **Rename** (edit the research's title),
+**Add source** (paste a URL to fully analyze and attach it to this research —
+runs as a tracked job), and a **Merge with…** panel to combine it with other
+reports into one unified research (optional new name, optional delete
+sources).
 
 Or run the server directly:
 

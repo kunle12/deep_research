@@ -420,6 +420,26 @@ def _render_pdf(markdown_text: str, pdf_path: Path) -> bytes | None:
             return None
 
 
+def remove_report_files(root: Path, run_id: str, date_str: str) -> None:
+    """Remove the on-disk `{run_id}.md`/`.pdf` under the report date dir.
+
+    The report files live under `reports/{year}/{month}/{day}/` derived from
+    the report's `completed_at` (or `started_at`). Best-effort; never raises.
+    """
+    try:
+        dt = datetime.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        return
+    day_dir = root / "reports" / f"{dt.year}" / f"{dt.month:02d}" / f"{dt.day:02d}"
+    for suffix in (".md", ".pdf"):
+        candidate = day_dir / f"{run_id}{suffix}"
+        try:
+            if candidate.exists():
+                candidate.unlink()
+        except OSError as e:
+            logger.warning("could not remove %s: %s", candidate, e)
+
+
 class NullLibraryWriter:
     """No-op writer that does nothing. Used when pdl.enabled=false."""
 

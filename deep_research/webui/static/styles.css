@@ -235,6 +235,18 @@ button { font-family: inherit; font-size: inherit; }
   color: var(--text-2);
 }
 
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.merge-panel .add-row { margin-top: 8px; }
+.merge-panel .tag-cloud { min-height: 22px; }
+
 .select {
   width: 100%;
   padding: 7px 10px;
@@ -331,6 +343,7 @@ button { font-family: inherit; font-size: inherit; }
 .badge-academic { color: #6b3fa0; background: #efe7fa; border-color: #d3bef2; }
 .badge-url_source { color: #a35b00; background: #fdf0d8; border-color: #f0d7a4; }
 .badge-applied { color: #0f766e; background: #dcf3f0; border-color: #b4e3dd; }
+.badge-merged { color: #7c3aed; background: #f0e9ff; border-color: #d5c4fb; }
 
 .card-meta {
   display: flex;
