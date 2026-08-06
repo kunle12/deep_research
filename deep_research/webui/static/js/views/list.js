@@ -1,11 +1,13 @@
-/* List view: filters + paginated report cards. */
+/* List view: filters + paginated report cards (classic page navigation). */
 
 import { el, clear } from "../dom.js";
 import { formatDate, plural } from "../format.js";
 import { listReports, getTags, getStats } from "../api.js";
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 30;
+const PAGE_SIZES = [10, 30, 50, 100];
 const PATHS = ["quick", "deep", "academic", "url_source", "applied", "merged"];
+const MAX_PAGE_BUTTONS = 7;
 
 export function renderList(root, searchInput) {
   clear(root);
@@ -16,7 +18,8 @@ export function renderList(root, searchInput) {
     path: "",
     items: [],
     total: 0,
-    offset: 0,
+    page: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
     loading: false,
     error: "",
     tags: [],
@@ -28,12 +31,16 @@ export function renderList(root, searchInput) {
     el("option", { value: "", text: "All paths" }),
     ...PATHS.map((p) => el("option", { value: p, text: p })),
   );
+  const pageSizeSelect = el(
+    "select",
+    { class: "select select-sm", "aria-label": "Reports per page" },
+    ...PAGE_SIZES.map((n) => el("option", { value: String(n), text: `${n} / page`, selected: n === DEFAULT_PAGE_SIZE })),
+  );
   const tagList = el("div", { class: "tag-cloud" });
   const summaryEl = el("div", { class: "filter-summary" });
   const listEl = el("div", { class: "report-list" });
   const statusEl = el("div", { class: "list-status" });
-  const loadMoreEl = el("div", { class: "load-more" });
-  const sentinel = el("div", { class: "sentinel" });
+  const pagerEl = el("div", { class: "pager" });
   const statsEl = el("div", { class: "sidebar-stats" });
 
   const sidebar = el(
@@ -48,72 +55,84 @@ export function renderList(root, searchInput) {
     el("h2", { class: "panel-title", text: "Library" }),
     statsEl,
   );
-  const main = el("section", { class: "list-main" }, summaryEl, listEl, statusEl, loadMoreEl);
+  const main = el(
+    "section",
+    { class: "list-main" },
+    el(
+      "div",
+      { class: "list-toolbar" },
+      summaryEl,
+      el("label", { class: "page-size-row" }, el("span", { class: "page-size-label", text: "Per page" }), pageSizeSelect),
+    ),
+    listEl,
+    statusEl,
+    pagerEl,
+  );
   root.append(el("div", { class: "layout" }, sidebar, main));
 
-  const io = new IntersectionObserver(
-    (entries) => {
-      if (
-        entries[0].isIntersecting &&
-        !state.loading &&
-        state.items.length > 0 &&
-        state.items.length < state.total
-      ) {
-        load(false);
-      }
-    },
-    { rootMargin: "300px" },
-  );
-  io.observe(sentinel);
   let requestSeq = 0;
+
+  function resetAndLoad() {
+    state.page = 1;
+    load();
+  }
 
   const onSearch = (event) => {
     state.q = event.detail;
-    state.offset = 0;
-    load(true);
+    resetAndLoad();
   };
   document.addEventListener("dr:search", onSearch);
 
   pathSelect.addEventListener("change", () => {
     state.path = pathSelect.value;
-    state.offset = 0;
-    load(true);
+    resetAndLoad();
+  });
+
+  pageSizeSelect.addEventListener("change", () => {
+    state.pageSize = Number(pageSizeSelect.value) || DEFAULT_PAGE_SIZE;
+    resetAndLoad();
   });
 
   function cleanup() {
     document.removeEventListener("dr:search", onSearch);
-    io.disconnect();
   }
 
   function clearFilters() {
     state.q = "";
     state.tag = "";
     state.path = "";
-    state.offset = 0;
+    state.page = 1;
     searchInput.value = "";
     pathSelect.value = "";
     renderTags();
-    load(true);
+    load();
   }
 
-  async function load(reset) {
+  function goToPage(page) {
+    const totalPages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    const target = Math.min(Math.max(1, page), totalPages);
+    if (target === state.page && state.items.length) return;
+    state.page = target;
+    load();
+  }
+
+  async function load() {
     const seq = ++requestSeq;
-    const offset = reset ? 0 : state.offset;
+    const offset = (state.page - 1) * state.pageSize;
     state.loading = true;
     state.error = "";
     render();
     try {
       const body = await listReports({
-        limit: PAGE_SIZE,
+        limit: state.pageSize,
         offset,
         q: state.q || undefined,
         tag: state.tag || undefined,
         path: state.path || undefined,
       });
       if (seq !== requestSeq) return; // superseded by a newer request
-      state.items = reset ? body.items : [...state.items, ...body.items];
+      state.items = body.items;
       state.total = body.total;
-      state.offset = offset + body.items.length;
     } catch (err) {
       if (seq !== requestSeq) return;
       state.error = err.message;
@@ -180,9 +199,8 @@ export function renderList(root, searchInput) {
           "aria-pressed": active ? "true" : "false",
           onclick: () => {
             state.tag = active ? "" : tag;
-            state.offset = 0;
             renderTags();
-            load(true);
+            resetAndLoad();
           },
         },
         tag,
@@ -214,16 +232,82 @@ export function renderList(root, searchInput) {
       .catch(() => {});
   }
 
+  function pageList(totalPages) {
+    // Returns an array of page numbers to show, with 0 as an ellipsis marker.
+    if (totalPages <= MAX_PAGE_BUTTONS) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const current = state.page;
+    const out = [1];
+    if (current > 3) out.push(0); // leading ellipsis
+    const start = Math.max(2, current - 1);
+    const end = Math.min(totalPages - 1, current + 1);
+    for (let p = start; p <= end; p++) out.push(p);
+    if (current < totalPages - 2) out.push(0); // trailing ellipsis
+    out.push(totalPages);
+    return out;
+  }
+
+  function renderPager() {
+    clear(pagerEl);
+    if (!state.items.length) return;
+    const totalPages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    if (totalPages < 2) return;
+
+    pagerEl.append(
+      el("button", {
+        class: "pager-btn",
+        type: "button",
+        text: "‹ Prev",
+        disabled: state.loading || state.page === 1,
+        onclick: () => goToPage(state.page - 1),
+      }),
+    );
+    for (const p of pageList(totalPages)) {
+      if (p === 0) {
+        pagerEl.append(el("span", { class: "pager-ellipsis", text: "…" }));
+        continue;
+      }
+      pagerEl.append(
+        el("button", {
+          class: p === state.page ? "pager-btn pager-btn-active" : "pager-btn",
+          type: "button",
+          "aria-current": p === state.page ? "page" : undefined,
+          text: String(p),
+          disabled: state.loading,
+          onclick: () => goToPage(p),
+        }),
+      );
+    }
+    pagerEl.append(
+      el("button", {
+        class: "pager-btn",
+        type: "button",
+        text: "Next ›",
+        disabled: state.loading || state.page === totalPages,
+        onclick: () => goToPage(state.page + 1),
+      }),
+    );
+  }
+
   function render() {
     clear(summaryEl);
     clear(listEl);
     clear(statusEl);
-    clear(loadMoreEl);
+    clear(pagerEl);
 
     if (state.items.length) {
+      const first = (state.page - 1) * state.pageSize + 1;
+      const last = Math.min(state.total, state.page * state.pageSize);
       summaryEl.append(
-        el("span", { class: "summary-text", text: `Showing ${state.items.length} of ${state.total} reports` }),
+        el("span", { class: "summary-text", text: `Showing ${first}–${last} of ${state.total} reports` }),
       );
+    } else if (!state.loading && state.total) {
+      // The requested page is out of range (e.g. filters changed elsewhere);
+      // clamp back to the last valid page.
+      state.page = Math.max(1, Math.ceil(state.total / state.pageSize));
+      load();
+      return;
     }
     if (state.q || state.tag || state.path) {
       summaryEl.append(el("button", { class: "link-btn", type: "button", text: "Clear filters", onclick: clearFilters }));
@@ -239,18 +323,7 @@ export function renderList(root, searchInput) {
 
     for (const item of state.items) listEl.append(cardEl(item));
 
-    if (state.items.length < state.total) {
-      loadMoreEl.append(
-        el("button", {
-          class: "btn",
-          type: "button",
-          text: state.loading ? "Loading…" : "Load more",
-          disabled: state.loading,
-          onclick: () => load(false),
-        }),
-      );
-    }
-    loadMoreEl.append(sentinel);
+    renderPager();
   }
 
   renderTags();
@@ -261,7 +334,7 @@ export function renderList(root, searchInput) {
       renderTags();
     })
     .catch(() => {});
-  load(true);
+  load();
 
   return cleanup;
 }

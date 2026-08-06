@@ -15,6 +15,7 @@ import {
 } from "../api.js";
 import { parse, renderBlocks, safeUrl } from "../markdown.js";
 import { hasActiveJob, trackJob } from "../jobs.js";
+import { confirmDialog } from "./dialog.js";
 
 export function renderReport(root, runId) {
   clear(root);
@@ -349,17 +350,22 @@ function tagEditor(report) {
 }
 
 function confirmDelete(report) {
-  const ok = window.confirm(
-    `Delete "${report.query || report.run_id}" and its archived files? This cannot be undone.`,
-  );
-  if (!ok) return;
-  deleteReport(report.run_id)
-    .then(() => {
-      window.location.hash = "#/";
-    })
-    .catch((err) => {
-      window.alert(`Delete failed: ${err.message}`);
-    });
+  confirmDialog({
+    title: "Delete report",
+    message: `Delete "${report.query || report.run_id}" and its archived files? This cannot be undone.`,
+    confirmText: "Delete",
+    danger: true,
+  }).then((ok) => {
+    if (!ok) return;
+    deleteReport(report.run_id)
+      .then(() => {
+        document.dispatchEvent(new CustomEvent("dr:library"));
+        window.location.hash = "#/";
+      })
+      .catch((err) => {
+        window.alert(`Delete failed: ${err.message}`);
+      });
+  });
 }
 
 function promptRename(report) {
@@ -507,15 +513,28 @@ function mergePanel(report) {
         statusEl.textContent = "Select at least one other report first.";
         return;
       }
+      const mergedName = nameInput.value.trim() || null;
+      const ok = await confirmDialog({
+        title: "Merge reports",
+        message: delCheck.checked
+          ? `Merge this report with ${selected.length} other report${selected.length > 1 ? "s" : ""} into one? The source reports will be deleted after their results are merged.`
+          : `Merge this report with ${selected.length} other report${selected.length > 1 ? "s" : ""} into one unified report? The originals will be kept and tagged "merged".`,
+        confirmText: "Merge",
+        danger: delCheck.checked,
+      });
+      if (!ok) return;
       mergeBtn.disabled = true;
       statusEl.textContent = "Merging…";
       try {
         const res = await mergeReports(
           report.run_id,
           selected.map((r) => r.run_id),
-          nameInput.value.trim() || null,
+          mergedName,
           delCheck.checked,
         );
+        // Source reports may have been deleted (delete_sources) or kept and
+        // re-tagged; either way the library totals changed.
+        document.dispatchEvent(new CustomEvent("dr:library"));
         window.location.hash = `#/report/${encodeURIComponent(res.run_id)}`;
       } catch (err) {
         mergeBtn.disabled = false;

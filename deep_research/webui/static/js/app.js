@@ -107,22 +107,14 @@ function initStats() {
 }
 
 const TERMINAL = new Set(["done", "failed", "cancelled", "lost"]);
-
-// Refresh the header counts when a research job reaches a terminal state —
-// e.g. a completed (archived) report changes the library totals, so the
+// Refresh the header counts when the library changes — either a research job
+// reaches a terminal state (e.g. a completed report changes the totals) or a
+// report is deleted / merged / renamed from the report page (dr:library). The
 // "N reports · M artifacts" readout must not stay stale until a reload.
 function initStatsRefresh() {
   const prev = new Map(); // job_id -> status
   let timer = null;
-  document.addEventListener("dr:jobs", (event) => {
-    const list = (event.detail && event.detail.jobs) || [];
-    let changed = false;
-    for (const job of list) {
-      const old = prev.get(job.job_id);
-      if (old && old !== job.status && TERMINAL.has(job.status)) changed = true;
-      prev.set(job.job_id, job.status);
-    }
-    if (!changed) return;
+  const refresh = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
       getStats()
@@ -131,7 +123,18 @@ function initStatsRefresh() {
         })
         .catch(() => {});
     }, 250);
+  };
+  document.addEventListener("dr:jobs", (event) => {
+    const list = (event.detail && event.detail.jobs) || [];
+    let changed = false;
+    for (const job of list) {
+      const old = prev.get(job.job_id);
+      if (old && old !== job.status && TERMINAL.has(job.status)) changed = true;
+      prev.set(job.job_id, job.status);
+    }
+    if (changed) refresh();
   });
+  document.addEventListener("dr:library", refresh);
 }
 
 function initNewResearch() {
