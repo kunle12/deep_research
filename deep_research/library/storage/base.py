@@ -12,6 +12,7 @@ from deep_research.library.storage.rows import (
     ArtifactRow,
     CitationEdgeRow,
     GlossaryEntry,
+    RefreshJobRow,
     ReportRow,
     SearchHit,
     TagRow,
@@ -111,6 +112,8 @@ class StorageBackend(Protocol):
     # -- Analysis ops --
     async def insert_analysis(self, analysis: AnalysisRow) -> str: ...
 
+    async def get_analysis(self, analysis_id: str) -> AnalysisRow | None: ...
+
     async def get_analyses_for_artifact(self, artifact_id: str) -> list[AnalysisRow]: ...
 
     # -- Citation edge ops --
@@ -124,8 +127,6 @@ class StorageBackend(Protocol):
     async def get_tags_for_artifact(self, artifact_id: str) -> list[TagRow]: ...
 
     async def get_tags_for_artifacts(self, artifact_ids: list[str]) -> dict[str, list[TagRow]]: ...
-
-    async def get_artifacts_by_tag(self, tag: str) -> list[str]: ...
 
     async def delete_tag(self, tag: str, artifact_id: str) -> None: ...
 
@@ -144,6 +145,8 @@ class StorageBackend(Protocol):
     ) -> None: ...
 
     async def start_refresh_job(self, scope_kind: str, scope_value: str) -> str: ...
+
+    async def get_refresh_job(self, job_id: str) -> RefreshJobRow | None: ...
 
     async def complete_refresh_job(
         self,

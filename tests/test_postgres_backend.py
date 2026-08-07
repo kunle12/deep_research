@@ -375,11 +375,6 @@ async def test_tag_ops(backend, mock_conn):
     # empty batch
     assert await backend.get_tags_for_artifacts([]) == {}
 
-    # get_artifacts_by_tag
-    mock_conn.fetch = AsyncMock(return_value=[("art1",)])
-    aids = await backend.get_artifacts_by_tag("RL")
-    assert aids == ["art1"]
-
     # delete_tag
     await backend.delete_tag("RL", "art1")
     assert mock_conn.execute.called

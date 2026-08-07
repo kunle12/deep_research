@@ -1,8 +1,8 @@
 """Tests for context management in `tool_loop.py`.
 
 Covers:
-  - _token_count: estimates tokens for various message shapes
-  - _encoding_for_model: falls back to cl100k_base for custom models
+  - count_message_tokens: estimates tokens for various message shapes
+  - encoding_for_model: falls back to cl100k_base for custom models
   - _summarize_turns: calls LLM and returns summary text
   - _maybe_summarise: triggers summarisation at 75% threshold
   - _maybe_summarise: preserves system message + last 3 exchanges
@@ -18,43 +18,42 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from deep_research.llm.tokens import count_message_tokens, encoding_for_model
 from deep_research.llm.tool_loop import (
     ToolRegistry,
-    _encoding_for_model,
     _maybe_summarise,
     _summarize_turns,
-    _token_count,
     run_with_tools,
 )
 
 # ---------------------------------------------------------------------------
-# _encoding_for_model
+# encoding_for_model
 # ---------------------------------------------------------------------------
 
 
 class TestEncodingForModel:
     def test_known_model_returns_encoding(self) -> None:
-        enc = _encoding_for_model("gpt-4")
+        enc = encoding_for_model("gpt-4")
         assert hasattr(enc, "encode")
 
     def test_custom_model_falls_back(self) -> None:
-        enc = _encoding_for_model("qwen3.5-122b")
+        enc = encoding_for_model("qwen3.5-122b")
         assert enc.name == "cl100k_base"
 
 
 # ---------------------------------------------------------------------------
-# _token_count
+# count_message_tokens
 # ---------------------------------------------------------------------------
 
 
 class TestTokenCount:
     def test_empty_messages(self) -> None:
-        count = _token_count([], "gpt-4")
+        count = count_message_tokens([], "gpt-4")
         assert count == 2  # just the <|start|> overhead
 
     def test_single_text_message(self) -> None:
         msgs = [{"role": "user", "content": "hello world"}]
-        count = _token_count(msgs, "gpt-4")
+        count = count_message_tokens(msgs, "gpt-4")
         # 4 framing + content tokens + 2 overhead
         assert count > 4
 
@@ -72,12 +71,12 @@ class TestTokenCount:
                 ],
             }
         ]
-        count = _token_count(msgs, "gpt-4")
+        count = count_message_tokens(msgs, "gpt-4")
         assert count > 4
 
     def test_messages_with_tool_result(self) -> None:
         msgs = [{"role": "tool", "tool_call_id": "call_1", "content": '{"content":"result"}'}]
-        count = _token_count(msgs, "gpt-4")
+        count = count_message_tokens(msgs, "gpt-4")
         assert count > 4
 
     def test_multiple_messages_accumulate(self) -> None:
@@ -86,8 +85,8 @@ class TestTokenCount:
             {"role": "user", "content": "What is the capital of France?"},
             {"role": "assistant", "content": "The capital of France is Paris."},
         ]
-        single = _token_count(msgs[:1], "gpt-4")
-        multi = _token_count(msgs, "gpt-4")
+        single = count_message_tokens(msgs[:1], "gpt-4")
+        multi = count_message_tokens(msgs, "gpt-4")
         assert multi > single
 
 

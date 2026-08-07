@@ -17,6 +17,7 @@ Flow:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -176,7 +177,12 @@ async def _fetch_pdf_source(
         )
         page_urls = parse_rendered_pages(render)
     if not text:
-        text = "(PDF text extraction not available yet — vision path may still work)"
+        # Not an error: the PDF downloaded but text extraction is unavailable.
+        # This is a partial success — if vision pages were rendered they can
+        # still carry the analysis. Must NOT start with "(" (the error sentinel
+        # used by `is_fetch_failure`), or it would be misclassified as a fetch
+        # failure and the paper would never be analyzed.
+        text = "[PDF text extraction unavailable — vision pages (if any) carry the analysis]"
     if archive_url and text.strip():
         text = _annotate_archived(text, url)
 
@@ -198,6 +204,13 @@ async def _fetch_pdf_source(
         )
 
     return (text, [cit], page_urls)
+
+
+def _pdf_cache_hit(tmp_dir: Path, tmp_pdf: Path) -> bool:
+    """Sync: ensure the cache dir exists and report whether a non-empty PDF is
+    already cached. Run via asyncio.to_thread (blocking disk I/O)."""
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_pdf.exists() and tmp_pdf.stat().st_size > 1024
 
 
 async def _download_pdf_to_cache(
@@ -222,15 +235,15 @@ async def _download_pdf_to_cache(
     digest = hashlib.sha256(url.encode()).hexdigest()[:16]
     default_cache = Path(os.path.expanduser("~/.cache/deep_research/pdfs"))
     tmp_dir = Path(cache_dir).resolve() if cache_dir else default_cache
-    tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_pdf = tmp_dir / f"{digest}.pdf"
-    if tmp_pdf.exists() and tmp_pdf.stat().st_size > 1024:
+    # Disk ops are blocking — run them off the event loop.
+    if await asyncio.to_thread(_pdf_cache_hit, tmp_dir, tmp_pdf):
         return tmp_pdf, None
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as c:
             resp = await c.get(url)
             resp.raise_for_status()
-            tmp_pdf.write_bytes(resp.content)
+        await asyncio.to_thread(tmp_pdf.write_bytes, resp.content)
         return tmp_pdf, None
     except httpx.HTTPStatusError as e:
         if archive_fallback and not _is_archive_url(url):
@@ -266,7 +279,7 @@ async def _download_archived_pdf(url: str, tmp_pdf: Path) -> str | None:
             wr.raise_for_status()
             if not wr.content.startswith(b"%PDF-"):
                 return None
-            tmp_pdf.write_bytes(wr.content)
+            await asyncio.to_thread(tmp_pdf.write_bytes, wr.content)
             return str(wr.url)
     except Exception:
         return None
@@ -294,6 +307,27 @@ async def _fetch_html_source(
         await writer.archive_html(url, res.content)
 
     return (res.content, list(res.citations), res.error or "")
+
+
+def is_fetch_failure(
+    content_text: str,
+    fetch_error: str,
+    page_image_data_urls: list[str],
+) -> bool:
+    """Whether fetched content represents a genuine failure rather than a
+    partial success.
+
+    A PDF that downloaded but whose text extraction is unavailable is still
+    analyzable via the vision path when page images were rendered, so it is
+    NOT a failure in that case. Error-sentinel content (``BLOCKED:``/``HTTP``/
+    ``(`` prefixed) is a real failure unless vision pages can carry the
+    analysis.
+    """
+    if fetch_error or not content_text:
+        return True
+    if content_text.startswith((BLOCKED_PREFIX, "HTTP", "(")):
+        return not page_image_data_urls
+    return False
 
 
 class FetchedSource:
@@ -549,7 +583,7 @@ async def url_source(
     )
 
     reason = fetch_error or content_text or ""
-    if fetch_error or not content_text or content_text.startswith((BLOCKED_PREFIX, "HTTP", "(")):
+    if is_fetch_failure(content_text, fetch_error, page_image_data_urls):
         # If fetch failed, report it but don't try to analyze
         reporter.phase("url.fetch.failed", reason[:80])
         if reason.startswith(BLOCKED_PREFIX):
@@ -688,16 +722,27 @@ async def _maybe_run_follow_up(
         rationale=f"Follow-up research spawned by url_source analysis of {original_url}",
         search_hint=user_query or synthetic_query,
     )
-    followup_report: Report = await deep_path(
-        classified,
-        synthetic_query,
-        client,
-        tools,
-        config,
-        progress=progress,
-        writer=writer,
-        run_id=run_id,
-    )
+    # The follow-up is an optional enhancement to an already-completed source
+    # analysis. A deep-path failure must never discard the successful base
+    # report, so swallow it here and drop the follow-up section.
+    try:
+        followup_report: Report = await deep_path(
+            classified,
+            synthetic_query,
+            client,
+            tools,
+            config,
+            progress=progress,
+            writer=writer,
+            run_id=run_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "follow-up deep research failed: %s: %s; dropping follow-up section",
+            type(e).__name__,
+            e,
+        )
+        return ("", [])
 
     if not followup_report.markdown:
         return ("", [])
@@ -709,6 +754,7 @@ async def _maybe_run_follow_up(
 __all__ = [
     "FetchedSource",
     "fetch_source",
+    "is_fetch_failure",
     "query_asks_for_follow_up",
     "url_source",
 ]

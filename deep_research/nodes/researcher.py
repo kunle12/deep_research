@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -17,19 +16,9 @@ from openai import AsyncOpenAI
 from deep_research.citations import extract_urls_from_markdown, normalize_url
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult, run_with_tools
 from deep_research.state import BLOCKED_PREFIX, BlockedSource, Citation, SubQuestion
-from deep_research.util import coerce_float
+from deep_research.util import coerce_float, load_prompt_template
 
 logger = logging.getLogger(__name__)
-
-_PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "researcher.txt"
-_PROMPT_TEMPLATE: str | None = None
-
-
-def _get_prompt_template() -> str:
-    global _PROMPT_TEMPLATE
-    if _PROMPT_TEMPLATE is None:
-        _PROMPT_TEMPLATE = _PROMPT_FILE.read_text(encoding="utf-8")
-    return _PROMPT_TEMPLATE
 
 
 REFINE_SCHEMA = {
@@ -126,7 +115,7 @@ async def research(
     `prior_context`: optional markdown section from library recall injected as
     additional context so the researcher knows what we already know.
     """
-    prompt_template = _get_prompt_template()
+    prompt_template = load_prompt_template("researcher")
     prompt = prompt_template.replace("{question}", sub_q.question)
 
     hint_blurb = _hint_blurb(sub_q.tool_hint, tools.names())

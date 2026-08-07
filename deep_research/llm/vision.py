@@ -14,11 +14,8 @@ from __future__ import annotations
 
 import base64
 import io
-from collections.abc import Iterable
 
 from PIL import Image
-
-from deep_research.config import PdfVisionConfig
 
 # ---------------------------------------------------------------------------
 # Context-overflow detection (shared by analyze_paper + analyze_source)
@@ -113,34 +110,13 @@ def degrade_image(data_url: str, max_dim: int, jpeg_quality: int) -> str:
         return data_url
 
 
-def build_image_content_block(jpeg_bytes: bytes, *, detail: str = "auto") -> dict:
-    """Build an OpenAI chat-completions `image_url` content block."""
-    return {
-        "type": "image_url",
-        "image_url": {"url": jpeg_bytes_to_data_url(jpeg_bytes), "detail": detail},
-    }
-
-
-def render_and_resize(
-    pil_images: Iterable[Image.Image],
-    cfg: PdfVisionConfig,
-) -> list[bytes]:
-    """Apply `resize_for_vlm` to each PIL image using the config values."""
-    return [
-        resize_for_vlm(img, max_dim=cfg.max_dim, jpeg_quality=cfg.jpeg_quality)
-        for img in pil_images
-    ]
-
-
 __all__ = [
     "CONTEXT_ERROR_MARKERS",
     "IMAGE_DEGRADE_LADDER",
     "MAX_TEXT_CHARS_WITH_IMAGES",
     "TOKENS_PER_IMAGE",
-    "build_image_content_block",
     "degrade_image",
     "is_context_overflow",
     "jpeg_bytes_to_data_url",
-    "render_and_resize",
     "resize_for_vlm",
 ]

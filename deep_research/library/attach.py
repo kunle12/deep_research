@@ -30,9 +30,9 @@ from deep_research.config import AgentTopConfig
 from deep_research.library.storage.base import StorageBackend
 from deep_research.library.writer import LibraryWriter, remove_report_files
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
-from deep_research.paths.url_source import fetch_source
+from deep_research.paths.url_source import fetch_source, is_fetch_failure
 from deep_research.progress import ProgressReporter, ensure_reporter
-from deep_research.state import BLOCKED_PREFIX, Citation, Report
+from deep_research.state import Citation, Report
 from deep_research.tools import build_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -164,10 +164,8 @@ async def attach_source(
         )
 
         reason = fetched.fetch_error or fetched.content_text or ""
-        if (
-            fetched.fetch_error
-            or not fetched.content_text
-            or fetched.content_text.startswith((BLOCKED_PREFIX, "HTTP", "("))
+        if is_fetch_failure(
+            fetched.content_text, fetched.fetch_error, fetched.page_image_data_urls
         ):
             raise ValueError(f"could not fetch {url}: {reason[:300]}")
 

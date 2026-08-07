@@ -7,23 +7,13 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from openai import AsyncOpenAI
 
 from deep_research.state import ResearchPlan, SubQuestion
+from deep_research.util import VALID_TOOL_HINTS, load_prompt_template
 
 logger = logging.getLogger(__name__)
-
-_PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "planner.txt"
-_PROMPT_TEMPLATE: str | None = None
-
-
-def _get_prompt_template() -> str:
-    global _PROMPT_TEMPLATE
-    if _PROMPT_TEMPLATE is None:
-        _PROMPT_TEMPLATE = _PROMPT_FILE.read_text(encoding="utf-8")
-    return _PROMPT_TEMPLATE
 
 
 async def plan(
@@ -33,9 +23,9 @@ async def plan(
     breadth: int = 6,
 ) -> ResearchPlan:
     """Make one LLM call to generate a research plan."""
-    prompt_template = _get_prompt_template()
+    prompt_template = load_prompt_template("planner")
     # Validate tool_hint vocabulary client-side so we don't surprise downstream.
-    valid_hints = {"general-web", "arxiv", "reddit", "browser-required"}
+    valid_hints = VALID_TOOL_HINTS
 
     prompt = prompt_template.replace("{max_subquestions}", str(breadth)).replace("{query}", query)
     try:

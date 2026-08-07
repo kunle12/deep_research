@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -36,12 +35,9 @@ from deep_research.state import (
     ToolName,
 )
 from deep_research.tools.pdf_utils import parse_pdf_path, parse_rendered_pages
+from deep_research.util import ARXIV_ID_RE
 
 logger = logging.getLogger(__name__)
-
-# arXiv IDs (or versioned forms); string key references must match to be
-# reconstructed from the library.
-_ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +382,7 @@ def _analysis_from_row(artifact: Any, row: Any) -> PaperAnalysis:
                 key_references.append(PaperNode.model_validate(r))
             except Exception:
                 continue
-        elif isinstance(r, str) and _ARXIV_ID_RE.match(r):
+        elif isinstance(r, str) and ARXIV_ID_RE.match(r):
             key_references.append(
                 PaperNode(
                     arxiv_id=r,

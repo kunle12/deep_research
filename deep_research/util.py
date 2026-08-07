@@ -9,6 +9,7 @@ carrying its own copy of a try/except.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 
@@ -28,4 +29,37 @@ def strip_arxiv_version(arxiv_id: str) -> str:
     return _ARXIV_VERSION_RX.sub("", arxiv_id)
 
 
-__all__ = ["coerce_float", "strip_arxiv_version"]
+# Canonical arXiv id form (optionally versioned): YYMM.NNNNN(vN). Shared by
+# the critic and paper-analysis modules for validating paper candidates.
+ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
+
+# Valid researcher tool-hint vocabulary, shared by planner + critic.
+VALID_TOOL_HINTS = {"general-web", "arxiv", "reddit", "browser-required"}
+
+
+# ---------------------------------------------------------------------------
+# Prompt template loading (cached, shared across nodes/paths)
+# ---------------------------------------------------------------------------
+
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+_PROMPT_CACHE: dict[str, str] = {}
+
+
+def load_prompt_template(name: str) -> str:
+    """Load ``prompts/<name>.txt`` once and cache it. Blocking file read, so
+    async callers should wrap in ``asyncio.to_thread`` on a cold start."""
+    cached = _PROMPT_CACHE.get(name)
+    if cached is not None:
+        return cached
+    template = (_PROMPTS_DIR / f"{name}.txt").read_text(encoding="utf-8")
+    _PROMPT_CACHE[name] = template
+    return template
+
+
+__all__ = [
+    "ARXIV_ID_RE",
+    "VALID_TOOL_HINTS",
+    "coerce_float",
+    "load_prompt_template",
+    "strip_arxiv_version",
+]

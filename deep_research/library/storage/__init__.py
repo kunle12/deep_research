@@ -5,7 +5,6 @@ from deep_research.library.storage.get_backend import get_backend
 from deep_research.library.storage.rows import (
     AnalysisRow,
     ArtifactRow,
-    ArtifactVersionRow,
     CitationEdgeRow,
     GlossaryEntry,
     RefreshJobRow,
@@ -17,7 +16,6 @@ from deep_research.library.storage.rows import (
 __all__ = [
     "AnalysisRow",
     "ArtifactRow",
-    "ArtifactVersionRow",
     "CitationEdgeRow",
     "GlossaryEntry",
     "RefreshJobRow",

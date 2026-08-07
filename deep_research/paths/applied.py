@@ -65,12 +65,14 @@ async def applied_research(
 
     # Step 2: fetch blog content
     reporter.phase("applied.fetch", f"fetching {min(len(citations), 3)} blog posts")
-    fetched_texts: list[str] = []
+    fetched_texts: dict[str, str] = {}
     for i, c in enumerate(citations[:3]):
         if "fetch_page" in tools.names():
             result = await tools.call("fetch_page", {"url": c.url})
             if result.error is None:
-                fetched_texts.append(result.content[:8000])
+                # Key by URL so a failed middle fetch can never misattribute
+                # another post's text to the wrong title (see digest below).
+                fetched_texts[c.url] = result.content[:8000]
                 reporter.step("applied.fetch", f"post {i + 1}: {c.title[:60]}")
                 # Archive HTML in library if writer is configured
                 if isinstance(writer, LibraryWriter) and run_id:
@@ -102,8 +104,8 @@ async def _synthesize_applied(
     """Synthesize blog posts into an applied research report."""
     blog_digest = (
         "\n\n".join(
-            f"### {c.title}\nURL: {c.url}\n\n{fetched_texts[i] if i < len(fetched_texts) else c.snippet}"
-            for i, c in enumerate(citations)
+            f"### {c.title}\nURL: {c.url}\n\n{fetched_texts.get(c.url, c.snippet)}"
+            for c in citations
         )
         or "No blog content available."
     )

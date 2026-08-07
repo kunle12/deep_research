@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -20,27 +18,12 @@ from deep_research.state import (
     ResearchState,
     SubQuestion,
 )
-from deep_research.util import coerce_float
+from deep_research.util import ARXIV_ID_RE, VALID_TOOL_HINTS, coerce_float, load_prompt_template
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "critic.txt"
-_PROMPT_TEMPLATE: str | None = None
-
-_VALID_TOOL_HINTS = {"general-web", "arxiv", "reddit", "browser-required"}
-
-# arXiv IDs have the form YYMM.NNNNN (or with a version suffix). Only these
-# can be deep-analyzed (the pipeline downloads from arxiv.org).
-_ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 # Bound the candidate table so a huge citation list cannot blow the prompt.
 _MAX_CANDIDATES = 40
-
-
-def _get_prompt_template() -> str:
-    global _PROMPT_TEMPLATE
-    if _PROMPT_TEMPLATE is None:
-        _PROMPT_TEMPLATE = _PROMPT_FILE.read_text(encoding="utf-8")
-    return _PROMPT_TEMPLATE
 
 
 async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Critique:
@@ -48,7 +31,7 @@ async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Criti
     # Render the current state for the prompt
     sections_blob = _render_sections_for_prompt(state)
     candidates = _render_paper_candidates(state)
-    prompt_template = _get_prompt_template()
+    prompt_template = load_prompt_template("critic")
     prompt = (
         prompt_template.replace("{query}", state.query)
         .replace("{sections}", sections_blob)
@@ -83,7 +66,7 @@ async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Criti
                 continue
             sid = str(g.get("id") or f"critic_gap_{i + 1}")
             hint = str(g.get("tool_hint") or "general-web")
-            if hint not in _VALID_TOOL_HINTS:
+            if hint not in VALID_TOOL_HINTS:
                 hint = "general-web"
             gaps.append(
                 SubQuestion(
@@ -164,7 +147,7 @@ def _render_paper_candidates(state: ResearchState) -> str:
     by_id: dict[str, dict[str, Any]] = {}
     for c in state.citations.values():
         aid = (c.arxiv_id or "").strip()
-        if not _ARXIV_ID_RE.match(aid):
+        if not ARXIV_ID_RE.match(aid):
             continue
         if aid in state.deep_analyses or aid in state.deep_analysis_requested:
             continue
@@ -187,7 +170,7 @@ def _render_paper_candidates(state: ResearchState) -> str:
     for _aid, analysis in state.deep_analyses.items():
         for ref in analysis.key_references:
             rid = (ref.arxiv_id or "").strip()
-            if not _ARXIV_ID_RE.match(rid) or rid in by_id:
+            if not ARXIV_ID_RE.match(rid) or rid in by_id:
                 continue
             if rid in state.deep_analyses or rid in state.deep_analysis_requested:
                 continue
@@ -251,7 +234,7 @@ def _parse_paper_requests(raw: Any) -> list[PaperAnalysisRequest]:
         if not isinstance(p, dict):
             continue
         aid = str(p.get("arxiv_id") or "").strip()
-        if not _ARXIV_ID_RE.match(aid):
+        if not ARXIV_ID_RE.match(aid):
             logger.warning("critic paper proposal %d has invalid arxiv_id %r — skipping", i, aid)
             continue
         reason = str(p.get("reason") or "other")

@@ -297,15 +297,21 @@ async def academic_research(
                         if config.pdf_vision.enabled and "pdf_render_pages" in tools.names()
                         else None
                     )
-
-                    paper_text = await text_task
-                    page_urls: list[str] = []
-                    if render_task is not None:
-                        try:
-                            page_urls = await asyncio.wait_for(render_task, timeout=300.0)
-                        except TimeoutError:
-                            logger.debug("page rendering timed out; falling back to text-only")
-                            page_urls = []
+                    # Always await-or-cancel render_task so a text-extraction
+                    # failure or an outer per-task timeout can never orphan the
+                    # heavy page-rendering coroutine in the background.
+                    try:
+                        paper_text = await text_task
+                        page_urls: list[str] = []
+                        if render_task is not None:
+                            try:
+                                page_urls = await asyncio.wait_for(render_task, timeout=300.0)
+                            except TimeoutError:
+                                logger.debug("page rendering timed out; falling back to text-only")
+                                page_urls = []
+                    finally:
+                        if render_task is not None and not render_task.done():
+                            render_task.cancel()
                     text_source = "pdf"
 
             # Skip LLM analysis if paper_text is empty (e.g., download failed)
@@ -400,14 +406,14 @@ async def academic_research(
                     if child_base in processed or child_base in existing_ids:
                         continue
                     child_node = PaperNode(
-                        arxiv_id=child_id,
+                        arxiv_id=child_base,
                         title="",  # unknown until resolved — analyze_paper will populate
                         depth=depth + 1,
                         parent_arxiv_id=base,
                         rationale=f"referenced by {base}",
                     )
                     graph.add_node(child_node)
-                    graph.add_edge(base, child_id)
+                    graph.add_edge(base, child_base)
                     queue_white.append((child_node, depth + 1, base))
                     new_kids.append(child_base)
                     existing_ids.add(child_base)
@@ -439,10 +445,28 @@ async def academic_research(
         per_task_timeout_s = config.agent.researcher_timeout_s
         timed_tasks = [asyncio.wait_for(t, timeout=per_task_timeout_s) for t in tasks]
         gather_results = await asyncio.gather(*timed_tasks, return_exceptions=True)
-        for r in gather_results:
+        failed = 0
+        for (node, _depth, _parent), r in zip(batch, gather_results):
             if isinstance(r, Exception):
                 rtype = "timeout" if isinstance(r, TimeoutError) else type(r).__name__
-                logger.debug("academic task raised (%s): %s", rtype, r)
+                base = _strip_version(node.arxiv_id)
+                logger.warning(
+                    "academic task for %s raised (%s): %s", base, rtype, r
+                )
+                # Release the claimed budget slot on failure so a transient
+                # error (bad PDF, flaky download, LLM failure, timeout) does
+                # not permanently waste a max_papers slot. Only un-claim when
+                # the analysis did NOT complete (analyses[base] unset), so a
+                # paper that analyzed but failed later (e.g. archival) keeps
+                # its slot. The paper stays in the graph and, if un-claimed,
+                # renders as an unanalyzed low-confidence citation instead of
+                # being silently dropped.
+                if base in processed and base not in analyses:
+                    processed.discard(base)
+                    processed_count -= 1
+                failed += 1
+        if failed:
+            logger.info("academic batch %d: %d paper(s) failed", iterations + 1, failed)
         iterations += 1
         # Don't grow past max_papers even if children were enqueued during the batch
         if processed_count >= cfg.max_papers:
@@ -568,7 +592,7 @@ async def _gather_seeds(
                 out_cits.append(cit)
                 out_nodes.append(
                     PaperNode(
-                        arxiv_id=cit.arxiv_id,
+                        arxiv_id=_strip_version(cit.arxiv_id),
                         title=cit.title or cit.arxiv_id,
                         authors=list(cit.authors),
                         abstract=cit.snippet or "",
@@ -613,7 +637,7 @@ async def _gather_seeds(
                 if c.arxiv_id:
                     arxiv_nodes.append(
                         PaperNode(
-                            arxiv_id=c.arxiv_id,
+                            arxiv_id=_strip_version(c.arxiv_id),
                             title=c.title or c.arxiv_id,
                             authors=list(c.authors),
                             abstract=c.snippet or "",
@@ -700,11 +724,13 @@ async def _synthesize_markdown(
     # Build a condensed digest of each analysis for the prompt.
     # Skip entries where analysis is None (paper had no extractable text).
     digest_lines: list[str] = []
-    for i, (aid, a) in enumerate(analyses.items(), start=1):
+    paper_no = 0
+    for aid, a in analyses.items():
         if a is None:
             continue
+        paper_no += 1
         digest_lines.append(
-            f"### Paper {i}: arxiv:{aid} — {a.title} (relevance {a.relevance_score:.2f})\n"
+            f"### Paper {paper_no}: arxiv:{aid} — {a.title} (relevance {a.relevance_score:.2f})\n"
             f"Summary: {a.summary}\n"
             f"Key findings: {'; '.join(a.key_findings) if a.key_findings else 'N/A'}\n"
             f"Methodology: {a.methodology or 'N/A'}\n"
@@ -774,7 +800,7 @@ def _fallback_synthesis(original_query: str, analyses: dict[str, Any]) -> str:
     lines: list[str] = [
         "# Academic Research Report\n",
         f"**Query:** {original_query}\n",
-        f"**Papers analyzed:** {len(analyses)}\n",
+        f"**Papers analyzed:** {sum(1 for a in analyses.values() if a is not None)}\n",
     ]
     for aid, a in analyses.items():
         if a is None:

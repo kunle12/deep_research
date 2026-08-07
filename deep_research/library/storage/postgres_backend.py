@@ -589,11 +589,6 @@ class PostgresStorageBackend:
         )
         return [(r[0], int(r[1])) for r in rows]
 
-    async def get_artifacts_by_tag(self, tag: str) -> list[str]:
-        await self._ensure_conn()
-        rows = await self._fetchall("SELECT artifact_id FROM tags WHERE tag = $1", tag)
-        return [r[0] for r in rows]
-
     async def delete_tag(self, tag: str, artifact_id: str) -> None:
         await self._ensure_conn()
         await self._execute(

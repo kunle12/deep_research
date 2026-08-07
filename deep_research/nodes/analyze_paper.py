@@ -42,9 +42,6 @@ _IMAGE_BATCH_PROMPT_FILE = (
 
 # Reserve for system prompt, JSON schema instructions, and response.
 _RESERVED_TOKENS = 4096
-# Hard cap on paper text chars for the text-only synthesis call.
-# ~40k chars ≈ 10k tokens.
-_MAX_PAPER_CHARS = 40000
 
 
 # ---------------------------------------------------------------------------
@@ -489,94 +486,6 @@ async def analyze(
         max_context_tokens,
         text_source,
     )
-
-
-# ---------------------------------------------------------------------------
-# Legacy helpers (preserved for backward compat and test coverage)
-# ---------------------------------------------------------------------------
-
-
-def _build_messages(
-    arxiv_id: str,
-    paper_text: str,
-    query: str,
-    page_image_data_urls: list[str] | None,
-    model: str = "gpt-4",
-    max_context_tokens: int = 131072,
-    max_images_override: int | None = None,
-    max_paper_chars_override: int | None = None,
-) -> list[dict[str, Any]]:
-    """Legacy message builder — kept for backward compat and single-shot path."""
-    prompt_template = _PROMPT_FILE.read_text(encoding="utf-8")
-
-    if max_images_override is not None:
-        max_images = max_images_override
-    else:
-        max_images = max(0, (max_context_tokens - _RESERVED_TOKENS) // 8000)
-    if page_image_data_urls and len(page_image_data_urls) > max_images:
-        logger.info(
-            "analyze_paper %s: limiting images from %d to %d (context=%d tokens)",
-            arxiv_id,
-            len(page_image_data_urls),
-            max_images,
-            max_context_tokens,
-        )
-        page_image_data_urls = page_image_data_urls[:max_images]
-
-    n_images = len(page_image_data_urls) if page_image_data_urls else 0
-    image_section = ""
-    if page_image_data_urls:
-        image_section = (
-            "\n## Page images (rendered PDF pages sent via image_url content blocks):\n"
-            f"({n_images} pages attached)\n"
-        )
-
-    image_tokens = n_images * TOKENS_PER_IMAGE
-    base_prompt_tokens = count_text_tokens(
-        prompt_template.replace("{arxiv_id}", arxiv_id)
-        .replace("{paper_text}", "")
-        .replace("{query}", query or "")
-        .replace("{image_pages_section}", image_section),
-        model,
-    )
-    available_tokens = max_context_tokens - _RESERVED_TOKENS - image_tokens - base_prompt_tokens
-    if max_paper_chars_override is not None:
-        max_paper_chars = max_paper_chars_override
-    else:
-        max_paper_chars = min(_MAX_PAPER_CHARS, max(1000, available_tokens * 4))
-
-    if len(paper_text) > max_paper_chars:
-        logger.debug(
-            "analyze_paper %s: truncating paper_text from %d to %d chars "
-            "(budget=%d tokens, images=%d)",
-            arxiv_id,
-            len(paper_text),
-            max_paper_chars,
-            available_tokens,
-            n_images,
-        )
-
-    prompt_text = (
-        prompt_template.replace("{arxiv_id}", arxiv_id)
-        .replace("{paper_text}", paper_text[:max_paper_chars])
-        .replace("{query}", query or "")
-        .replace("{image_pages_section}", image_section)
-    )
-
-    system = {
-        "role": "system",
-        "content": (
-            "You are an academic paper analyst. Respond with a SINGLE JSON object and "
-            "NOTHING ELSE - no markdown fences, no surrounding text."
-        ),
-    }
-
-    if page_image_data_urls:
-        user_blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt_text}]
-        for data_url in page_image_data_urls:
-            user_blocks.append({"type": "image_url", "image_url": {"url": data_url}})
-        return [system, {"role": "user", "content": user_blocks}]
-    return [system, {"role": "user", "content": prompt_text}]
 
 
 _ARXIV_RX = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b|\b[a-z\-]+(?:\.[A-Z]{2})?/\d{7}\b")

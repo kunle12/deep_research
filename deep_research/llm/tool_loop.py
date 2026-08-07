@@ -18,7 +18,7 @@ import time
 from collections.abc import Awaitable
 from typing import Any, Protocol
 
-from deep_research.llm.tokens import count_message_tokens, encoding_for_model
+from deep_research.llm.tokens import count_message_tokens
 from deep_research.state import Citation
 
 logger = logging.getLogger(__name__)
@@ -274,16 +274,6 @@ class ScopedToolRegistry:
 # ---------------------------------------------------------------------------
 
 
-def _encoding_for_model(model: str):
-    """Return a tiktoken Encoding object roughly matching *model*."""
-    return encoding_for_model(model)
-
-
-def _token_count(messages: list[dict], model: str) -> int:
-    """Rough token count of the message list using tiktoken."""
-    return count_message_tokens(messages, model)
-
-
 _MAX_SUMMARY_INPUT_CHARS: int = 60000
 
 
@@ -361,7 +351,7 @@ async def _maybe_summarise(
     """
     if max_context_tokens <= 0:
         return messages
-    total = _token_count(messages, model)
+    total = count_message_tokens(messages, model)
     threshold = int(max_context_tokens * 0.75)
     if total <= threshold:
         return messages  # no summarization needed

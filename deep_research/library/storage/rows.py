@@ -125,17 +125,6 @@ class RefreshJobRow:
 
 
 @dataclass
-class ArtifactVersionRow:
-    """Row from `artifact_versions` table."""
-
-    artifact_id_old: str
-    artifact_id_new: str
-    reason: str  # "content_changed" | "url_moved"
-    discovered_at: str = ""
-    discovered_in_run: str | None = None
-
-
-@dataclass
 class SearchHit:
     """Result of a full-text search."""
 

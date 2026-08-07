@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -124,7 +123,7 @@ def _edge_info(e: CitationEdgeRow) -> CitationEdgeInfo:
 
 def _strip_arxiv_version(arxiv_id: str) -> str:
     """Normalize 2401.12345v2 -> 2401.12345 for artifact lookups."""
-    return re.sub(r"v\d+$", "", arxiv_id)
+    return strip_arxiv_version(arxiv_id)
 
 
 async def _citation_local_pdf_url(
