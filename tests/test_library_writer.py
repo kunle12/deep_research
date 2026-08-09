@@ -88,6 +88,71 @@ async def test_archive_report(writer):
 
 
 @pytest.mark.asyncio
+async def test_begin_report_placeholder_then_archive(writer):
+    """begin_report creates the reports row up-front; archive_report then
+    overwrites the placeholder fields. Idempotent: calling begin_report again
+    must NOT clobber an already-completed report."""
+    from datetime import UTC, datetime
+
+    await writer.begin_report("run_b", "test query")
+    placeholder = await writer.storage.get_report("run_b")
+    assert placeholder is not None
+    assert placeholder.markdown == ""  # placeholder not yet set
+
+    report = Report(
+        markdown="# Done\n\ncontent",
+        citations=[],
+        path="quick",
+        classifier_rationale="test",
+        created_at=datetime.now(UTC),
+    )
+    await writer.archive_report(report, "run_b")
+    archived = await writer.storage.get_report("run_b")
+    assert archived.markdown == "# Done\n\ncontent"
+    assert archived.path_taken == "quick"
+
+    # begin_report again must not revert the completed report to placeholder
+    await writer.begin_report("run_b", "test query")
+    again = await writer.storage.get_report("run_b")
+    assert again.markdown == "# Done\n\ncontent"
+
+
+@pytest.mark.asyncio
+async def test_begin_report_enables_glossary_fresh_run(writer):
+    """Regression: on a fresh run the glossary upsert used to fail the FK
+    `first_seen_run_id -> reports(run_id)` because the reports row was only
+    created by archive_report (after extraction). begin_report fixes that."""
+    import json
+    from types import SimpleNamespace
+
+    from deep_research.nodes.glossarize import extract_glossary_from_report
+
+    async def _create(**kw):
+        payload = json.dumps(
+            {"glossary": [{"term": "RLHF", "kind": "acronym", "short_def": "RL from feedback"}]}
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=payload))]
+        )
+
+    fake_llm = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+
+
+
+    await writer.begin_report("run_g", "glossary query")
+    entries = await extract_glossary_from_report(
+        "# Report about RLHF", fake_llm, "gpt-test", writer, "run_g"
+    )
+
+    assert len(entries) == 1, "glossary extraction should persist on a fresh run"
+    rows = await writer.storage.list_glossary_entries()
+    assert any(r.term_canonical == "rlhf" for r in rows)
+    rlhf = next(r for r in rows if r.term_canonical == "rlhf")
+    assert rlhf.first_seen_run_id == "run_g"
+
+
+
+@pytest.mark.asyncio
 async def test_record_analysis(writer):
     # First create an artifact so the analysis can reference it
     from datetime import UTC, datetime

@@ -76,6 +76,42 @@ class LibraryWriter:
     def set_run_id(self, run_id: str) -> None:
         self._run_id = run_id
 
+    # -- Report lifecycle --
+
+    async def begin_report(self, run_id: str, original_query: str) -> None:
+        """Create the `reports` row for a run up-front so run-scoped rows
+        (analyses, citation_edges, tags, glossary) that reference
+        `reports(run_id)` satisfy their FK before research starts.
+
+        No-op if the row already exists (e.g. resuming a run that was
+        already archived) — never clobber a completed report. The
+        placeholder fields are overwritten by `archive_report` at the end.
+        """
+        if not run_id or not original_query:
+            return
+        if await self._storage.get_report(run_id) is not None:
+            return
+        await self._storage.insert_report(
+            ReportRow(
+                run_id=run_id,
+                started_at=_now_iso(),
+                original_query=original_query,
+                path_taken="",  # placeholder; set by archive_report
+                markdown="",    # placeholder; set by archive_report
+            )
+        )
+
+    async def delete_report(self, run_id: str) -> None:
+        """Best-effort removal of a report row and its run-scoped rows.
+
+        Used to clean up a placeholder report row when a run fails before
+        archiving (so a broken run leaves no trace in the library).
+        """
+        if not run_id:
+            return
+        await self._storage.delete_report(run_id)
+
+
     # -- Artifact archival --
 
     async def archive_pdf(
@@ -445,6 +481,13 @@ class NullLibraryWriter:
 
     def set_run_id(self, run_id: str) -> None:
         pass
+
+    async def begin_report(self, *args, **kwargs) -> None:
+        pass
+
+    async def delete_report(self, *args, **kwargs) -> None:
+        pass
+
 
     async def archive_pdf(self, *args, **kwargs) -> str:
         return ""

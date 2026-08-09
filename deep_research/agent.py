@@ -107,6 +107,16 @@ async def run_research(
             )
 
     try:
+        # Create the `reports` row up-front so run-scoped rows (analyses,
+        # citation_edges, tags, glossary) that reference `reports(run_id)`
+        # satisfy their FK before research starts. `archive_report`
+        # overwrites the placeholder fields at the end.
+        if writer and isinstance(writer, LibraryWriter) and run_id:
+            try:
+                await writer.begin_report(run_id, query)
+            except Exception as e:
+                logger.warning("begin_report failed: %s: %s", type(e).__name__, e)
+
         # Single async with block for LLM client + tools — all routing happens inside
         async with LLMClient(config.llm) as client, _build_tools(config) as tools:
             report = await _route_and_dispatch(
@@ -157,6 +167,15 @@ async def run_research(
                     )
 
             artifact_id = await _archive_report(report, writer, run_id)
+            if artifact_id is None and writer and isinstance(writer, LibraryWriter) and run_id:
+                # archive_report failed — don't leave a placeholder report row
+                # (or run-scoped rows) that would misrepresent a broken run.
+                try:
+                    await writer.delete_report(run_id)
+                except Exception as e:
+                    logger.warning("failed-archive cleanup error: %s: %s", type(e).__name__, e)
+
+
 
             # P10.7: auto-tag the report artifact with topic tags
             if artifact_id:
@@ -178,6 +197,17 @@ async def run_research(
                     )
 
             reporter.complete()
+    except BaseException:
+        # Failed run — drop the placeholder report row (and any run-scoped
+        # rows) so a broken/incomplete run leaves no trace, matching the
+        # pre-fix behavior where no reports row existed on failure.
+        if writer and isinstance(writer, LibraryWriter) and run_id:
+            try:
+                await writer.delete_report(run_id)
+            except Exception as e:
+                logger.warning("failed-run cleanup error: %s: %s", type(e).__name__, e)
+        raise
+
     finally:
         if writer and isinstance(writer, LibraryWriter):
             await writer.storage.close()
