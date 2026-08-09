@@ -231,12 +231,28 @@ function bibliographyPanel(report) {
     return panel;
   }
   const list = el("ol", { class: "bib-list" });
-  citations.forEach((c, i) => {
+  citations.forEach((c) => {
     const li = el("li", { class: "bib-item" });
     const title = c.title || c.url;
     const link = el("a", { href: safeUrl(c.url), target: "_blank", rel: "noopener noreferrer", text: title });
-    li.append(link);
-    if (c.snippet) li.append(el("span", { class: "bib-snippet", text: ` — ${c.snippet}` }));
+    const info = el("button", {
+      class: "bib-info",
+      type: "button",
+      title: "Show abstract",
+      "aria-label": `Show abstract for ${title}`,
+      text: "ℹ",
+      onclick: () => {
+        detail.hidden = !detail.hidden;
+      },
+    });
+    const detail = el("div", { class: "bib-detail", hidden: true });
+    detail.append(el("div", { class: "bib-abstract", text: c.snippet || "(no abstract available)" }));
+    const metaParts = [];
+    if (Array.isArray(c.authors) && c.authors.length) metaParts.push(c.authors.join(", "));
+    if (c.year) metaParts.push(String(c.year));
+    if (c.venue) metaParts.push(c.venue);
+    if (metaParts.length) detail.append(el("div", { class: "bib-meta", text: metaParts.join(" · ") }));
+    li.append(link, info, detail);
     list.append(li);
   });
   panel.append(list);
@@ -262,6 +278,7 @@ function bibliographyPanel(report) {
   );
   return panel;
 }
+
 
 
 

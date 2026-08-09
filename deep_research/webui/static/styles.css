@@ -632,7 +632,25 @@ button { font-family: inherit; font-size: inherit; }
 .bib-item { color: var(--text); font-size: 13px; line-height: 1.45; }
 .bib-item a { color: var(--accent); text-decoration: none; }
 .bib-item a:hover { text-decoration: underline; }
-.bib-snippet { color: var(--text-2); font-size: 12px; }
+.bib-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 11px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.bib-info:hover { border-color: var(--accent); color: var(--accent); }
+.bib-detail { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; background: var(--surface-2); }
+.bib-abstract { color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+.bib-meta { margin-top: 6px; color: var(--text-3); font-size: 11.5px; }
 .panel-export { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 
 
