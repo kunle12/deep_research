@@ -103,27 +103,7 @@ function buildReport(report) {
         download: `${report.run_id}.md`,
         text: "Download .md",
       }),
-      el("a", {
-        class: "btn",
-        href: report.bibliography_url,
-        download: `${report.run_id}-bibliography.md`,
-        text: "Bibliography",
-        title: "Download the report bibliography as Markdown",
-      }),
-      el("a", {
-        class: "btn",
-        href: report.bibliography_bib_url,
-        download: `${report.run_id}.bib`,
-        text: "Download .bib",
-        title: "Download the report references as BibTeX",
-      }),
-      el("a", {
-        class: "btn",
-        href: report.glossary_url,
-        download: `${report.run_id}-glossary.md`,
-        text: "Glossary",
-        title: "Download the report glossary as Markdown",
-      }),
+
 
     ),
   );
@@ -170,7 +150,9 @@ function buildReport(report) {
       el("h2", { class: "panel-title", text: `References (${report.citations.length})` }),
       refsList(report.citations),
     ),
-    glossaryPanel(report.glossary),
+    bibliographyPanel(report),
+    glossaryPanel(report),
+
 
     tagEditor(report),
     mergePanel(report),
@@ -203,10 +185,11 @@ function stripBibliography(container) {
   }
 }
 
-function glossaryPanel(glossary) {
+function glossaryPanel(report) {
+  const glossary = report.glossary || [];
   const panel = el("div", { class: "panel" });
   panel.append(el("h2", { class: "panel-title", text: `Glossary (${glossary.length})` }));
-  if (!glossary || !glossary.length) {
+  if (!glossary.length) {
     panel.append(el("p", { class: "hint", text: "No glossary terms recorded for this report." }));
     return panel;
   }
@@ -224,8 +207,63 @@ function glossaryPanel(glossary) {
     list.append(item);
   }
   panel.append(list);
+  panel.append(
+    el(
+      "div",
+      { class: "panel-export" },
+      el("a", {
+        class: "btn",
+        href: report.glossary_url,
+        download: `${report.run_id}-glossary.md`,
+        text: "Download glossary (.md)",
+      }),
+    ),
+  );
   return panel;
 }
+
+function bibliographyPanel(report) {
+  const citations = report.citations || [];
+  const panel = el("div", { class: "panel" });
+  panel.append(el("h2", { class: "panel-title", text: `Bibliography (${citations.length})` }));
+  if (!citations.length) {
+    panel.append(el("p", { class: "hint", text: "No cited sources recorded for this report." }));
+    return panel;
+  }
+  const list = el("ol", { class: "bib-list" });
+  citations.forEach((c, i) => {
+    const li = el("li", { class: "bib-item" });
+    const title = c.title || c.url;
+    const link = el("a", { href: safeUrl(c.url), target: "_blank", rel: "noopener noreferrer", text: title });
+    li.append(link);
+    if (c.snippet) li.append(el("span", { class: "bib-snippet", text: ` — ${c.snippet}` }));
+    list.append(li);
+  });
+  panel.append(list);
+  panel.append(
+    el(
+      "div",
+      { class: "panel-export" },
+      el("a", {
+        class: "btn",
+        href: report.bibliography_bib_url,
+        download: `${report.run_id}.bib`,
+        text: "Download .bib",
+        title: "Download the report references as BibTeX",
+      }),
+      el("a", {
+        class: "btn",
+        href: report.bibliography_url,
+        download: `${report.run_id}-bibliography.md`,
+        text: "Download .md",
+        title: "Download the report bibliography as Markdown",
+      }),
+    ),
+  );
+  return panel;
+}
+
+
 
 
 function refsList(citations) {
