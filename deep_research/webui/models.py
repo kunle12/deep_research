@@ -45,6 +45,11 @@ class ReportDetail(BaseModel):
     has_pdf: bool = False
     pdf_url: str | None = None
     markdown_url: str = ""
+    glossary: list[GlossaryInfo] = Field(default_factory=list)
+    glossary_url: str = ""
+    bibliography_url: str = ""
+    bibliography_bib_url: str = ""
+
 
 
 class TagUpdateResponse(BaseModel):
@@ -71,6 +76,22 @@ class AnalysisInfo(BaseModel):
     key_references: list[str] = Field(default_factory=list)
     relevance_to_query: str | None = None
     analyzed_at: str = ""
+
+
+
+class GlossaryInfo(BaseModel):
+    term: str
+    term_canonical: str
+    kind: str = "concept"
+    short_def: str | None = None
+    long_def: str | None = None
+    acronym_expansion: str | None = None
+    related_terms: list[str] = Field(default_factory=list)
+    domain_tags: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+    first_seen_run_id: str | None = None
+    first_seen_artifact_id: str | None = None
+    last_updated: str = ""
 
 
 class CitationEdgeInfo(BaseModel):

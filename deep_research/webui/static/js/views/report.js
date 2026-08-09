@@ -103,6 +103,28 @@ function buildReport(report) {
         download: `${report.run_id}.md`,
         text: "Download .md",
       }),
+      el("a", {
+        class: "btn",
+        href: report.bibliography_url,
+        download: `${report.run_id}-bibliography.md`,
+        text: "Bibliography",
+        title: "Download the report bibliography as Markdown",
+      }),
+      el("a", {
+        class: "btn",
+        href: report.bibliography_bib_url,
+        download: `${report.run_id}.bib`,
+        text: "Download .bib",
+        title: "Download the report references as BibTeX",
+      }),
+      el("a", {
+        class: "btn",
+        href: report.glossary_url,
+        download: `${report.run_id}-glossary.md`,
+        text: "Glossary",
+        title: "Download the report glossary as Markdown",
+      }),
+
     ),
   );
 
@@ -148,6 +170,8 @@ function buildReport(report) {
       el("h2", { class: "panel-title", text: `References (${report.citations.length})` }),
       refsList(report.citations),
     ),
+    glossaryPanel(report.glossary),
+
     tagEditor(report),
     mergePanel(report),
     el(
@@ -178,6 +202,31 @@ function stripBibliography(container) {
     node = next;
   }
 }
+
+function glossaryPanel(glossary) {
+  const panel = el("div", { class: "panel" });
+  panel.append(el("h2", { class: "panel-title", text: `Glossary (${glossary.length})` }));
+  if (!glossary || !glossary.length) {
+    panel.append(el("p", { class: "hint", text: "No glossary terms recorded for this report." }));
+    return panel;
+  }
+  const list = el("div", { class: "glossary-list" });
+  for (const g of glossary) {
+    const item = el("div", { class: "glossary-item" });
+    const head = el("div", { class: "glossary-term" }, el("strong", { text: g.term }));
+    if (g.kind) head.append(el("span", { class: "badge", text: g.kind }));
+    if (g.acronym_expansion) head.append(el("span", { class: "glossary-exp", text: g.acronym_expansion }));
+    item.append(head);
+    if (g.short_def) item.append(el("div", { class: "glossary-def", text: g.short_def }));
+    if (g.domain_tags && g.domain_tags.length) {
+      item.append(el("div", { class: "glossary-tags", text: g.domain_tags.map((t) => `#${t}`).join(" ") }));
+    }
+    list.append(item);
+  }
+  panel.append(list);
+  return panel;
+}
+
 
 function refsList(citations) {
   const list = el("div", { class: "ref-list" });

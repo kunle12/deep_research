@@ -13,6 +13,7 @@ from deep_research.library.storage.rows import (
     AnalysisRow,
     ArtifactRow,
     CitationEdgeRow,
+    GlossaryEntry,
     ReportRow,
     TagRow,
 )
@@ -128,6 +129,18 @@ async def seeded_config(library_root: Path) -> Path:
                 discovered_in_run="run_a",
             )
         )
+        await backend.upsert_glossary_entry(
+            GlossaryEntry(
+                term="Transformer",
+                term_canonical="transformer",
+                kind="concept",
+                short_def="A neural network architecture using attention.",
+                domain_tags=json.dumps(["nlp"]),
+                first_seen_run_id="run_a",
+                last_updated=_now(1),
+            )
+        )
+
 
         pdf_dir = library_root / "artifacts" / "pdf"
         pdf_dir.mkdir(parents=True)
@@ -232,6 +245,47 @@ def test_report_markdown_download(client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/markdown")
     assert r.text.startswith("# Report A")
+
+
+def test_report_detail_includes_glossary_and_export_urls(client):
+    body = client.get("/api/reports/run_a").json()
+    assert body["glossary_url"] == "/api/reports/run_a/glossary/markdown"
+    assert body["bibliography_url"] == "/api/reports/run_a/bibliography"
+    assert body["bibliography_bib_url"] == "/api/reports/run_a/bibliography/bib"
+    assert len(body["glossary"]) == 1
+    assert body["glossary"][0]["term"] == "Transformer"
+    assert body["glossary"][0]["term_canonical"] == "transformer"
+    assert body["glossary"][0]["domain_tags"] == ["nlp"]
+
+
+def test_report_glossary_markdown_export(client):
+    r = client.get("/api/reports/run_a/glossary/markdown")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert "## Transformer" in r.text
+    assert "attention" in r.text
+    assert client.get("/api/reports/nope/glossary/markdown").status_code == 404
+
+
+def test_report_bibliography_markdown_export(client):
+    r = client.get("/api/reports/run_a/bibliography")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert "## Bibliography" in r.text
+    assert "Paper B" in r.text
+    assert "2401.00001" in r.text
+    assert client.get("/api/reports/nope/bibliography").status_code == 404
+
+
+def test_report_bibliography_bib_export(client):
+    r = client.get("/api/reports/run_a/bibliography/bib")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-bibtex")
+    assert "@misc{cite1" in r.text
+    assert "Paper B" in r.text
+    assert "Ada Lovelace" in r.text
+    assert client.get("/api/reports/nope/bibliography/bib").status_code == 404
+
 
 
 def test_report_pdf(client):
