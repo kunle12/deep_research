@@ -68,6 +68,38 @@ class PostgresStorageBackend:
         async with self._pool.acquire() as conn, conn.transaction():
             for stmt in statements:
                 await conn.execute(stmt)
+            # One-time migration: databases created before the 'image' artifact
+            # kind existed have a CHECK on `kind` that rejects it. Drop only the
+            # stale kind check(s) and re-add one that allows 'image'; never touch
+            # unrelated CHECK constraints (e.g. on bytes_size).
+            await conn.execute(
+                """
+                DO $$
+                DECLARE r record;
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = 'artifacts'::regclass
+                          AND contype = 'c'
+                          AND pg_get_constraintdef(oid) LIKE '%image%'
+                    ) THEN
+                        FOR r IN SELECT conname FROM pg_constraint
+                                 WHERE conrelid = 'artifacts'::regclass
+                                   AND contype = 'c'
+                                   AND pg_get_constraintdef(oid) LIKE '%kind%'
+                                   AND NOT pg_get_constraintdef(oid) LIKE '%image%'
+                        LOOP
+                            EXECUTE format(
+                                'ALTER TABLE artifacts DROP CONSTRAINT %I',
+                                r.conname
+                            );
+                        END LOOP;
+                        ALTER TABLE artifacts ADD CONSTRAINT artifacts_kind_check
+                            CHECK (kind IN ('pdf','html','report','image'));
+                    END IF;
+                END $$;
+                """
+            )
         logger.info(
             "schema initialized from %s (%d statements)", _MIGRATION_FILE.name, len(statements)
         )

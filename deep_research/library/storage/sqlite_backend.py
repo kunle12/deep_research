@@ -95,6 +95,7 @@ class SqliteStorageBackend:
             raise RuntimeError("SQLite backend not connected")
         sql = _MIGRATION_FILE.read_text(encoding="utf-8")
         await self._conn.executescript(sql)
+        await self._migrate_artifacts_image_kind()
         # One-time backfill for databases created before the glossary_fts sync
         # triggers existed: rebuild the content-backed index when it is empty
         # but the glossary table has rows (the triggers keep it in sync from
@@ -110,6 +111,90 @@ class SqliteStorageBackend:
         logger.info("schema initialized from %s", _MIGRATION_FILE.name)
 
     # -- Helpers --
+
+    async def _migrate_artifacts_image_kind(self) -> None:
+        """One-time rebuild of the artifacts table so its CHECK allows kind='image'.
+
+        SQLite cannot alter a CHECK constraint in place, so databases created
+        before the 'image' kind existed get the table rebuilt with the relaxed
+        constraint. Runs only when the current table still rejects 'image'.
+        Secondary indexes on the old table are recreated after the rename so
+        the rebuild never silently drops them.
+        """
+        if self._conn is None:
+            return
+        try:
+            row = await self._fetchone(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='artifacts'"
+            )
+        except Exception:
+            return
+        if row is None or "image" in (row[0] or ""):
+            return
+        # Capture any secondary indexes so they survive the table rebuild. The
+        # PRIMARY KEY index (sqlite_autoindex_*) is recreated automatically.
+        try:
+            idx_rows = await self._fetchall(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='artifacts' "
+                "AND name NOT LIKE 'sqlite_autoindex_%' AND sql IS NOT NULL"
+            )
+        except Exception:
+            idx_rows = []
+        index_sqls = [r[0] for r in idx_rows]
+        try:
+            await self._conn.executescript(
+                """
+                PRAGMA foreign_keys=OFF;
+                BEGIN;
+                CREATE TABLE artifacts_new (
+                    artifact_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    source_url TEXT,
+                    source_type TEXT,
+                    title TEXT,
+                    authors TEXT,
+                    discovered_by TEXT,
+                    arxiv_id TEXT,
+                    parents TEXT,
+                    bytes_path TEXT NOT NULL,
+                    bytes_size INTEGER,
+                    first_seen_at TEXT NOT NULL,
+                    last_touched_at TEXT NOT NULL,
+                    raw_metadata TEXT,
+                    refresh_after_at TEXT,
+                    last_refreshed_at TEXT,
+                    upstream_unchanged_since TEXT,
+                    CHECK (kind IN ('pdf','html','report','image'))
+                );
+                INSERT INTO artifacts_new (
+                    artifact_id, kind, source_url, source_type, title, authors,
+                    discovered_by, arxiv_id, parents, bytes_path, bytes_size,
+                    first_seen_at, last_touched_at, raw_metadata, refresh_after_at,
+                    last_refreshed_at, upstream_unchanged_since
+                ) SELECT
+                    artifact_id, kind, source_url, source_type, title, authors,
+                    discovered_by, arxiv_id, parents, bytes_path, bytes_size,
+                    first_seen_at, last_touched_at, raw_metadata, refresh_after_at,
+                    last_refreshed_at, upstream_unchanged_since
+                FROM artifacts;
+                DROP TABLE artifacts;
+                ALTER TABLE artifacts_new RENAME TO artifacts;
+                """
+                + "\n".join(f"{sql};" for sql in index_sqls)
+                + "\nCOMMIT;\nPRAGMA foreign_keys=ON;"
+            )
+        except Exception as e:
+            # Best-effort unwind so a partial failure doesn't strand the DB with
+            # foreign_keys disabled or a transaction open.
+            try:
+                await self._conn.execute("ROLLBACK")
+                await self._conn.execute("PRAGMA foreign_keys=ON")
+            except Exception:
+                pass
+            logger.warning(
+                "artifacts image-kind migration failed: %s: %s", type(e).__name__, e
+            )
 
     async def _execute(self, sql: str, params: tuple = ()) -> Any:
         if self._conn is None:

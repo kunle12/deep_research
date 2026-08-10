@@ -108,6 +108,7 @@ class ArtifactDetail(BaseModel):
     kind: str
     source_url: str | None = None
     source_type: str | None = None
+    image_url: str | None = None
     title: str | None = None
     authors: list[str] = Field(default_factory=list)
     arxiv_id: str | None = None

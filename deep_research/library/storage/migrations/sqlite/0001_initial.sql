@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     refresh_after_at        TEXT,
     last_refreshed_at       TEXT,
     upstream_unchanged_since TEXT,
-    CHECK (kind IN ('pdf', 'html', 'report'))
+    CHECK (kind IN ('pdf', 'html', 'report', 'image'))
 );
 
 CREATE TABLE IF NOT EXISTS reports (

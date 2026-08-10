@@ -33,6 +33,7 @@ async def test_null_writer():
     assert await nw.archive_report(Report(markdown="test", path="quick"), "run1") == ""
     assert await nw.upsert_glossary_entries([], "run1") == 0
     assert await nw.refresh_needed("test") == []
+    assert await nw.archive_image("https://example.com", b"\x89PNG") == ""
     result = await nw.run_refresh_job("source_type", "arxiv")
     assert result["considered"] == 0
 
@@ -71,6 +72,20 @@ async def test_archive_pdf_distinct_content_no_collision(writer, tmp_path):
     root = writer.root_dir
     assert (root / art1.bytes_path).read_bytes() == b"%PDF first"
     assert (root / art2.bytes_path).read_bytes() == b"%PDF second"
+
+
+@pytest.mark.asyncio
+async def test_archive_image(writer):
+    """A webpage screenshot is archived as an image artifact with the PNG bytes."""
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"fake image payload"
+    aid = await writer.archive_image("https://example.com/page", png_bytes)
+    assert aid
+    art = await writer.storage.get_artifact(aid)
+    assert art is not None
+    assert art.kind == "image"
+    assert art.source_type == "html"
+    assert art.source_url == "https://example.com/page"
+    assert (writer.root_dir / art.bytes_path).read_bytes() == png_bytes
 
 
 @pytest.mark.asyncio

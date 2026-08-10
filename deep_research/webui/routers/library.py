@@ -192,6 +192,39 @@ def _strip_arxiv_version(arxiv_id: str) -> str:
     return strip_arxiv_version(arxiv_id)
 
 
+async def _citation_artifact(
+    backend: StorageBackend,
+    citation: dict[str, Any],
+) -> ArtifactRow | None:
+    """Find the locally archived artifact for a citation, if any.
+
+    Looks up by arxiv_id first (academic path keys PDFs that way), then by the
+    citation's URL (the HTML/blog archive seam stores source_url on every
+    artifact). Returns the artifact regardless of kind so callers can decide
+    what to expose.
+    """
+    aid = citation.get("arxiv_id")
+    artifact: ArtifactRow | None = None
+    if isinstance(aid, str) and aid and not aid.startswith("scholar:"):
+        artifact = await backend.find_artifact_by_arxiv_id(_strip_arxiv_version(aid))
+    if artifact is None:
+        url = citation.get("url")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            artifact = await backend.find_artifact_by_url(url)
+    return artifact
+
+
+def _artifact_file_route(
+    root: Path, artifact: ArtifactRow, route: str
+) -> str | None:
+    """Return the API route for *artifact*'s file if it exists on disk, else None."""
+    root_resolved = root.resolve()
+    file_path = (root_resolved / artifact.bytes_path).resolve()
+    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+        return None
+    return route
+
+
 async def _citation_local_pdf_url(
     backend: StorageBackend,
     root: Path,
@@ -203,21 +236,26 @@ async def _citation_local_pdf_url(
     keyed by arxiv_id (and source_url), so references can open the library's
     own copy instead of the upstream page.
     """
-    aid = citation.get("arxiv_id")
-    artifact: ArtifactRow | None = None
-    if isinstance(aid, str) and aid and not aid.startswith("scholar:"):
-        artifact = await backend.find_artifact_by_arxiv_id(_strip_arxiv_version(aid))
-    if artifact is None:
-        url = citation.get("url")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
-            artifact = await backend.find_artifact_by_url(url)
+    artifact = await _citation_artifact(backend, citation)
     if artifact is None or artifact.kind != "pdf" or not artifact.bytes_path:
         return None
-    root_resolved = root.resolve()
-    file_path = (root_resolved / artifact.bytes_path).resolve()
-    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+    return _artifact_file_route(root, artifact, f"/api/artifacts/{artifact.artifact_id}/pdf")
+
+
+async def _citation_local_image_url(
+    backend: StorageBackend,
+    root: Path,
+    citation: dict[str, Any],
+) -> str | None:
+    """Return a URL for the locally archived screenshot of this citation, if any.
+
+    HTML/blog sources whose PDF render failed are archived as `kind="image"`
+    screenshots, so references can open the library's own copy.
+    """
+    artifact = await _citation_artifact(backend, citation)
+    if artifact is None or artifact.kind != "image" or not artifact.bytes_path:
         return None
-    return f"/api/artifacts/{artifact.artifact_id}/pdf"
+    return _artifact_file_route(root, artifact, f"/api/artifacts/{artifact.artifact_id}/image")
 
 
 async def _enrich_citations(
@@ -225,12 +263,17 @@ async def _enrich_citations(
     root: Path,
     citations_json: str | None,
 ) -> list[dict[str, Any]]:
-    """Attach `local_pdf_url` to citations that have an archived PDF copy."""
+    """Attach `local_pdf_url` / `local_image_url` to citations that have an
+    archived PDF or screenshot copy."""
     citations = parse_citations(citations_json)
     for c in citations:
         local_pdf = await _citation_local_pdf_url(backend, root, c)
         if local_pdf:
             c["local_pdf_url"] = local_pdf
+        else:
+            local_image = await _citation_local_image_url(backend, root, c)
+            if local_image:
+                c["local_image_url"] = local_image
     return citations
 
 
@@ -423,6 +466,25 @@ async def get_artifact_pdf(artifact_id: str, request: Request) -> FileResponse:
     )
 
 
+@router.get("/artifacts/{artifact_id}/image")
+async def get_artifact_image(artifact_id: str, request: Request) -> FileResponse:
+    """Serve an archived webpage-screenshot image artifact (kind="image")."""
+    backend = get_storage(request)
+    root = get_root_dir(request)
+    artifact = await backend.get_artifact(artifact_id)
+    if artifact is None or artifact.kind != "image" or not artifact.bytes_path:
+        raise HTTPException(status_code=404, detail="no archived image for this artifact")
+    root_resolved = root.resolve()
+    file_path = (root_resolved / artifact.bytes_path).resolve()
+    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="archived image file missing")
+    return FileResponse(
+        file_path,
+        media_type="image/png",
+        filename=f"{artifact.artifact_id}.png",
+    )
+
+
 @router.post("/arxiv/pdf", response_model=ArxivPdfResponse)
 async def archive_cited_arxiv_pdf(body: ArxivPdfBody, request: Request) -> ArxivPdfResponse:
     """On-demand: download + archive one arXiv paper PDF from a reference card."""
@@ -589,6 +651,11 @@ async def get_artifact_detail(artifact_id: str, request: Request) -> ArtifactDet
         source_url=artifact.source_url,
         source_type=artifact.source_type,
         title=artifact.title,
+        image_url=(
+            f"/api/artifacts/{artifact.artifact_id}/image"
+            if artifact.kind == "image"
+            else None
+        ),
         authors=_parse_json_list(artifact.authors),
         arxiv_id=artifact.arxiv_id,
         bytes_path=artifact.bytes_path,

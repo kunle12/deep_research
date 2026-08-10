@@ -25,6 +25,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.render_archive import archive_html_source
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
@@ -304,7 +305,7 @@ async def _fetch_html_source(
 
     # Archive HTML in library if writer is configured
     if isinstance(writer, LibraryWriter) and res.content and run_id:
-        await writer.archive_html(url, res.content)
+        await archive_html_source(url, res.content, tools=tools, config=config, writer=writer)
 
     return (res.content, list(res.citations), res.error or "")
 

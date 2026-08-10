@@ -163,6 +163,11 @@ pdl:
   # an arXiv id so the web UI can serve local copies. Deep-path citations
   # otherwise fall back to the upstream arXiv link.
   archive_cited_arxiv_pdfs: false
+  # Archive fetched blog/web HTML as a rendered PDF when the weasyprint
+  # conversion is usable; otherwise fall back to a screenshot image via the
+  # browser tool, and only if both fail store the fetched HTML text.
+  archive_html_as_pdf: true
+  archive_html_image_fallback: true
   storage:
     backend: "sqlite"                    # "sqlite" | "postgres" (postgres requires asyncpg)
     sqlite:

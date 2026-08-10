@@ -160,12 +160,12 @@ class LibraryWriter:
                 artifact_id=pdf_sha,
                 kind="pdf",
                 source_url=url,
-                source_type="blog",
+                source_type="html",
                 bytes_path=str(dest.relative_to(self._root)),
                 bytes_size=size,
                 first_seen_at=_now_iso(),
                 last_touched_at=_now_iso(),
-                refresh_after_at=_compute_refresh_after("blog", self._refresh_policy),
+                refresh_after_at=_compute_refresh_after("html", self._refresh_policy),
             )
             await self._storage.upsert_artifact(artifact)
             return pdf_sha
@@ -187,6 +187,27 @@ class LibraryWriter:
             )
             await self._storage.upsert_artifact(artifact)
             return sha
+
+    async def archive_image(self, url: str, image_bytes: bytes) -> str:
+        """Archive a webpage screenshot as an image artifact (kind="image")."""
+        sha = _content_sha256(image_bytes)
+        dest, size = await asyncio.to_thread(
+            _write_image_to_store, self._root, sha, image_bytes
+        )
+
+        artifact = ArtifactRow(
+            artifact_id=sha,
+            kind="image",
+            source_url=url,
+            source_type="html",
+            bytes_path=str(dest.relative_to(self._root)),
+            bytes_size=size,
+            first_seen_at=_now_iso(),
+            last_touched_at=_now_iso(),
+            refresh_after_at=_compute_refresh_after("html", self._refresh_policy),
+        )
+        await self._storage.upsert_artifact(artifact)
+        return sha
 
     async def archive_report(
         self, report: Report, run_id: str, config_snapshot: dict | None = None
@@ -411,6 +432,16 @@ def _write_html_to_store(root: Path, sha: str, url: str, html: str) -> tuple[Pat
     return html_dir, len(html.encode("utf-8"))
 
 
+def _write_image_to_store(root: Path, sha: str, image_bytes: bytes) -> tuple[Path, int]:
+    """Sync: write a webpage-screenshot PNG artifact, returning (dest, size)."""
+    dest_dir = root / "artifacts" / "image"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{sha}.png"
+    if not dest.exists():
+        dest.write_bytes(image_bytes)
+    return dest, len(image_bytes)
+
+
 def _write_report_files(
     ymd_dir: Path, run_id: str, markdown_text: str
 ) -> tuple[Path, bytes | None]:
@@ -493,6 +524,9 @@ class NullLibraryWriter:
         return ""
 
     async def archive_html(self, *args, **kwargs) -> str:
+        return ""
+
+    async def archive_image(self, *args, **kwargs) -> str:
         return ""
 
     async def archive_report(self, *args, **kwargs) -> str:

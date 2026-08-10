@@ -52,6 +52,7 @@ class TestRegistration:
         # Browser is enabled by default
         assert cfg.browser.enabled
         reg = await build_tool_registry(cfg)
+        assert "browser_take_screenshot" in reg.names()
         assert "browser_navigate" in reg.names()
         assert "browser_snapshot" in reg.names()
         assert "browser_click" in reg.names()
@@ -68,6 +69,7 @@ class TestRegistration:
         cfg.browser.enabled = False
         reg = await build_tool_registry(cfg)
         assert "browser_navigate" not in reg.names()
+        assert "browser_take_screenshot" not in reg.names()
         assert "browser_snapshot" not in reg.names()
         # No teardown hook since no browser tool was registered
         assert not hasattr(reg, "_browser_close") or not callable(
@@ -564,6 +566,63 @@ class TestTitleFromContent:
         assert title == "Hello World" or title == ""
 
 
+
+class TestScreenshotTool:
+    """browser_take_screenshot extracts the ImageContent base64 into content."""
+
+    @pytest.mark.asyncio
+    async def test_registered_when_enabled(self, monkeypatch) -> None:
+        _FakeMCPClientCtx.reset()
+        cfg = _cfg()
+        monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
+        fake_mcp = _FakeMCPClientCtx("npx", ["x"])
+        monkeypatch.setattr(browser_tool, "_MCPClientCtx", lambda c, a: fake_mcp)
+        reg = await build_tool_registry(cfg)
+        assert "browser_take_screenshot" in reg.names()
+        await reg.close()
+
+    @pytest.mark.asyncio
+    async def test_screenshot_extracts_base64_image_data(self, monkeypatch) -> None:
+        _FakeMCPClientCtx.reset()
+        cfg = _cfg()
+        monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
+        fake_mcp = _FakeMCPClientCtx("npx", ["x"])
+        fake_mcp._call_default = _make_text_result([("image", "cGljcw==")])  # base64("pics")
+        monkeypatch.setattr(browser_tool, "_MCPClientCtx", lambda c, a: fake_mcp)
+        reg = await build_tool_registry(cfg)
+        res = await reg.call("browser_take_screenshot", {})
+        assert res.error is None
+        assert res.content == "cGljcw=="
+        assert fake_mcp.call_log == [("browser_take_screenshot", {})]
+        await reg.close()
+
+    @pytest.mark.asyncio
+    async def test_screenshot_iserror_surfaces_error(self, monkeypatch) -> None:
+        _FakeMCPClientCtx.reset()
+        cfg = _cfg()
+        monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
+        fake_mcp = _FakeMCPClientCtx("npx", ["x"])
+        fake_mcp._call_default = _make_text_result([("text", "boom")], is_error=True)
+        monkeypatch.setattr(browser_tool, "_MCPClientCtx", lambda c, a: fake_mcp)
+        reg = await build_tool_registry(cfg)
+        res = await reg.call("browser_take_screenshot", {})
+        assert res.error is not None
+        await reg.close()
+
+    @pytest.mark.asyncio
+    async def test_screenshot_without_image_data_errors(self, monkeypatch) -> None:
+        _FakeMCPClientCtx.reset()
+        cfg = _cfg()
+        monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
+        fake_mcp = _FakeMCPClientCtx("npx", ["x"])
+        fake_mcp._call_default = _make_text_result([("text", "no image here")])
+        monkeypatch.setattr(browser_tool, "_MCPClientCtx", lambda c, a: fake_mcp)
+        reg = await build_tool_registry(cfg)
+        res = await reg.call("browser_take_screenshot", {})
+        assert res.error is not None
+        assert "no image data" in res.error
+        await reg.close()
+
 # ---------------------------------------------------------------------------
 # Multi-tool integration — same fake session serves navigate then snapshot
 # ---------------------------------------------------------------------------
@@ -608,6 +667,7 @@ class TestIntegration:
         assert "browser_snapshot" not in names
         assert "browser_click" not in names
         assert "browser_evaluate" not in names
+        assert "browser_take_screenshot" not in names
 
 
 # ---------------------------------------------------------------------------

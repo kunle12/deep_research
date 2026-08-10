@@ -19,14 +19,12 @@ Design choices:
    `ToolResult(error=...)` with a README-pointing hint. The downstream
    `fetch_page` already detects browser errors and falls back to raw HTML,
    so a broken browser does not break a research run.
-
 3. **Curated tool subset.** @playwright/mcp@latest exposes 24 tools. We
-   expose 4 to keep the LLM's tool-schema context small: navigate, snapshot,
-   click, evaluate. The other 20 (file_upload, drop, fill_form, press_key,
-   type, hover, drag, select_option, tabs, take_screenshot, console_messages,
-   network_request, etc.) are uninteresting for read-only research and would
-    waste context tokens. Expand the subset from config in P9 if it proves
-   useful.
+   expose 5 to keep the LLM's tool-schema context small: navigate, snapshot,
+   click, evaluate, plus take_screenshot (used by the library's image-fallback
+   archiving). The other 19 (file_upload, drop, fill_form, press_key, type,
+   hover, drag, select_option, tabs, console_messages, network_request, etc.)
+   are uninteresting for read-only research and would waste context tokens.
 
 4. **Teardown.** The MCP subprocess is killed in `_MCPClientCtx.close()`.
    The agent calls `reg._browser_close()` from its `_ToolsCtx.__aexit__`
@@ -122,6 +120,17 @@ EVALUATE_SCHEMA = {
         },
         "required": ["function"],
     },
+}
+
+
+SCREENSHOT_SCHEMA = {
+    "type": "function",
+    "description": (
+        "Take a screenshot of the current page. The page must have "
+        "been opened by browser_navigate first. Returns the screenshot as a "
+        "base64-encoded PNG string."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 
@@ -341,10 +350,53 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     async def _evaluate(function: str, **_: Any) -> ToolResult:
         return await _invoke("browser_evaluate", {"function": function})
 
+    async def _screenshot(**_: Any) -> ToolResult:
+        # Unlike the other tools, take_screenshot returns an ImageContent
+        # (base64 PNG) which `_mcp_result_to_tool_result` deliberately drops.
+        # Extract the image data here and surface it as the tool's content so
+        # the library's image-fallback archiving can persist it.
+        mcp = await _ensure_mcp()
+        if mcp is None:
+            err = (
+                startup_error[0]
+                if startup_error
+                else ("browser tool unavailable (no MCP connection)")
+            )
+            return ToolResult(content="", error=err)
+        try:
+            result = await mcp.call("browser_take_screenshot", {})
+        except Exception as e:
+            logger.warning(
+                "MCP tool browser_take_screenshot raised: %s: %s",
+                type(e).__name__,
+                e,
+            )
+            return ToolResult(
+                content="",
+                error=f"MCP call browser_take_screenshot failed: {type(e).__name__}: {e}",
+            )
+        if getattr(result, "isError", False):
+            return ToolResult(content="", error="browser_take_screenshot returned isError")
+        data = ""
+        mime = ""
+        for item in (getattr(result, "content", None) or []):
+            if getattr(item, "type", None) == "image":
+                data = getattr(item, "data", "") or ""
+                mime = getattr(item, "mimeType", "") or ""
+                break
+        if not data:
+            return ToolResult(
+                content="",
+                error="browser_take_screenshot returned no image data",
+            )
+        logger.debug("browser screenshot captured (%s, %d b64 chars)", mime, len(data))
+        return ToolResult(content=data, citations=[])
+
     reg.register("browser_navigate", _navigate, NAVIGATE_SCHEMA)
     reg.register("browser_snapshot", _snapshot, SNAPSHOT_SCHEMA)
     reg.register("browser_click", _click, CLICK_SCHEMA)
     reg.register("browser_evaluate", _evaluate, EVALUATE_SCHEMA)
+    reg.register("browser_take_screenshot", _screenshot, SCREENSHOT_SCHEMA)
 
     async def _close() -> None:
         mcp = mcp_holder[0]

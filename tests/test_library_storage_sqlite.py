@@ -35,6 +35,58 @@ async def test_schema_creation(backend):
     pass
 
 
+
+@pytest.mark.asyncio
+async def test_old_schema_migrated_to_image_kind():
+    """DBs created before the 'image' kind existed get their artifacts CHECK
+    relaxed so kind='image' artifacts can be stored, preserving old rows."""
+    import sqlite3
+
+    tmp = tempfile.mkdtemp()
+    db_path = str(Path(tmp) / "old_index.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE artifacts ("
+        " artifact_id TEXT PRIMARY KEY,"
+        " kind TEXT NOT NULL, source_url TEXT, source_type TEXT, title TEXT,"
+        " authors TEXT, discovered_by TEXT, arxiv_id TEXT, parents TEXT,"
+        " bytes_path TEXT NOT NULL, bytes_size INTEGER,"
+        " first_seen_at TEXT NOT NULL, last_touched_at TEXT NOT NULL,"
+        " raw_metadata TEXT, refresh_after_at TEXT, last_refreshed_at TEXT,"
+        " upstream_unchanged_since TEXT,"
+        " CHECK (kind IN ('pdf','html','report')))"
+    )
+    conn.execute(
+        "INSERT INTO artifacts (artifact_id, kind, bytes_path, first_seen_at, "
+        "last_touched_at) VALUES ('old1','pdf','old.pdf','t0','t0')"
+    )
+    conn.commit()
+    conn.close()
+
+    be = SqliteStorageBackend(db_path=db_path)
+    await be.connect()
+    try:
+        old = await be.get_artifact("old1")
+        assert old is not None and old.kind == "pdf"
+        assert old.bytes_path == "old.pdf"
+        # Image kind is now accepted after the migration
+        await be.upsert_artifact(
+            ArtifactRow(
+                artifact_id="img1",
+                kind="image",
+                source_url="https://example.com/page",
+                source_type="html",
+                bytes_path="img.png",
+                bytes_size=4,
+                first_seen_at="now",
+                last_touched_at="now",
+            )
+        )
+        img = await be.get_artifact("img1")
+        assert img is not None and img.kind == "image"
+    finally:
+        await be.close()
+
 @pytest.mark.asyncio
 async def test_artifact_crud(backend):
     art = ArtifactRow(

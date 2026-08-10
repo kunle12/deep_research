@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from openai import AsyncOpenAI
 
 from deep_research.config import AgentTopConfig
+from deep_research.library.render_archive import archive_html_source
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.progress import ProgressReporter, ensure_reporter
@@ -76,7 +77,9 @@ async def applied_research(
                 reporter.step("applied.fetch", f"post {i + 1}: {c.title[:60]}")
                 # Archive HTML in library if writer is configured
                 if isinstance(writer, LibraryWriter) and run_id:
-                    await writer.archive_html(c.url, result.content)
+                    await archive_html_source(
+                        c.url, result.content, tools=tools, config=config, writer=writer
+                    )
 
     # Step 3: synthesize report
     reporter.phase("applied.synthesize", "writing report")

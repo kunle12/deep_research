@@ -378,6 +378,11 @@ class PDLConfig(BaseModel):
     # reference arXiv papers without downloading them, so without this they
     # fall back to the upstream link.
     archive_cited_arxiv_pdfs: bool = False
+    # Archive fetched HTML sources (blogs/web pages) as a rendered PDF when the
+    # conversion is usable; otherwise fall back to a screenshot image. When both
+    # fail, the fetched HTML text is stored as before.
+    archive_html_as_pdf: bool = True
+    archive_html_image_fallback: bool = True
 
 
 class AgentTopConfig(BaseModel):
