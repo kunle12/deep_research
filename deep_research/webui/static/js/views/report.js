@@ -41,8 +41,12 @@ export function renderReport(root, runId) {
   getReport(runId)
     .then((report) => {
       clear(content);
+      // Drop the loading-state class so its `text-align: center` no longer
+      // leaks into the rendered report (bibliography/glossary/panels).
+      content.className = "";
       content.append(buildReport(report));
     })
+
     .catch((err) => {
       clear(content);
       content.append(

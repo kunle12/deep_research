@@ -590,7 +590,8 @@ button { font-family: inherit; font-size: inherit; }
   border-radius: var(--radius-sm);
   padding: 10px 12px;
 }
-.ref-title { margin: 0 0 4px; font-size: 14px; line-height: 1.35; }
+.ref-title { margin: 0 0 4px; font-size: 14px; line-height: 1.35; text-align: center; }
+
 .ref-meta { margin: 0 0 4px; color: var(--text-2); font-size: 12px; }
 .ref-snippet {
   margin: 0 0 8px;
