@@ -146,13 +146,9 @@ async def test_begin_report_enables_glossary_fresh_run(writer):
         payload = json.dumps(
             {"glossary": [{"term": "RLHF", "kind": "acronym", "short_def": "RL from feedback"}]}
         )
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=payload))]
-        )
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=payload))])
 
     fake_llm = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
-
-
 
     await writer.begin_report("run_g", "glossary query")
     entries = await extract_glossary_from_report(
@@ -164,7 +160,6 @@ async def test_begin_report_enables_glossary_fresh_run(writer):
     assert any(r.term_canonical == "rlhf" for r in rows)
     rlhf = next(r for r in rows if r.term_canonical == "rlhf")
     assert rlhf.first_seen_run_id == "run_g"
-
 
 
 @pytest.mark.asyncio

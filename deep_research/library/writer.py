@@ -97,7 +97,7 @@ class LibraryWriter:
                 started_at=_now_iso(),
                 original_query=original_query,
                 path_taken="",  # placeholder; set by archive_report
-                markdown="",    # placeholder; set by archive_report
+                markdown="",  # placeholder; set by archive_report
             )
         )
 
@@ -110,7 +110,6 @@ class LibraryWriter:
         if not run_id:
             return
         await self._storage.delete_report(run_id)
-
 
     # -- Artifact archival --
 
@@ -191,9 +190,7 @@ class LibraryWriter:
     async def archive_image(self, url: str, image_bytes: bytes) -> str:
         """Archive a webpage screenshot as an image artifact (kind="image")."""
         sha = _content_sha256(image_bytes)
-        dest, size = await asyncio.to_thread(
-            _write_image_to_store, self._root, sha, image_bytes
-        )
+        dest, size = await asyncio.to_thread(_write_image_to_store, self._root, sha, image_bytes)
 
         artifact = ArtifactRow(
             artifact_id=sha,
@@ -518,7 +515,6 @@ class NullLibraryWriter:
 
     async def delete_report(self, *args, **kwargs) -> None:
         pass
-
 
     async def archive_pdf(self, *args, **kwargs) -> str:
         return ""

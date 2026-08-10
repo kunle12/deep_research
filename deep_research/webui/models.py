@@ -51,7 +51,6 @@ class ReportDetail(BaseModel):
     bibliography_bib_url: str = ""
 
 
-
 class TagUpdateResponse(BaseModel):
     ok: bool = True
     tags: list[str] = Field(default_factory=list)
@@ -76,7 +75,6 @@ class AnalysisInfo(BaseModel):
     key_references: list[str] = Field(default_factory=list)
     relevance_to_query: str | None = None
     analyzed_at: str = ""
-
 
 
 class GlossaryInfo(BaseModel):

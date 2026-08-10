@@ -35,7 +35,6 @@ async def test_schema_creation(backend):
     pass
 
 
-
 @pytest.mark.asyncio
 async def test_old_schema_migrated_to_image_kind():
     """DBs created before the 'image' kind existed get their artifacts CHECK
@@ -86,6 +85,7 @@ async def test_old_schema_migrated_to_image_kind():
         assert img is not None and img.kind == "image"
     finally:
         await be.close()
+
 
 @pytest.mark.asyncio
 async def test_artifact_crud(backend):

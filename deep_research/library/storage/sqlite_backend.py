@@ -192,9 +192,7 @@ class SqliteStorageBackend:
                 await self._conn.execute("PRAGMA foreign_keys=ON")
             except Exception:
                 pass
-            logger.warning(
-                "artifacts image-kind migration failed: %s: %s", type(e).__name__, e
-            )
+            logger.warning("artifacts image-kind migration failed: %s: %s", type(e).__name__, e)
 
     async def _execute(self, sql: str, params: tuple = ()) -> Any:
         if self._conn is None:

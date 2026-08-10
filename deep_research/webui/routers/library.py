@@ -157,7 +157,6 @@ def _citations_objects(citations: list[dict[str, Any]]) -> list[Citation]:
     return out
 
 
-
 def _analysis_info(a: AnalysisRow) -> AnalysisInfo:
     return AnalysisInfo(
         analysis_id=a.analysis_id,
@@ -214,9 +213,7 @@ async def _citation_artifact(
     return artifact
 
 
-def _artifact_file_route(
-    root: Path, artifact: ArtifactRow, route: str
-) -> str | None:
+def _artifact_file_route(root: Path, artifact: ArtifactRow, route: str) -> str | None:
     """Return the API route for *artifact*'s file if it exists on disk, else None."""
     root_resolved = root.resolve()
     file_path = (root_resolved / artifact.bytes_path).resolve()
@@ -429,7 +426,6 @@ async def get_report_bibliography_bib(run_id: str, request: Request) -> PlainTex
         media_type="application/x-bibtex; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{run_id}.bib"'},
     )
-
 
 
 @router.get("/reports/{run_id}/pdf")
@@ -652,9 +648,7 @@ async def get_artifact_detail(artifact_id: str, request: Request) -> ArtifactDet
         source_type=artifact.source_type,
         title=artifact.title,
         image_url=(
-            f"/api/artifacts/{artifact.artifact_id}/image"
-            if artifact.kind == "image"
-            else None
+            f"/api/artifacts/{artifact.artifact_id}/image" if artifact.kind == "image" else None
         ),
         authors=_parse_json_list(artifact.authors),
         arxiv_id=artifact.arxiv_id,

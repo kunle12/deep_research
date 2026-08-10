@@ -450,9 +450,7 @@ async def academic_research(
             if isinstance(r, Exception):
                 rtype = "timeout" if isinstance(r, TimeoutError) else type(r).__name__
                 base = _strip_version(node.arxiv_id)
-                logger.warning(
-                    "academic task for %s raised (%s): %s", base, rtype, r
-                )
+                logger.warning("academic task for %s raised (%s): %s", base, rtype, r)
                 # Release the claimed budget slot on failure so a transient
                 # error (bad PDF, flaky download, LLM failure, timeout) does
                 # not permanently waste a max_papers slot. Only un-claim when

@@ -566,7 +566,6 @@ class TestTitleFromContent:
         assert title == "Hello World" or title == ""
 
 
-
 class TestScreenshotTool:
     """browser_take_screenshot extracts the ImageContent base64 into content."""
 
@@ -622,6 +621,7 @@ class TestScreenshotTool:
         assert res.error is not None
         assert "no image data" in res.error
         await reg.close()
+
 
 # ---------------------------------------------------------------------------
 # Multi-tool integration — same fake session serves navigate then snapshot

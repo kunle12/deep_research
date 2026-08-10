@@ -175,8 +175,6 @@ async def run_research(
                 except Exception as e:
                     logger.warning("failed-archive cleanup error: %s: %s", type(e).__name__, e)
 
-
-
             # P10.7: auto-tag the report artifact with topic tags
             if artifact_id:
                 try:

@@ -379,7 +379,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             return ToolResult(content="", error="browser_take_screenshot returned isError")
         data = ""
         mime = ""
-        for item in (getattr(result, "content", None) or []):
+        for item in getattr(result, "content", None) or []:
             if getattr(item, "type", None) == "image":
                 data = getattr(item, "data", "") or ""
                 mime = getattr(item, "mimeType", "") or ""

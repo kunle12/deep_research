@@ -71,9 +71,7 @@ class _FakeBrowserTools:
     async def call(self, name: str, arguments: dict | None = None):
         self.calls.append(name)
         if name == "browser_navigate":
-            return SimpleNamespace(
-                error=self._nav_error, content="nav ok", citations=[]
-            )
+            return SimpleNamespace(error=self._nav_error, content="nav ok", citations=[])
         return SimpleNamespace(error=None, content=self._content, citations=[])
 
 
@@ -299,9 +297,7 @@ async def test_capture_tools_missing_returns_none() -> None:
 @pytest.mark.asyncio
 async def test_capture_navigate_error_returns_none() -> None:
     cfg = _cfg()
-    tools = _CaptureFake(
-        ["browser_navigate", "browser_take_screenshot"], nav_error="BLOCKED:bot"
-    )
+    tools = _CaptureFake(["browser_navigate", "browser_take_screenshot"], nav_error="BLOCKED:bot")
     assert await ra._capture_page_image("https://x", tools, cfg) is None
 
 

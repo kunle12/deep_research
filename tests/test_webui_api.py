@@ -141,7 +141,6 @@ async def seeded_config(library_root: Path) -> Path:
             )
         )
 
-
         pdf_dir = library_root / "artifacts" / "pdf"
         pdf_dir.mkdir(parents=True)
         (pdf_dir / "art_a.pdf").write_bytes(b"%PDF-1.4 fake report pdf")
@@ -285,7 +284,6 @@ def test_report_bibliography_bib_export(client):
     assert "Paper B" in r.text
     assert "Ada Lovelace" in r.text
     assert client.get("/api/reports/nope/bibliography/bib").status_code == 404
-
 
 
 def test_report_pdf(client):

@@ -79,7 +79,9 @@ def _render_html_to_pdf(html: str) -> bytes | None:
     return data
 
 
-async def _capture_page_image(url: str, tools: ToolRegistry, config: AgentTopConfig) -> bytes | None:
+async def _capture_page_image(
+    url: str, tools: ToolRegistry, config: AgentTopConfig
+) -> bytes | None:
     """Screenshot *url* via the Playwright browser; return PNG bytes or None.
 
     Returns None when the browser is disabled, the tools aren't registered, or
