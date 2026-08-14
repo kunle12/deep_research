@@ -304,15 +304,14 @@ def library_merge(
             + "..."
         )
         from deep_research.library.merge import merge_reports
-        from deep_research.llm.client import open_llm
+        from deep_research.llm.router import LLMRouter
 
-        async with open_llm(cfg.llm) as llm:
+        async with LLMRouter(cfg.llm) as router:
             new_run_id = await merge_reports(
                 backend,
                 writer,
                 resolved,
-                llm,
-                cfg.llm.text_model,
+                router,
                 name=name,
                 delete_sources=delete_sources,
             )
@@ -342,18 +341,17 @@ def library_add_source(
             raise typer.Exit(code=1)
 
         from deep_research.library.attach import attach_source
-        from deep_research.llm.client import open_llm
+        from deep_research.llm.router import LLMRouter
 
         typer.echo(f"Attaching {url} to '{r.original_query[:60]}'...")
-        async with open_llm(cfg.llm) as llm:
+        async with LLMRouter(cfg.llm) as router:
             result = await attach_source(
                 url,
                 r.run_id,
                 backend,
                 writer,
                 cfg,
-                llm,
-                cfg.llm.text_model,
+                router,
             )
         if result.get("status") == "skipped":
             typer.echo(f"Skipped: {result.get('reason')}")

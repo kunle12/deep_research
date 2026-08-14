@@ -9,8 +9,7 @@ import asyncio
 import json
 import logging
 
-from openai import AsyncOpenAI
-
+from deep_research.llm.router import LLMClientLike
 from deep_research.state import ClassifiedQuery, QueryPlan
 from deep_research.util import load_prompt_template
 
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 async def classify_query(
     query: str,
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
 ) -> ClassifiedQuery:
     """Make a single LLM call to classify `query`.

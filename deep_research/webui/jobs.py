@@ -98,20 +98,19 @@ async def _default_attach_runner(
     from deep_research.library.attach import attach_source
     from deep_research.library.storage import get_backend
     from deep_research.library.writer import LibraryWriter
-    from deep_research.llm.client import LLMClient
+    from deep_research.llm.router import LLMRouter
 
     backend = await get_backend(config)
     try:
         writer = LibraryWriter(backend, config.pdl.root_dir)
-        async with LLMClient(config.llm) as llm:
+        async with LLMRouter(config.llm) as router:
             return await attach_source(
                 url,
                 run_id,
                 backend,
                 writer,
                 config,
-                llm,
-                config.llm.text_model,
+                router,
                 progress=progress,
             )
     finally:

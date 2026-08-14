@@ -9,10 +9,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.citation_archive import archive_cited_pdf
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
-from deep_research.llm.client import LLMClient
+from deep_research.llm.router import LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.auto_tag import auto_tag_report
 from deep_research.nodes.glossarize import extract_glossary_from_report
@@ -117,14 +117,14 @@ async def run_research(
             except Exception as e:
                 logger.warning("begin_report failed: %s: %s", type(e).__name__, e)
 
-        # Single async with block for LLM client + tools — all routing happens inside
-        async with LLMClient(config.llm) as client, _build_tools(config) as tools:
+        # Single async with block for LLM router + tools — all routing happens inside
+        async with LLMRouter(config.llm) as router, _build_tools(config) as tools:
             report = await _route_and_dispatch(
                 query,
                 path_override,
                 override_url,
                 override_remainder,
-                client,
+                router,
                 tools,
                 config,
                 reporter,
@@ -150,10 +150,11 @@ async def run_research(
             # P10.6: dedicated glossary extraction from report text
             if report.markdown:
                 try:
+                    post = router.resolve(LLMRole.POST)
                     glossary_entries = await extract_glossary_from_report(
                         report.markdown,
-                        client,
-                        config.llm.text_model,
+                        post.client,
+                        post.model,
                         writer,
                         run_id,
                     )
@@ -178,12 +179,13 @@ async def run_research(
             # P10.7: auto-tag the report artifact with topic tags
             if artifact_id:
                 try:
+                    post = router.resolve(LLMRole.POST)
                     await auto_tag_report(
                         query,
                         report.markdown,
                         artifact_id,
-                        client,
-                        config.llm.text_model,
+                        post.client,
+                        post.model,
                         writer,
                         run_id,
                     )
@@ -217,8 +219,8 @@ async def _route_and_dispatch(
     query: str,
     path_override: PathOverride | None,
     override_url: str | None,
-    override_remainder: str | None,
-    client,
+    override_remainder: str,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     reporter: ProgressReporter,
@@ -243,7 +245,7 @@ async def _route_and_dispatch(
             return await _dispatch_url_source(
                 override_url,
                 override_remainder or "",
-                client,
+                router,
                 tools,
                 config,
                 reporter,
@@ -259,7 +261,7 @@ async def _route_and_dispatch(
         return await _dispatch_classified(
             classified,
             query,
-            client,
+            router,
             tools,
             config,
             reporter,
@@ -280,7 +282,7 @@ async def _route_and_dispatch(
         return await _dispatch_classified(
             classified,
             query,
-            client,
+            router,
             tools,
             config,
             reporter,
@@ -297,7 +299,7 @@ async def _route_and_dispatch(
         return await _dispatch_url_source(
             detected_url,
             remainder,
-            client,
+            router,
             tools,
             config,
             reporter,
@@ -318,7 +320,8 @@ async def _route_and_dispatch(
         reporter.phase("routing", "classifier LLM call")
         from deep_research.paths import classify_query
 
-        classified = await classify_query(query, client, config.llm.text_model)
+        cls = router.resolve(LLMRole.CLASSIFIER)
+        classified = await classify_query(query, cls.client, cls.model)
         logger.info(
             "classifier returned path=%s rationale=%r", classified.path, classified.rationale
         )
@@ -329,7 +332,7 @@ async def _route_and_dispatch(
     return await _dispatch_classified(
         classified,
         query,
-        client,
+        router,
         tools,
         config,
         reporter,
@@ -341,7 +344,7 @@ async def _route_and_dispatch(
 async def _dispatch_classified(
     classified: ClassifiedQuery,
     original_query: str,
-    client,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     reporter: ProgressReporter,
@@ -372,7 +375,7 @@ async def _dispatch_classified(
     return await handler(
         classified,
         original_query,
-        client,
+        router,
         tools,
         config,
         reporter,
@@ -384,7 +387,7 @@ async def _dispatch_classified(
 async def _dispatch_url_source(
     url: str,
     remainder: str,
-    client,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     reporter: ProgressReporter,
@@ -394,7 +397,7 @@ async def _dispatch_url_source(
     from deep_research.paths import url_source
 
     return await url_source(
-        url, remainder, client, tools, config, reporter, writer=writer, run_id=run_id
+        url, remainder, router, tools, config, reporter, writer=writer, run_id=run_id
     )
 
 

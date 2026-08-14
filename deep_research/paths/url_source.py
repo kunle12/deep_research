@@ -22,11 +22,10 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.render_archive import archive_html_source
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
+from deep_research.llm.router import LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
 from deep_research.progress import ProgressReporter, ensure_reporter
@@ -514,7 +513,7 @@ def _render_analysis_markdown(
 async def url_source(
     url: str,
     query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
@@ -626,13 +625,14 @@ async def url_source(
     # LLM analysis call. If pdf_vision rendered pages, we attach them as
     # image_url content blocks so the VLM can read figures + tables.
     reporter.phase("url.analyze", f"{url_type.value}; vision_pages={len(page_image_data_urls)}")
+    resolved = router.resolve(LLMRole.ANALYSIS, has_images=bool(page_image_data_urls))
     analysis = await analyze_source_node(
         url=url,
         source_type=url_type.value,
         content=content_text,
         user_query=query or "",
-        client=client,
-        model=config.llm.vision_model if page_image_data_urls else config.llm.text_model,
+        client=resolved.client,
+        model=resolved.model,
         page_image_data_urls=page_image_data_urls or None,
     )
 
@@ -649,7 +649,7 @@ async def url_source(
             analysis=analysis,
             original_url=url,
             user_query=query or "",
-            client=client,
+            router=router,
             tools=tools,
             config=config,
             progress=reporter,
@@ -682,7 +682,7 @@ async def _maybe_run_follow_up(
     analysis,
     original_url: str,
     user_query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
@@ -730,7 +730,7 @@ async def _maybe_run_follow_up(
         followup_report: Report = await deep_path(
             classified,
             synthetic_query,
-            client,
+            router,
             tools,
             config,
             progress=progress,

@@ -9,11 +9,10 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from openai import AsyncOpenAI
-
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.render_archive import archive_html_source
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
+from deep_research.llm.router import LLMClientLike, LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
@@ -28,7 +27,7 @@ logger = logging.getLogger(__name__)
 async def applied_research(
     classified: ClassifiedQuery,
     original_query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
@@ -83,8 +82,9 @@ async def applied_research(
 
     # Step 3: synthesize report
     reporter.phase("applied.synthesize", "writing report")
+    writer_llm = router.resolve(LLMRole.WRITER)
     final_md = await _synthesize_applied(
-        original_query, citations, fetched_texts, client, config.llm.text_model
+        original_query, citations, fetched_texts, writer_llm.client, writer_llm.model
     )
 
     reporter.phase("applied.done", f"{len(citations)} blog posts")
@@ -101,7 +101,7 @@ async def _synthesize_applied(
     query: str,
     citations: list[Citation],
     fetched_texts: list[str],
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
 ) -> str:
     """Synthesize blog posts into an applied research report."""

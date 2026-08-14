@@ -14,10 +14,9 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from deep_research.library.storage.rows import GlossaryEntry
 from deep_research.library.writer import LibraryWriter
+from deep_research.llm.router import LLMClientLike
 from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "glossary_ex
 
 async def extract_glossary_from_report(
     report_text: str,
-    llm: AsyncOpenAI,
+    llm: LLMClientLike,
     model: str,
     writer: LibraryWriter | None,
     run_id: str,

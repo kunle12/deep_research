@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +19,51 @@ def _env(name: str, default: str | None = None) -> str | None:
     """Read an env var, returning default if unset or empty."""
     v = os.environ.get(name, "")
     return v if v else default
+
+
+class LLMRole(str, Enum):
+    """Task roles used to route LLM calls when a secondary endpoint is configured.
+
+    Vision-bearing calls never consult this routing table — they always stay on
+    the primary (vision-capable) endpoint."""
+
+    CLASSIFIER = "classifier"  # query routing / clarification judgement
+    PLANNER = "planner"  # sub-question decomposition, search-term generation
+    RESEARCHER = "researcher"  # tool loop: query generation + in-research judgement
+    CRITIC = "critic"  # coverage judgement, gap detection, paper selection
+    ANALYSIS = "analysis"  # text-only source/paper analysis, synthesis, scoring
+    WRITER = "writer"  # final report synthesis
+    POST = "post"  # glossary, auto-tag, library merge, titles
+
+
+class SecondaryLLMConfig(BaseModel):
+    """Optional secondary LLM endpoint for text reasoning tasks.
+
+    When present (and `enabled`), text-role calls route here while any call
+    carrying images stays on the primary endpoint — so this model does NOT
+    need vision capability. Omit entirely to run everything on the primary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    base_url: str = "http://localhost:8001/v1"
+    api_key: str = "llama.cpp"
+    model: str = "qwen3.5-122b"
+    max_context_tokens: int = 131072
+    timeout_s: int = 240
+    # Which text roles route to this endpoint. None = all text roles.
+    roles: list[LLMRole] | None = None
+
+    @model_validator(mode="after")
+    def _apply_env_overrides(self) -> SecondaryLLMConfig:
+        if v := os.environ.get("DEEP_RESEARCH_LLM_SECONDARY_BASE_URL"):
+            self.base_url = v
+        if v := os.environ.get("DEEP_RESEARCH_LLM_SECONDARY_API_KEY"):
+            self.api_key = v
+        if v := os.environ.get("DEEP_RESEARCH_LLM_SECONDARY_MODEL"):
+            self.model = v
+        return self
 
 
 class LLMConfig(BaseModel):
@@ -36,6 +82,9 @@ class LLMConfig(BaseModel):
     timeout_s: int = 240
     # Optional: separate api key for vision calls (some endpoints require this)
     vision_api_key: str | None = None
+    # Optional secondary (typically text-only) LLM for reasoning tasks; see
+    # SecondaryLLMConfig and llm/router.py. None = single-endpoint mode.
+    secondary: SecondaryLLMConfig | None = None
 
     @model_validator(mode="after")
     def _apply_env_overrides(self) -> LLMConfig:
@@ -52,7 +101,24 @@ class LLMConfig(BaseModel):
             self.text_model = v
         if v := os.environ.get("DEEP_RESEARCH_LLM_VISION_MODEL"):
             self.vision_model = v
+        # Enable the secondary endpoint purely from env vars when no YAML
+        # `secondary:` block is present (its own validator applies the env
+        # overrides). Without this, setting only the env vars silently did
+        # nothing because `secondary` stayed None.
+        if self.secondary is None and any(
+            os.environ.get(k)
+            for k in (
+                "DEEP_RESEARCH_LLM_SECONDARY_BASE_URL",
+                "DEEP_RESEARCH_LLM_SECONDARY_API_KEY",
+                "DEEP_RESEARCH_LLM_SECONDARY_MODEL",
+            )
+        ):
+            self.secondary = SecondaryLLMConfig()
         return self
+
+    @property
+    def secondary_enabled(self) -> bool:
+        return self.secondary is not None and self.secondary.enabled
 
 
 class ClassifierConfig(BaseModel):
@@ -442,6 +508,7 @@ __all__ = [
     "ClassifierConfig",
     "FetchPageConfig",
     "LLMConfig",
+    "LLMRole",
     "OutputConfig",
     "PDLConfig",
     "PdfVisionConfig",
@@ -451,6 +518,7 @@ __all__ = [
     "ScholarSerperConfig",
     "SearXNGConfig",
     "SearchConfig",
+    "SecondaryLLMConfig",
     "TavilyConfig",
     "UrlSourceConfig",
 ]

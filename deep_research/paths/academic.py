@@ -35,10 +35,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from openai import AsyncOpenAI
-
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
+from deep_research.llm.router import LLMClientLike, LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_paper import (
     analyze as analyze_paper_node,
@@ -177,7 +176,7 @@ def _clean_search_query(query: str) -> str:
 async def academic_research(
     classified: ClassifiedQuery,
     original_query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
@@ -321,15 +320,22 @@ async def academic_research(
                 analyses[base] = None
                 return
 
+            resolved = router.resolve(LLMRole.ANALYSIS, has_images=bool(page_urls))
+            text_resolved = router.resolve(LLMRole.ANALYSIS)
             analysis = await analyze_paper_node(
                 arxiv_id=node.arxiv_id,
                 paper_text=paper_text,
                 query=original_query,
-                client=client,
-                model=config.llm.vision_model if page_urls else config.llm.text_model,
+                client=resolved.client,
+                model=resolved.model,
                 page_image_data_urls=page_urls or None,
                 text_source=text_source,
-                max_context_tokens=config.llm.max_context_tokens,
+                max_context_tokens=resolved.max_context_tokens,
+                # The final synthesis call carries no images, so it may run on
+                # the (cheaper/faster) text route even when pages were rendered.
+                synthesis_client=text_resolved.client,
+                synthesis_model=text_resolved.model,
+                synthesis_max_context_tokens=text_resolved.max_context_tokens,
             )
 
             # Relevance gate: an off-topic paper (e.g. one that merely shares a
@@ -473,8 +479,15 @@ async def academic_research(
 
     # ---- SYNTHESIZE --------------------------------------------------------
     reporter.phase("academic.synthesize", f"{len(analyses)} analyses")
+    writer_llm = router.resolve(LLMRole.WRITER)
     final_md = await _synthesize_markdown(
-        original_query, analyses, client, config.llm.text_model, blog_citations, writer, run_id
+        original_query,
+        analyses,
+        writer_llm.client,
+        writer_llm.model,
+        blog_citations,
+        writer,
+        run_id,
     )
 
     # Collect citations from PaperNodes (use what we resolved; metadata is
@@ -702,7 +715,7 @@ async def _gather_seeds(
 async def _synthesize_markdown(
     original_query: str,
     analyses: dict[str, Any],
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     blog_citations: list | None = None,
     writer: LibraryWriter | NullLibraryWriter | None = None,

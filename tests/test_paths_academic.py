@@ -81,6 +81,15 @@ class _FakeAsyncOpenAI:
         self.chat.completions.create = AsyncMock(return_value=_FakeResponse(content))
 
 
+def _fake_router(client, model: str = "text") -> MagicMock:
+    """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
+    router = MagicMock()
+    router.resolve.return_value = MagicMock(
+        client=client, model=model, max_context_tokens=131072
+    )
+    return router
+
+
 def _raising_client(exc: Exception) -> MagicMock:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(side_effect=exc)
@@ -491,6 +500,7 @@ def _patch_analyze(monkeypatch, analyses_by_id: dict[str, PaperAnalysis]) -> dic
         page_image_data_urls: list[str] | None = None,
         text_source: str = "pdf",
         max_context_tokens: int = 131072,
+        **kwargs: Any,
     ) -> PaperAnalysis:
         calls["n"] += 1
         if arxiv_id in analyses_by_id:
@@ -552,7 +562,7 @@ class TestAcademicResearchE2E:
         client = _FakeAsyncOpenAI("# Synthesized\n")
         _patch_analyze(monkeypatch, {})
 
-        report = await academic_research(classified, "nothing", client, reg, cfg)
+        report = await academic_research(classified, "nothing", _fake_router(client), reg, cfg)
         assert report.path == "academic"
         assert "No arxiv papers" in report.markdown
         assert report.citation_graph is not None
@@ -576,7 +586,7 @@ class TestAcademicResearchE2E:
         # The synthesis client isn't reachable from the analyze path (we patched it out),
         # but the final synthesis call still goes through the real client.
         client = _FakeAsyncOpenAI("# Synthesis OK\n")
-        report = await academic_research(classified, "rlhf", client, reg, cfg)
+        report = await academic_research(classified, "rlhf", _fake_router(client), reg, cfg)
         assert report.path == "academic"
         # All 3 seeds analyzed, no children enqueued
         assert calls["n"] == 3
@@ -605,7 +615,7 @@ class TestAcademicResearchE2E:
         calls = _patch_analyze(monkeypatch, analyses)
         reg = _tools_for(monkeypatch, ["2401.1", "2401.2"])
         client = _FakeAsyncOpenAI("# Synthesis OK\n")
-        report = await academic_research(classified, "rlhf", client, reg, cfg)
+        report = await academic_research(classified, "rlhf", _fake_router(client), reg, cfg)
         # 5 analyses: 2 seeds + 3 depth-1 children (2401.10, 2401.11, 2401.20).
         # 2401.100 is a depth-2 grandchild and must NOT be analyzed.
         assert calls["n"] == 5
@@ -631,7 +641,7 @@ class TestAcademicResearchE2E:
         calls = _patch_analyze(monkeypatch, analyses)
         reg = _tools_for(monkeypatch, seed_ids)
         client = _FakeAsyncOpenAI("# Synthesis OK\n")
-        report = await academic_research(classified, "rlhf", client, reg, cfg)
+        report = await academic_research(classified, "rlhf", _fake_router(client), reg, cfg)
         # We stop analyzing once processed_count == max_papers=3
         assert calls["n"] <= 3
         assert report.iterations <= 3
@@ -676,7 +686,7 @@ class TestAcademicResearchE2E:
         )
         _patch_analyze(monkeypatch, {"2401.1": _analysis("2401.1")})
         client = _FakeAsyncOpenAI("# x\n")
-        await academic_research(classified, "x", client, reg, cfg)
+        await academic_research(classified, "x", _fake_router(client), reg, cfg)
         # pdf_render_pages was NOT called because pdf_vision.enabled=False
         # gated the path-internal `if config.pdf_vision.enabled and ...` check.
         assert render_calls == []
@@ -702,7 +712,7 @@ class TestAcademicResearchE2E:
         )
         _patch_analyze(monkeypatch, {"2401.1": _analysis("2401.1")})
         client = _FakeAsyncOpenAI("# x\n")
-        await academic_research(classified, "ignored original", client, reg, cfg)
+        await academic_research(classified, "ignored original", _fake_router(client), reg, cfg)
         assert captured["query"] == "explicit hint"
         assert captured["query"] != "ignored original"
 
@@ -721,7 +731,7 @@ class TestAcademicResearchE2E:
         calls = _patch_analyze(monkeypatch, analyses)
         reg = _tools_for(monkeypatch, ["2401.10v2", "2401.20"])
         client = _FakeAsyncOpenAI("# Synthesis OK\n")
-        await academic_research(classified, "x", client, reg, cfg)
+        await academic_research(classified, "x", _fake_router(client), reg, cfg)
         # The versioned seed 2401.10v2 gets analyzed AND its key ref 2401.10
         # would normally be enqueued, but stripped both == 2401.10 -> dedup
         # So we analyze exactly 2 papers (2401.10v2 and 2401.20).
@@ -737,7 +747,7 @@ class TestAcademicResearchE2E:
         )
         reg = _tools_for(monkeypatch, ["2401.1", "2401.2"])
         client = _FakeAsyncOpenAI("# x\n")
-        report = await academic_research(classified, "x", client, reg, cfg)
+        report = await academic_research(classified, "x", _fake_router(client), reg, cfg)
         urls = [c.url for c in report.citations]
         # Each arxiv URL should appear exactly once (dedup by url)
         assert len(urls) == len(set(urls))
@@ -758,7 +768,7 @@ class TestAcademicResearchE2E:
         calls = _patch_analyze(monkeypatch, analyses)
         reg = _tools_for(monkeypatch, ["2401.1", "2401.1v2"])
         client = _FakeAsyncOpenAI("# Synthesis OK\n")
-        report = await academic_research(classified, "x", client, reg, cfg)
+        report = await academic_research(classified, "x", _fake_router(client), reg, cfg)
         assert calls["n"] == 1, "same paper analyzed more than once (TOCTOU)"
         assert report.iterations == 1
 

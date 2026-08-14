@@ -55,3 +55,71 @@ def test_force_path_enum_values() -> None:
     assert cfg.agent.classifier.force_path is None
     with pytest.raises(ValidationError):
         AgentTopConfig.model_validate({"agent": {"classifier": {"force_path": "bogus_path"}}})
+
+
+def test_secondary_llm_absent_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_secondary_env(monkeypatch)
+    cfg = AgentTopConfig()
+    assert cfg.llm.secondary is None
+    assert cfg.llm.secondary_enabled is False
+
+
+def test_secondary_llm_yaml_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_secondary_env(monkeypatch)
+    cfg = AgentTopConfig.model_validate(
+        {
+            "llm": {
+                "secondary": {
+                    "base_url": "http://localhost:8001/v1",
+                    "model": "text-strong",
+                    "roles": ["planner", "critic"],
+                }
+            }
+        }
+    )
+    assert cfg.llm.secondary is not None
+    assert cfg.llm.secondary.base_url == "http://localhost:8001/v1"
+    assert cfg.llm.secondary.model == "text-strong"
+    assert cfg.llm.secondary.roles == ["planner", "critic"]
+    assert cfg.llm.secondary_enabled is True
+
+
+def test_secondary_llm_disabled_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_secondary_env(monkeypatch)
+    cfg = AgentTopConfig.model_validate(
+        {"llm": {"secondary": {"enabled": False, "model": "x"}}}
+    )
+    assert cfg.llm.secondary is not None
+    assert cfg.llm.secondary.enabled is False
+    assert cfg.llm.secondary_enabled is False
+
+
+def test_secondary_llm_enabled_via_env_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_secondary_env(monkeypatch)
+    monkeypatch.setenv("DEEP_RESEARCH_LLM_SECONDARY_MODEL", "env-text-model")
+    monkeypatch.setenv("DEEP_RESEARCH_LLM_SECONDARY_BASE_URL", "http://env-sec.test/v1")
+    cfg = AgentTopConfig()
+    # No YAML block, but env vars alone must enable the secondary.
+    assert cfg.llm.secondary is not None
+    assert cfg.llm.secondary_enabled is True
+    assert cfg.llm.secondary.model == "env-text-model"
+    assert cfg.llm.secondary.base_url == "http://env-sec.test/v1"
+
+
+def test_secondary_llm_roles_validated() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AgentTopConfig.model_validate(
+            {"llm": {"secondary": {"roles": ["not_a_role"]}}}
+        )
+
+
+def _clear_secondary_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure ambient DEEP_RESEARCH_LLM_SECONDARY_* vars don't leak into tests."""
+    for name in (
+        "DEEP_RESEARCH_LLM_SECONDARY_BASE_URL",
+        "DEEP_RESEARCH_LLM_SECONDARY_API_KEY",
+        "DEEP_RESEARCH_LLM_SECONDARY_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)

@@ -8,8 +8,7 @@ from __future__ import annotations
 import json
 import logging
 
-from openai import AsyncOpenAI
-
+from deep_research.llm.router import LLMClientLike
 from deep_research.state import ResearchPlan, SubQuestion
 from deep_research.util import VALID_TOOL_HINTS, load_prompt_template
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def plan(
     query: str,
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     breadth: int = 6,
 ) -> ResearchPlan:

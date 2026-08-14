@@ -599,17 +599,16 @@ async def merge_report(
 
     from deep_research.library.merge import merge_reports
     from deep_research.library.writer import LibraryWriter
-    from deep_research.llm.client import LLMClient
+    from deep_research.llm.router import LLMRouter
 
     writer = LibraryWriter(backend, str(root))
     try:
-        async with LLMClient(cfg.llm) as llm:
+        async with LLMRouter(cfg.llm) as router:
             new_run_id = await merge_reports(
                 backend,
                 writer,
                 all_ids,
-                llm,
-                cfg.llm.text_model,
+                router,
                 name=body.name,
                 delete_sources=body.delete_sources,
             )

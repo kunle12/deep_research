@@ -66,6 +66,15 @@ class _FakeAsyncOpenAI:
         self.chat.completions.create = AsyncMock(return_value=_FakeResponse(content))
 
 
+def _fake_router(client, model: str = "text") -> MagicMock:
+    """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
+    router = MagicMock()
+    router.resolve.return_value = MagicMock(
+        client=client, model=model, max_context_tokens=131072
+    )
+    return router
+
+
 def _raising_client(exc: Exception) -> MagicMock:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(side_effect=exc)
@@ -502,7 +511,7 @@ class TestUrlSourceDispatcher:
         reg = _registry()
         client = _FakeAsyncOpenAI("")  # won't be used since analyze is stubbed
         report = await url_source(
-            "https://arxiv.org/abs/2401.12345", "summarize this", client, reg, cfg
+            "https://arxiv.org/abs/2401.12345", "summarize this", _fake_router(client), reg, cfg
         )
         assert report.path == "url_source"  # no follow-up trigger phrase
         assert "Source Analysis" in report.markdown
@@ -525,7 +534,7 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source("https://blog.example/post", "what does it say", client, reg, cfg)
+        report = await url_source("https://blog.example/post", "what does it say", _fake_router(client), reg, cfg)
         assert report.path == "url_source"
         assert "blog summary here" in report.markdown
         assert "html" in report.markdown
@@ -545,7 +554,7 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source("https://x.test/p.pdf", "", client, reg, cfg)
+        report = await url_source("https://x.test/p.pdf", "", _fake_router(client), reg, cfg)
         assert report.path == "url_source"
         assert "pdf summary" in report.markdown
         assert "pdf" in report.markdown.lower()
@@ -571,7 +580,7 @@ class TestUrlSourceDispatcher:
 
         _us_module.classify_url = _fake_classify  # type: ignore[assignment]
         try:
-            report = await url_source("https://weird.test", "q", client, reg, cfg)
+            report = await url_source("https://weird.test", "q", _fake_router(client), reg, cfg)
             assert report.path == "unclear"
             assert "Unsupported URL type" in report.markdown
         finally:
@@ -594,7 +603,7 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source("https://broken.test", "summarize", client, reg, cfg)
+        report = await url_source("https://broken.test", "summarize", _fake_router(client), reg, cfg)
         assert report.path == "url_source"
         assert "Source Fetch Failed" in report.markdown
         assert "HTTP 503" in report.markdown
@@ -629,7 +638,7 @@ class TestUrlSourceDispatcher:
         reg = _registry()
         client = _FakeAsyncOpenAI("")
         report = await url_source(
-            "https://arxiv.org/abs/2401.12345", "summarize this paper", client, reg, cfg
+            "https://arxiv.org/abs/2401.12345", "summarize this paper", _fake_router(client), reg, cfg
         )
         assert report.path == "url_source"  # NOT url_source_with_followup
         # Gaps are surfaced in the rendered analysis section, but no follow-up research
@@ -661,7 +670,7 @@ class TestUrlSourceDispatcher:
         monkeypatch.setattr(_us_module, "analyze_source_node", _fake_analyze)
 
         # Stub the deep path handoff so we don't run the real deep loop
-        async def _fake_followup(classified, original_query, client, tools, config, **kwargs):
+        async def _fake_followup(classified, original_query, router, tools, config, **kwargs):
             from deep_research.state import Report
 
             return Report(markdown="## Follow-up Research\n\ndeep result body", path="deep")
@@ -681,7 +690,7 @@ class TestUrlSourceDispatcher:
             report = await url_source(
                 "https://arxiv.org/abs/2401.12345",
                 "what are the gaps in this paper?",
-                client,
+                _fake_router(client),
                 reg,
                 cfg,
             )
@@ -714,7 +723,7 @@ class TestUrlSourceDispatcher:
         report = await url_source(
             "https://arxiv.org/abs/2401.12345",
             "what are the gaps?",  # triggers, but analysis has no gaps
-            client,
+            _fake_router(client),
             reg,
             cfg,
         )

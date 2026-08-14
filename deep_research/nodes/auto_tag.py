@@ -10,9 +10,8 @@ import json
 import logging
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from deep_research.library.writer import LibraryWriter
+from deep_research.llm.router import LLMClientLike
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +22,7 @@ async def auto_tag_report(
     query: str,
     report_text: str,
     artifact_id: str,
-    llm: AsyncOpenAI,
+    llm: LLMClientLike,
     model: str,
     writer: LibraryWriter | None,
     run_id: str,

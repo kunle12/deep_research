@@ -20,8 +20,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from openai import AsyncOpenAI
-
+from deep_research.llm.router import LLMClientLike
 from deep_research.llm.tokens import count_text_tokens
 from deep_research.llm.vision import (
     IMAGE_DEGRADE_LADDER,
@@ -60,7 +59,7 @@ def _build_system() -> dict[str, Any]:
 
 
 async def _call(
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     messages: list[dict[str, Any]],
     *,
@@ -115,7 +114,7 @@ async def _analyze_image_batch(
     paper_text: str,
     query: str,
     image_batch: list[str],
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     max_context_tokens: int,
 ) -> dict[str, Any]:
@@ -203,7 +202,7 @@ async def _synthesize_final(
     query: str,
     merged_figure_descriptions: list[str],
     merged_extraction_text: str,
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     max_context_tokens: int,
     text_source: Literal["pdf", "abstract", "html"],
@@ -349,11 +348,14 @@ async def analyze(
     arxiv_id: str,
     paper_text: str,
     query: str,
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     page_image_data_urls: list[str] | None = None,
     text_source: Literal["pdf", "abstract", "html"] = "pdf",
     max_context_tokens: int = 131072,
+    synthesis_client: LLMClientLike | None = None,
+    synthesis_model: str | None = None,
+    synthesis_max_context_tokens: int | None = None,
 ) -> PaperAnalysis:
     """Analyze an arXiv paper with adaptive vision batching.
 
@@ -363,9 +365,18 @@ async def analyze(
     then does a final no-image synthesis with full paper text + all
     per-batch figure descriptions.
 
+    `synthesis_*` optionally routes that final text-only synthesis call to a
+    different endpoint/model (e.g. the secondary text LLM) — the image-bearing
+    batch calls always use `client`/`model`. When omitted, synthesis uses the
+    same client/model.
+
     Degrades cleanly on invalid JSON / LLM exceptions by returning a
     `PaperAnalysis` with a marker title so the academic loop keeps running.
     """
+    synth_client = synthesis_client or client
+    synth_model = synthesis_model or model
+    synth_ctx = synthesis_max_context_tokens or max_context_tokens
+
     if text_source in ("abstract", "html"):
         paper_text = "[ABSTRACT-ONLY]\n" + paper_text
 
@@ -379,9 +390,9 @@ async def analyze(
             query,
             [],
             "",
-            client,
-            model,
-            max_context_tokens,
+            synth_client,
+            synth_model,
+            synth_ctx,
             text_source,
         )
 
@@ -481,9 +492,9 @@ async def analyze(
         query,
         all_figures,
         merged_extraction,
-        client,
-        model,
-        max_context_tokens,
+        synth_client,
+        synth_model,
+        synth_ctx,
         text_source,
     )
 

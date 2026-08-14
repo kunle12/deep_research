@@ -23,12 +23,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-from openai import AsyncOpenAI
-
 from deep_research.citations import normalize_url
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.storage.base import StorageBackend
 from deep_research.library.writer import LibraryWriter, remove_report_files
+from deep_research.llm.router import LLMRouter
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
 from deep_research.paths.url_source import fetch_source, is_fetch_failure
 from deep_research.progress import ProgressReporter, ensure_reporter
@@ -137,8 +136,7 @@ async def attach_source(
     storage: StorageBackend,
     writer: LibraryWriter,
     config: AgentTopConfig,
-    llm: AsyncOpenAI,
-    model: str,
+    router: LLMRouter,
     progress: ProgressReporter | None = None,
 ) -> dict:
     """Fetch + fully analyze *url* and attach it to the research *run_id*.
@@ -182,13 +180,14 @@ async def attach_source(
             "attach.analyze",
             f"{fetched.url_type.value}; vision_pages={len(fetched.page_image_data_urls)}",
         )
+        resolved = router.resolve(LLMRole.ANALYSIS, has_images=bool(fetched.page_image_data_urls))
         analysis = await analyze_source_node(
             url=url,
             source_type=fetched.url_type.value,
             content=fetched.content_text,
             user_query=report.original_query or "",
-            client=llm,
-            model=config.llm.vision_model if fetched.page_image_data_urls else model,
+            client=resolved.client,
+            model=resolved.model,
             page_image_data_urls=fetched.page_image_data_urls or None,
         )
 

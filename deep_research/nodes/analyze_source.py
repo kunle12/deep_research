@@ -11,8 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
-
+from deep_research.llm.router import LLMClientLike
 from deep_research.llm.vision import MAX_TEXT_CHARS_WITH_IMAGES, is_context_overflow
 from deep_research.state import SourceAnalysis
 
@@ -76,7 +75,7 @@ async def analyze(
     source_type: str,
     content: str,
     user_query: str,
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     page_image_data_urls: list[str] | None = None,
 ) -> SourceAnalysis:

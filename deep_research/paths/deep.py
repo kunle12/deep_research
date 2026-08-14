@@ -15,16 +15,15 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from deep_research.checkpoint import (
     discard_checkpoint,
     load_checkpoint,
     save_checkpoint,
 )
 from deep_research.citations import filter_citations_to_referenced
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
+from deep_research.llm.router import LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.critic import review as critic_review
 from deep_research.nodes.paper_analysis import (
@@ -52,7 +51,7 @@ logger = logging.getLogger(__name__)
 async def deep_research(
     classified: ClassifiedQuery,
     original_query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
@@ -89,10 +88,11 @@ async def deep_research(
     if not state.plan.sub_questions:
         # No plan yet — run planner (fresh start or discarded checkpoint)
         reporter.phase("deep.plan", f"decomposing (breadth ≤ {breadth})")
+        planner = router.resolve(LLMRole.PLANNER)
         plan_result = await planner_plan(
             original_query,
-            client,
-            config.llm.text_model,
+            planner.client,
+            planner.model,
             breadth=breadth,
         )
         state.plan = plan_result
@@ -144,7 +144,7 @@ async def deep_research(
                 return await asyncio.wait_for(
                     _run_one_researcher_with_recall(
                         sq,
-                        client,
+                        router,
                         config,
                         tools,
                         _storage,
@@ -208,7 +208,8 @@ async def deep_research(
 
         # Critic
         reporter.phase("deep.critic", f"iter {iteration + 1}")
-        critique = await critic_review(state, client, config.llm.text_model)
+        critic = router.resolve(LLMRole.CRITIC)
+        critique = await critic_review(state, critic.client, critic.model)
         logger.info(
             "critic iter=%d sufficient=%s gaps=%d refinements=%d papers_to_analyze=%d",
             iteration,
@@ -226,7 +227,7 @@ async def deep_research(
                 state,
                 critique.papers_to_analyze,
                 query=original_query,
-                client=client,
+                router=router,
                 config=config,
                 tools=tools,
                 writer=writer,
@@ -281,8 +282,9 @@ async def deep_research(
 
     # 3. Synthesize final report
     reporter.phase("deep.writer", f"synthesizing {len(state.citations)} citations")
+    writer_llm = router.resolve(LLMRole.WRITER)
     final_md = await writer_write(
-        state, client, config.llm.text_model, writer=writer, run_id=run_id
+        state, writer_llm.client, writer_llm.model, writer=writer, run_id=run_id
     )
 
     # 4. Project all assembled citations into a sorted list (by confidence
@@ -320,7 +322,7 @@ async def deep_research(
 
 async def _run_one_researcher_with_recall(
     sq: SubQuestion,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     config: AgentTopConfig,
     tools: ToolRegistry,
     storage: Any | None,
@@ -342,16 +344,17 @@ async def _run_one_researcher_with_recall(
         if digest:
             prior_context = prior_context + "\n\n" + digest if prior_context else digest
 
+    researcher = router.resolve(LLMRole.RESEARCHER)
     return await researcher_run(
         sq,
-        client,
-        config.llm.text_model,
+        researcher.client,
+        researcher.model,
         tools,
         max_turns=config.agent.researcher_max_turns,
         prior_context=prior_context,
         max_refinement_per_researcher=config.agent.max_refinement_per_researcher,
         max_refinement_depth=config.agent.max_refinement_depth,
-        max_context_tokens=config.llm.max_context_tokens,
+        max_context_tokens=researcher.max_context_tokens,
         max_citations_per_researcher=config.agent.max_citations_per_researcher,
     )
 

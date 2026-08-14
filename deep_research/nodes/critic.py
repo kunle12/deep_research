@@ -9,8 +9,7 @@ import json
 import logging
 from typing import Any
 
-from openai import AsyncOpenAI
-
+from deep_research.llm.router import LLMClientLike
 from deep_research.nodes.paper_analysis import format_deep_analysis_context
 from deep_research.state import (
     Critique,
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 _MAX_CANDIDATES = 40
 
 
-async def review(state: ResearchState, client: AsyncOpenAI, model: str) -> Critique:
+async def review(state: ResearchState, client: LLMClientLike, model: str) -> Critique:
     """Make the critic LLM call. Returns a Critique (sufficient | gaps[])."""
     # Render the current state for the prompt
     sections_blob = _render_sections_for_prompt(state)

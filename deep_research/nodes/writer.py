@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from openai import AsyncOpenAI
-
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
+from deep_research.llm.router import LLMClientLike
 from deep_research.state import ResearchState
 from deep_research.util import load_prompt_template
 
@@ -13,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 async def write(
     state: ResearchState,
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",

@@ -51,6 +51,15 @@ def _fake_analysis(title: str = "Paper") -> PaperAnalysis:
     )
 
 
+def _fake_router(client: MagicMock, model: str = "text") -> MagicMock:
+    """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
+    router = MagicMock()
+    router.resolve.return_value = MagicMock(
+        client=client, model=model, max_context_tokens=131072
+    )
+    return router
+
+
 # ---------------------------------------------------------------------------
 # run_paper_analysis_pass
 # ---------------------------------------------------------------------------
@@ -75,7 +84,7 @@ class TestRunPaperAnalysisPass:
                 state,
                 requests,
                 query="q",
-                client=MagicMock(),
+                router=_fake_router(MagicMock()),
                 config=cfg,
                 tools=ToolRegistry(),
             )
@@ -97,7 +106,7 @@ class TestRunPaperAnalysisPass:
             return_value=DeepAnalysisResult(analysis=_fake_analysis("T")),
         ):
             await run_paper_analysis_pass(
-                state, requests, query="q", client=MagicMock(), config=cfg, tools=ToolRegistry()
+                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
             )
         assert set(state.deep_analyses) == {"2401.00002"}
         assert state.deep_analysis_requested == ["2401.00001", "2401.00002"]
@@ -120,7 +129,7 @@ class TestRunPaperAnalysisPass:
                     PaperAnalysisRequest(arxiv_id="2401.00002", priority_score=0.9),
                 ],
                 query="q",
-                client=MagicMock(),
+                router=_fake_router(MagicMock()),
                 config=cfg,
                 tools=ToolRegistry(),
             )
@@ -131,7 +140,7 @@ class TestRunPaperAnalysisPass:
                     PaperAnalysisRequest(arxiv_id="2401.00004", priority_score=0.9),
                 ],
                 query="q",
-                client=MagicMock(),
+                router=_fake_router(MagicMock()),
                 config=cfg,
                 tools=ToolRegistry(),
             )
@@ -143,7 +152,7 @@ class TestRunPaperAnalysisPass:
         state = ResearchState(query="q")
         requests = [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.99)]
         await run_paper_analysis_pass(
-            state, requests, query="q", client=MagicMock(), config=cfg, tools=ToolRegistry()
+            state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
         )
         assert state.deep_analyses == {}
 
@@ -161,7 +170,7 @@ class TestRunPaperAnalysisPass:
 
         with patch("deep_research.nodes.paper_analysis.analyze_paper_deep", side_effect=_boom):
             await run_paper_analysis_pass(
-                state, requests, query="q", client=MagicMock(), config=cfg, tools=ToolRegistry()
+                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
             )
         assert state.deep_analyses == {}
         # requested ids are still recorded so we don't retry in this run
@@ -210,7 +219,7 @@ class TestAnalyzePaperDeep:
             "deep_research.nodes.paper_analysis.analyze_paper_node", side_effect=_fake_analyze
         ):
             result = await analyze_paper_deep(
-                "2401.00001", query="q", client=MagicMock(), config=cfg, tools=tools
+                "2401.00001", query="q", router=_fake_router(MagicMock()), config=cfg, tools=tools
             )
         assert result is not None
         assert result.text_source == "pdf"
@@ -238,7 +247,7 @@ class TestAnalyzePaperDeep:
             "deep_research.nodes.paper_analysis.analyze_paper_node", side_effect=_fake_analyze
         ):
             result = await analyze_paper_deep(
-                "2401.00001", query="q", client=MagicMock(), config=cfg, tools=tools
+                "2401.00001", query="q", router=_fake_router(MagicMock()), config=cfg, tools=tools
             )
         assert result is not None
         assert result.text_source == "abstract"
@@ -260,7 +269,7 @@ class TestAnalyzePaperDeep:
             side_effect=AssertionError("should not be called"),
         ):
             result = await analyze_paper_deep(
-                "2401.00001", query="q", client=MagicMock(), config=cfg, tools=tools
+                "2401.00001", query="q", router=_fake_router(MagicMock()), config=cfg, tools=tools
             )
         assert result is None
 
@@ -312,7 +321,7 @@ class TestLibraryCacheReuse:
                 state,
                 requests,
                 query="q",
-                client=MagicMock(),
+                router=_fake_router(MagicMock()),
                 config=cfg,
                 tools=ToolRegistry(),
                 writer=writer,
@@ -415,7 +424,7 @@ class TestAnalyzePaperDeepTimeouts:
             ),
         ):
             result = await analyze_paper_deep(
-                "2401.00001", query="q", client=MagicMock(), config=cfg, tools=tools
+                "2401.00001", query="q", router=_fake_router(MagicMock()), config=cfg, tools=tools
             )
         assert result is not None
         assert result.text_source == "pdf"
@@ -430,7 +439,7 @@ class TestPassEdgeBranches:
         requests = [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.9)]
         with patch("deep_research.nodes.paper_analysis.analyze_paper_deep", return_value=None):
             await run_paper_analysis_pass(
-                state, requests, query="q", client=MagicMock(), config=cfg, tools=ToolRegistry()
+                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
             )
         assert state.deep_analyses == {}
         assert state.deep_analysis_requested == ["2401.00001"]
@@ -448,7 +457,7 @@ class TestPassEdgeBranches:
 
         with patch("deep_research.nodes.paper_analysis.analyze_paper_deep", side_effect=_hang):
             await run_paper_analysis_pass(
-                state, requests, query="q", client=MagicMock(), config=cfg, tools=ToolRegistry()
+                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
             )
         assert state.deep_analyses == {}
 
@@ -479,7 +488,7 @@ class TestPassEdgeBranches:
                 state,
                 requests,
                 query="q",
-                client=MagicMock(),
+                router=_fake_router(MagicMock()),
                 config=cfg,
                 tools=ToolRegistry(),
                 writer=writer,
@@ -507,7 +516,7 @@ class TestPassEdgeBranches:
                 state,
                 requests,
                 query="q",
-                client=MagicMock(),
+                router=_fake_router(MagicMock()),
                 config=cfg,
                 tools=ToolRegistry(),
                 writer=writer,
@@ -557,7 +566,7 @@ class TestArchiveAndRecord:
                 state,
                 requests,
                 query="q",
-                client=MagicMock(),
+                router=_fake_router(MagicMock()),
                 config=cfg,
                 tools=ToolRegistry(),
                 writer=writer,

@@ -8,6 +8,24 @@ llm:
   vision_model: "qwen3.5-122b"            # same model serves vision; route via content blocks
   max_context_tokens: 131072
   timeout_s: 240
+  # Optional secondary (typically text-only) LLM for reasoning tasks.
+  # By default the single endpoint above serves everything. When this block is
+  # present AND enabled, text-role calls (planner, researcher, critic, writer,
+  # analysis, classifier, post) route to THIS endpoint, while any call carrying
+  # images (rendered PDF pages / HTML screenshots) always stays on the primary
+  # vision model — so the secondary does NOT need vision capability.
+  # `roles: null` = all text roles; list narrows routing, e.g. ["planner", "critic"].
+  # On a secondary failure, calls retry once on the primary endpoint.
+  # NOTE: ship `enabled: false` so a copy-pasted config stays single-endpoint.
+  # (You can also enable it purely via env: DEEP_RESEARCH_LLM_SECONDARY_MODEL=...)
+  secondary:
+    enabled: false
+    base_url: "http://localhost:8001/v1"
+    api_key: "llama.cpp"
+    model: "qwen3.5-122b"
+    max_context_tokens: 131072
+    timeout_s: 240
+    roles: null
 
 agent:
   # "Rich results" preset: wider planner breadth + more critic gap-following

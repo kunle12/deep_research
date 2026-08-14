@@ -112,6 +112,9 @@ async def _run_attach(backend, writer, *, analysis=None, fetch_error="", no_arti
 
     llm = MagicMock()
 
+    router = MagicMock()
+    router.resolve.return_value = MagicMock(client=llm, model="text", max_context_tokens=131072)
+
     with (
         patch("deep_research.library.attach.fetch_source", AsyncMock(return_value=fake_fetched)),
         (
@@ -129,7 +132,7 @@ async def _run_attach(backend, writer, *, analysis=None, fetch_error="", no_arti
         from deep_research.library.attach import attach_source
 
         return await attach_source(
-            "https://example.com/new", "run_t", backend, writer, cfg, llm, "text"
+            "https://example.com/new", "run_t", backend, writer, cfg, router
         )
 
 
@@ -141,7 +144,7 @@ async def test_attach_requires_existing_report(sqlite_backend, tmp_path):
     writer = LibraryWriter(sqlite_backend, str(tmp_path))
     cfg = MagicMock()
     with pytest.raises(ValueError, match="not found"):
-        await attach_source("https://x.test", "missing", sqlite_backend, writer, cfg, None, "m")
+        await attach_source("https://x.test", "missing", sqlite_backend, writer, cfg, None)
 
 
 @pytest.mark.asyncio

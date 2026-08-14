@@ -11,14 +11,20 @@ import json
 import logging
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from deep_research.citations import extract_urls_from_markdown, normalize_url
+from deep_research.llm.router import LLMClientLike
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult, run_with_tools
 from deep_research.state import BLOCKED_PREFIX, BlockedSource, Citation, SubQuestion
 from deep_research.util import coerce_float, load_prompt_template
 
 logger = logging.getLogger(__name__)
+
+# Tools whose results embed base64 image content. A researcher may run on a
+# text-only secondary endpoint (LLM routing), so these must never be offered to
+# the tool loop — an image blob pulled into the message history would flow
+# straight into a possibly vision-less model. The deep/academic paper-analysis
+# paths invoke them directly and don't go through the researcher.
+_IMAGE_PRODUCING_TOOLS = frozenset({"pdf_render_pages", "browser_take_screenshot"})
 
 
 REFINE_SCHEMA = {
@@ -87,6 +93,16 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
         super().__init__(parent)
         self._collector = collector
 
+    def names(self) -> list[str]:
+        return [n for n in super().names() if n not in _IMAGE_PRODUCING_TOOLS]
+
+    def schemas(self) -> list[dict]:
+        return [
+            s
+            for s in super().schemas()
+            if s["function"]["name"] not in _IMAGE_PRODUCING_TOOLS
+        ]
+
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         result = await super().call(name, arguments)
         if result.error and result.error.startswith(BLOCKED_PREFIX):
@@ -98,7 +114,7 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
 
 async def research(
     sub_q: SubQuestion,
-    client: AsyncOpenAI,
+    client: LLMClientLike,
     model: str,
     tools: ToolRegistry,
     max_turns: int = 8,

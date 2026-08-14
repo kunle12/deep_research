@@ -122,7 +122,7 @@ def _fake_llm(content: str):
 
 
 def test_merge_reports(monkeypatch, client):
-    async def _fake_merge(backend, writer, run_ids, llm, model, **kw):
+    async def _fake_merge(backend, writer, run_ids, router, **kw):
         # Persist a minimal merged report so the endpoint can return its query.
         await backend.insert_report(
             ReportRow(
@@ -159,7 +159,7 @@ def test_merge_validation(client):
 
 
 def test_merge_rejects_missing_report_via_lib(monkeypatch, client):
-    async def _fake_merge(backend, writer, run_ids, llm, model, **kw):
+    async def _fake_merge(backend, writer, run_ids, router, **kw):
         raise ValueError("report not found: nope")
 
     monkeypatch.setattr("deep_research.library.merge.merge_reports", _fake_merge)

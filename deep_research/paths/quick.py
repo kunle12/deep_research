@@ -17,10 +17,9 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
+from deep_research.llm.router import LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.nodes.recall import format_recall_context
 from deep_research.nodes.recall import recall as recall_run
@@ -38,7 +37,7 @@ MAX_PAGES_TO_FETCH = 3
 async def quick_search(
     classified: ClassifiedQuery,
     original_query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     tools: ToolRegistry,
     config: AgentTopConfig,
     progress: ProgressReporter | None = None,
@@ -98,7 +97,7 @@ async def quick_search(
         prior_md = format_recall_context(prior_entries)
         prompt_text += "\n\n" + prior_md
 
-    answer_text, llm_citations = await _synthesize(client, config, prompt_text, writer, run_id)
+    answer_text, llm_citations = await _synthesize(router, prompt_text, writer, run_id)
     citations = _merge_citations(citations, llm_citations)
 
     reporter.phase("quick.done", f"{len(citations)} citations")
@@ -139,14 +138,14 @@ def _render_for_llm(
 
 
 async def _synthesize(
-    client: AsyncOpenAI,
-    config: AgentTopConfig,
+    router: LLMRouter,
     prompt_text: str,
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",
 ) -> tuple[str, list[Citation]]:
     """Call the LLM with the quick_summary prompt."""
     citations: list[Citation] = []
+    resolved = router.resolve(LLMRole.WRITER)
     try:
         system_msg = (
             "You are a quick research synthesizer. "
@@ -156,8 +155,8 @@ async def _synthesize(
             '"citations": [{"url":"...","title":"...","snippet":"...","confidence_score":0.8}]}'
         )
 
-        resp = await client.chat.completions.create(
-            model=config.llm.text_model,
+        resp = await resolved.client.chat.completions.create(
+            model=resolved.model,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt_text},

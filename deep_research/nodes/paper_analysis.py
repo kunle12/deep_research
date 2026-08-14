@@ -19,10 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from openai import AsyncOpenAI
-
-from deep_research.config import AgentTopConfig
+from deep_research.config import AgentTopConfig, LLMRole
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
+from deep_research.llm.router import LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.analyze_paper import analyze as analyze_paper_node
 from deep_research.progress import ProgressReporter, ensure_reporter
@@ -149,7 +148,7 @@ async def analyze_paper_deep(
     arxiv_id: str,
     *,
     query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     config: AgentTopConfig,
     tools: ToolRegistry,
 ) -> DeepAnalysisResult | None:
@@ -183,30 +182,38 @@ async def analyze_paper_deep(
                 page_urls = []
 
         if paper_text.strip():
+            resolved = router.resolve(LLMRole.ANALYSIS, has_images=bool(page_urls))
+            text_resolved = router.resolve(LLMRole.ANALYSIS)
             analysis = await analyze_paper_node(
                 arxiv_id=arxiv_id,
                 paper_text=paper_text,
                 query=query,
-                client=client,
-                model=config.llm.vision_model if page_urls else config.llm.text_model,
+                client=resolved.client,
+                model=resolved.model,
                 page_image_data_urls=page_urls or None,
                 text_source="pdf",
-                max_context_tokens=config.llm.max_context_tokens,
+                max_context_tokens=resolved.max_context_tokens,
+                # Final synthesis is text-only — allow it on the text route even
+                # when pages were rendered.
+                synthesis_client=text_resolved.client,
+                synthesis_model=text_resolved.model,
+                synthesis_max_context_tokens=text_resolved.max_context_tokens,
             )
             return DeepAnalysisResult(analysis=analysis, pdf_path=pdf_path, text_source="pdf")
 
     # Abstract-only fallback (download failed or no extractable text).
     paper_text, _ = await fetch_paper_text_fallback(arxiv_id, tools)
     if paper_text.strip():
+        resolved = router.resolve(LLMRole.ANALYSIS)
         analysis = await analyze_paper_node(
             arxiv_id=arxiv_id,
             paper_text=paper_text,
             query=query,
-            client=client,
-            model=config.llm.text_model,
+            client=resolved.client,
+            model=resolved.model,
             page_image_data_urls=None,
             text_source="abstract",
-            max_context_tokens=config.llm.max_context_tokens,
+            max_context_tokens=resolved.max_context_tokens,
         )
         return DeepAnalysisResult(analysis=analysis, pdf_path=None, text_source="abstract")
     return None
@@ -217,7 +224,7 @@ async def run_paper_analysis_pass(
     requests: list[PaperAnalysisRequest],
     *,
     query: str,
-    client: AsyncOpenAI,
+    router: LLMRouter,
     config: AgentTopConfig,
     tools: ToolRegistry,
     writer: LibraryWriter | NullLibraryWriter | None = None,
@@ -283,7 +290,7 @@ async def run_paper_analysis_pass(
                     analyze_paper_deep(
                         aid,
                         query=query,
-                        client=client,
+                        router=router,
                         config=config,
                         tools=tools,
                     ),

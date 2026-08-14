@@ -30,6 +30,15 @@ def _fake_llm(content: str):
     return mock_client
 
 
+def _fake_router(client, model: str = "model") -> MagicMock:
+    """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
+    router = MagicMock()
+    router.resolve.return_value = MagicMock(
+        client=client, model=model, max_context_tokens=131072
+    )
+    return router
+
+
 async def _seed_report(
     backend,
     *,
@@ -77,7 +86,7 @@ async def test_merge_requires_two_reports(sqlite_backend, tmp_path):
 
     writer = LibraryWriter(sqlite_backend, str(tmp_path))
     with pytest.raises(ValueError, match="at least two"):
-        await merge_reports(sqlite_backend, writer, ["run_a"], None, "model")
+        await merge_reports(sqlite_backend, writer, ["run_a"], None)
 
 
 @pytest.mark.asyncio
@@ -94,7 +103,7 @@ async def test_merge_rejects_missing_report(sqlite_backend, tmp_path):
         artifact_id="art_a",
     )
     with pytest.raises(ValueError, match="not found"):
-        await merge_reports(sqlite_backend, writer, ["run_a", "missing"], None, "model")
+        await merge_reports(sqlite_backend, writer, ["run_a", "missing"], None)
 
 
 @pytest.mark.asyncio
@@ -122,7 +131,7 @@ async def test_merge_llm_synthesis(sqlite_backend, tmp_path):
 
     llm = _fake_llm("# Merged Topic\n\nSynthesized content.")
     new_id = await merge_reports(
-        sqlite_backend, writer, ["run_a", "run_b"], llm, "model", name="Merged Topic"
+        sqlite_backend, writer, ["run_a", "run_b"], _fake_router(llm), name="Merged Topic"
     )
 
     report = await sqlite_backend.get_report(new_id)
@@ -158,7 +167,7 @@ async def test_merge_auto_name_when_unspecified(sqlite_backend, tmp_path):
     )
 
     new_id = await merge_reports(
-        sqlite_backend, writer, ["run_a", "run_b"], _fake_llm("# Merged"), "model"
+        sqlite_backend, writer, ["run_a", "run_b"], _fake_router(_fake_llm("# Merged"))
     )
     report = await sqlite_backend.get_report(new_id)
     assert report is not None
@@ -189,7 +198,7 @@ async def test_merge_stitch_fallback_on_llm_failure(sqlite_backend, tmp_path):
     mock_client = MagicMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=Exception("boom"))
     new_id = await merge_reports(
-        sqlite_backend, writer, ["run_a", "run_b"], mock_client, "model", name="Merged"
+        sqlite_backend, writer, ["run_a", "run_b"], _fake_router(mock_client), name="Merged"
     )
     report = await sqlite_backend.get_report(new_id)
     assert report is not None
@@ -232,7 +241,7 @@ async def test_merge_dedups_citations(sqlite_backend, tmp_path):
     )
 
     new_id = await merge_reports(
-        sqlite_backend, writer, ["run_a", "run_b"], _fake_llm("# Merged"), "model"
+        sqlite_backend, writer, ["run_a", "run_b"], _fake_router(_fake_llm("# Merged"))
     )
     report = await sqlite_backend.get_report(new_id)
     merged = json.loads(report.citations_json)
@@ -280,8 +289,7 @@ async def test_merge_delete_sources_reassigns_and_deletes(sqlite_backend, tmp_pa
         sqlite_backend,
         writer,
         ["run_a", "run_b"],
-        _fake_llm("# Merged"),
-        "model",
+        _fake_router(_fake_llm("# Merged")),
         name="Merged",
         delete_sources=True,
     )

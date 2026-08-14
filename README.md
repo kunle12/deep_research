@@ -110,6 +110,45 @@ llm:
   vision_model: "qwen3.5-122b"
 ```
 
+### Secondary LLM for reasoning (optional)
+
+By default one endpoint serves everything. To offload text-heavy reasoning to a
+separate model (e.g. a bigger or cheaper text-only model), add a `secondary`
+block under `llm:`:
+
+```yaml
+llm:
+  base_url: "http://localhost:8000/v1"   # primary (vision-capable) endpoint
+  api_key: "your-api-key"
+  text_model: "qwen3.5-122b"
+  vision_model: "qwen3.5-122b"
+  secondary:                              # optional
+    enabled: true
+    base_url: "http://localhost:8001/v1"  # secondary endpoint
+    api_key: "your-api-key"
+    model: "qwen3.5-122b"
+    max_context_tokens: 131072
+    timeout_s: 240
+    roles: null                           # null = all text roles
+```
+
+When `secondary` is present and enabled:
+- Text-role calls (planner / researcher / critic / writer / analysis /
+  classifier / post) route to the secondary endpoint. `roles: null` routes
+  **all** text roles there; an explicit list like `["planner", "critic"]`
+  narrows it, with every other role staying on the primary.
+- Any call carrying images — rendered PDF pages, HTML screenshots — always
+  stays on the **primary** `vision_model`, so the secondary does **not** need
+  vision capability.
+- If a secondary call fails at runtime, it is retried once on the primary
+  endpoint (with a warning), so long unattended runs stay alive.
+- Omit the block entirely and everything runs on the single primary endpoint
+  (the historical behavior).
+
+Env var overrides for the secondary block:
+`DEEP_RESEARCH_LLM_SECONDARY_BASE_URL`, `DEEP_RESEARCH_LLM_SECONDARY_API_KEY`,
+`DEEP_RESEARCH_LLM_SECONDARY_MODEL`.
+
 ### With web search (recommended)
 
 You need at least one search backend. Two options:
@@ -182,6 +221,10 @@ configured, the academic path falls back to arXiv-only seeds with a warning.
 | Variable | Purpose |
 |---|---|
 | `OPENAI_API_KEY` / `DEEP_RESEARCH_LLM_API_KEY` | LLM auth |
+| `DEEP_RESEARCH_LLM_BASE_URL` | Primary LLM base URL (overrides `llm.base_url`) |
+| `DEEP_RESEARCH_LLM_SECONDARY_BASE_URL` | Secondary LLM base URL (overrides `llm.secondary.base_url`) |
+| `DEEP_RESEARCH_LLM_SECONDARY_API_KEY` | Secondary LLM auth |
+| `DEEP_RESEARCH_LLM_SECONDARY_MODEL` | Secondary LLM model name |
 | `TAVILY_API_KEY` | Tavily search |
 | `SERPER_API_KEY` | Google Scholar search (Serper backend) |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | Reddit search (optional) |

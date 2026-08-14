@@ -14,11 +14,11 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from deep_research.citations import normalize_url
+from deep_research.config import LLMRole
 from deep_research.library.storage.base import StorageBackend
 from deep_research.library.writer import LibraryWriter, remove_report_files
+from deep_research.llm.router import LLMClientLike, LLMRouter
 from deep_research.state import Citation, Report
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ def _render_reports_blob(reports) -> str:
 async def _synthesize_merged_markdown(
     reports,
     merged_name: str,
-    llm: AsyncOpenAI,
+    llm: LLMClientLike,
     model: str,
 ) -> str:
     """One LLM call produces the unified markdown. Falls back to a
@@ -127,8 +127,7 @@ async def merge_reports(
     storage: StorageBackend,
     writer: LibraryWriter,
     run_ids: list[str],
-    llm: AsyncOpenAI,
-    model: str,
+    router: LLMRouter,
     *,
     name: str | None = None,
     delete_sources: bool = False,
@@ -154,7 +153,10 @@ async def merge_reports(
         reports.append(r)
 
     merged_name = (name or "").strip() or _auto_name(reports)
-    merged_markdown = await _synthesize_merged_markdown(reports, merged_name, llm, model)
+    merged_llm = router.resolve(LLMRole.POST)
+    merged_markdown = await _synthesize_merged_markdown(
+        reports, merged_name, merged_llm.client, merged_llm.model
+    )
 
     # Provenance note (visible in the rendered report + on disk).
     provenance = ", ".join(f"`{r.run_id}` ({r.original_query})" for r in reports)

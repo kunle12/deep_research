@@ -82,6 +82,15 @@ class _FakeAsyncOpenAI:
         self.chat.completions = _FakeChatCompletions(content)
 
 
+def _fake_router(client, model: str = "text") -> MagicMock:
+    """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
+    router = MagicMock()
+    router.resolve.return_value = MagicMock(
+        client=client, model=model, max_context_tokens=131072
+    )
+    return router
+
+
 @pytest.fixture
 def cfg() -> AgentTopConfig:
     return AgentTopConfig()
@@ -235,7 +244,7 @@ class TestQuickSearch:
         client = _FakeAsyncOpenAI(json.dumps(llm_payload))
 
         report = await quick_search(
-            _classified(), "What is the capital of France?", client, reg, cfg
+            _classified(), "What is the capital of France?", _fake_router(client), reg, cfg
         )
 
         assert report.path == "quick"
@@ -270,7 +279,7 @@ class TestQuickSearch:
         reg._tools["fetch_page"] = _spy_fetch
 
         client = _FakeAsyncOpenAI(json.dumps({"answer": "ok", "citations": []}))
-        await quick_search(_classified(), "q", client, reg, cfg)
+        await quick_search(_classified(), "q", _fake_router(client), reg, cfg)
 
         # Only the top-MAX_PAGES_TO_FETCH URLs should be fetched
         assert len(fetched_urls) == MAX_PAGES_TO_FETCH
@@ -289,7 +298,7 @@ class TestQuickSearch:
             fetch_error_urls={"https://fail"},
         )
         client = _FakeAsyncOpenAI(json.dumps({"answer": "answer", "citations": []}))
-        report = await quick_search(_classified(), "q", client, reg, cfg)
+        report = await quick_search(_classified(), "q", _fake_router(client), reg, cfg)
         assert report.path == "quick"
         assert "answer" in report.markdown
         # The non-failing URL citation should still be present
@@ -299,7 +308,7 @@ class TestQuickSearch:
     async def test_invalid_llm_json_falls_back_to_raw_text(self, cfg: AgentTopConfig) -> None:
         reg = _registry_with_tools(search_citations=[_citation("https://a")])
         client = _FakeAsyncOpenAI("this is not json")
-        report = await quick_search(_classified(), "q", client, reg, cfg)
+        report = await quick_search(_classified(), "q", _fake_router(client), reg, cfg)
         # Falls back to raw LLM content as the answer
         assert "this is not json" in report.markdown
         # No LLM citations, but search citation still present
@@ -311,7 +320,7 @@ class TestQuickSearch:
         # Configure the mock to raise on create
         client = MagicMock()
         client.chat.completions.create = AsyncMock(side_effect=RuntimeError("LLM down"))
-        report = await quick_search(_classified(), "q", client, reg, cfg)
+        report = await quick_search(_classified(), "q", _fake_router(client), reg, cfg)
         assert "Could not synthesize" in report.markdown
         assert "RuntimeError" in report.markdown
         # Search citations still preserved
@@ -321,7 +330,7 @@ class TestQuickSearch:
     async def test_no_web_search_tool_registered(self, cfg: AgentTopConfig) -> None:
         reg = _registry_without_tools()
         client = _FakeAsyncOpenAI(json.dumps({"answer": "x", "citations": []}))
-        report = await quick_search(_classified(), "q", client, reg, cfg)
+        report = await quick_search(_classified(), "q", _fake_router(client), reg, cfg)
         # Should not raise; no citations from search
         assert report.path == "quick"
         assert report.citations == []
@@ -330,7 +339,7 @@ class TestQuickSearch:
     async def test_search_error_returns_no_citations(self, cfg: AgentTopConfig) -> None:
         reg = _registry_with_tools(search_citations=[], search_error="boom")
         client = _FakeAsyncOpenAI(json.dumps({"answer": "no results", "citations": []}))
-        report = await quick_search(_classified(), "q", client, reg, cfg)
+        report = await quick_search(_classified(), "q", _fake_router(client), reg, cfg)
         assert report.path == "quick"
         assert report.citations == []
         assert "no results" in report.markdown
@@ -348,6 +357,6 @@ class TestQuickSearch:
 
         reg.register("web_search", _web_search, {"type": "function", "name": "web_search"})
         client = _FakeAsyncOpenAI(json.dumps({"answer": "ans", "citations": []}))
-        report = await quick_search(_classified(), "q", client, reg, cfg)
+        report = await quick_search(_classified(), "q", _fake_router(client), reg, cfg)
         assert report.path == "quick"
         assert any(c.url == "https://a" for c in report.citations)
