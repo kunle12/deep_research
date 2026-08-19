@@ -1,9 +1,9 @@
-"""web_search tool — Tavily (primary) + SearXNG (fallback chain).
+"""web_search tool — Tavily (primary), Firecrawl (second), SearXNG (last).
 
 Returns a list of normalized `Citation` objects alongside the human-readable
-result text. Retries Tavily on rate-limit errors with exponential backoff
-before seamlessly falling back to SearXNG. Supports proactive quota-based
-fallback via ``max_calls_per_session``.
+result text. Retries Tavily/Firecrawl on rate-limit errors with exponential
+backoff before seamlessly falling back to the next backend in the chain.
+Supports proactive quota-based fallback via ``max_calls_per_session``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ SCHEMA = {
     "description": (
         "Search the web. Returns up to `max_results` results, each with a URL, "
         "title, and a content snippet. Use this for general queries, news, "
-        "blog posts. Falls back to SearXNG if Tavily is unavailable."
+        "blog posts. Falls back through the configured backend chain "
+        "(Tavily -> Firecrawl -> SearXNG) when a backend is unavailable."
     ),
     "parameters": {
         "type": "object",
@@ -143,6 +144,77 @@ async def _tavily_with_retry(
     raise RuntimeError("Tavily retry loop exited unexpectedly")
 
 
+async def _firecrawl_search(
+    query: str,
+    max_results: int,
+    api_key: str,
+    endpoint: str,
+    timeout_s: float,
+    retries: int,
+) -> list[Citation]:
+    """Call Firecrawl's /v2/search endpoint. Returns normalized Citations.
+
+    Retries with exponential backoff on 429 (rate limit), 408 (timeout), 5xx
+    and transport errors (connect/read/protocol); other statuses (bad key,
+    bad request) raise immediately so the caller can fall through to the
+    next backend.
+    """
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {"query": query, "limit": max_results}
+    data: Any = None
+    for attempt in range(retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
+                resp = await client.post(endpoint, json=payload, headers=headers)
+                if resp.status_code in (408, 429) or resp.status_code >= 500:
+                    if attempt < retries:
+                        backoff = 2**attempt
+                        logger.warning(
+                            "Firecrawl HTTP %d (attempt %d/%d), backing off %ds",
+                            resp.status_code,
+                            attempt + 1,
+                            retries + 1,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    resp.raise_for_status()
+                resp.raise_for_status()
+                data = resp.json()
+            break
+        except httpx.TransportError:
+            if attempt < retries:
+                backoff = 2**attempt
+                logger.warning(
+                    "Firecrawl timeout (attempt %d/%d), backing off %ds",
+                    attempt + 1,
+                    retries + 1,
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                continue
+            raise
+    if not isinstance(data, dict) or not data.get("success", False):
+        raise RuntimeError(f"Firecrawl search failed: {data if isinstance(data, dict) else 'non-dict response'}")
+    web = data.get("data", {}).get("web", []) if isinstance(data.get("data"), dict) else []
+    citations: list[Citation] = []
+    for r in web:
+        if not isinstance(r, dict):
+            continue
+        citations.append(
+            Citation(
+                url=r.get("url", ""),
+                title=r.get("title") or "",
+                snippet=r.get("description") or "",
+                source_type="web",
+                # Firecrawl returns no relevance score; uniform confidence
+                confidence_score=0.5,
+                discovered_by=ToolName.web_search,
+            )
+        )
+    return citations
+
+
 async def _searxng_search(
     query: str,
     max_results: int,
@@ -200,25 +272,42 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
     if "tavily" in backends and not tavily_key:
         logger.warning(
             "Tavily selected as web_search backend but %s is unset; "
-            "will skip to SearXNG fallback if available.",
+            "will skip to the next backend if available.",
             cfg.tavily.api_key_env,
         )
         backends = [b for b in backends if b != "tavily"]
 
+    firecrawl_key = cfg.resolve_firecrawl_key()
+    if "firecrawl" in backends and not firecrawl_key:
+        logger.warning(
+            "Firecrawl selected as web_search backend but %s is unset; "
+            "will skip to the next backend if available.",
+            cfg.firecrawl.api_key_env,
+        )
+        backends = [b for b in backends if b != "firecrawl"]
+
     # Proactive quota guard: atomic counter with Lock.
     # When max_calls_per_session is None, unlimited calls are allowed.
     # A Lock is needed because we must atomically check-and-increment — if
-    # quota is exhausted we skip Tavily (not block), so Semaphore won't work.
+    # quota is exhausted we skip the backend (not block), so Semaphore won't work.
     tavily_max_calls = cfg.tavily.max_calls_per_session
     _tavily_call_count: int = 0
     _tavily_call_lock = asyncio.Lock()
     tavily_rate_limit_retries = cfg.tavily.rate_limit_retries
 
+    firecrawl_max_calls = cfg.firecrawl.max_calls_per_session
+    _firecrawl_call_count: int = 0
+    _firecrawl_call_lock = asyncio.Lock()
+    firecrawl_rate_limit_retries = cfg.firecrawl.rate_limit_retries
+
     async def _call(query: str, max_results: int = 10, **_: Any) -> ToolResult:
-        nonlocal _tavily_call_count
+        nonlocal _tavily_call_count, _firecrawl_call_count
         if not backends:
             return ToolResult(
-                content="web_search has no usable backend (no tavily key, no searxng).",
+                content=(
+                    "web_search has no usable backend (no tavily key, no firecrawl "
+                    "key, no searxng)."
+                ),
                 error="no backend configured",
             )
         last_error: str = ""
@@ -248,6 +337,35 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         # Decrement under lock so the counter stays accurate
                         async with _tavily_call_lock:
                             _tavily_call_count -= 1
+                        raise
+                elif backend == "firecrawl":
+                    if not firecrawl_key:
+                        continue
+                    async with _firecrawl_call_lock:
+                        if (
+                            firecrawl_max_calls is not None
+                            and _firecrawl_call_count >= firecrawl_max_calls
+                        ):
+                            logger.info(
+                                "Firecrawl call quota exhausted (%d >= %d), falling back",
+                                _firecrawl_call_count,
+                                firecrawl_max_calls,
+                            )
+                            continue
+                        _firecrawl_call_count += 1
+                    try:
+                        citations = await _firecrawl_search(
+                            query=query,
+                            max_results=max_results,
+                            api_key=firecrawl_key,
+                            endpoint=cfg.firecrawl.endpoint,
+                            timeout_s=cfg.firecrawl.timeout_s,
+                            retries=firecrawl_rate_limit_retries,
+                        )
+                    except Exception:
+                        # Decrement under lock so the counter stays accurate
+                        async with _firecrawl_call_lock:
+                            _firecrawl_call_count -= 1
                         raise
                 elif backend == "searxng":
                     citations = await _searxng_search(

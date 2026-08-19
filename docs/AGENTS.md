@@ -243,6 +243,30 @@ and record the source — never to circumvent the block.
   URL, cached under the original URL (kind `"archive"` in `_PageCache`), so
   repeat fetches hit the cache instead of re-fetching the blocked page or
   the archive. Archive.org URLs never trigger the fallback.
+- **Firecrawl scrape rescue** (`fetch_page.firecrawl_rescue`, opt-in, default
+  off): a blocked page (bot detection / HTTP error, not 404 or a PDF URL) is
+  retried through Firecrawl's `POST /v2/scrape` proxy-backed scraper **before**
+  the Wayback fallback (1 credit/page). Requires `FIRECRAWL_API_KEY` (shared
+  with `search.firecrawl`); skipped silently when unset. Fires from BOTH
+  blocked paths: the direct-HTTP verdict AND a challenge hit inside the
+  browser_navigate fallback (previously that path propagated `BLOCKED:` with
+  no rescue). On success the fresh markdown is cached under the original URL
+  (kind `"firecrawl"` in `_PageCache`, html slot = page title) and returned
+  with a provenance annotation (citation points at the original URL,
+  confidence 0.6); the blocked verdict is never set.
+  Attempts are capped per session via `firecrawl_rescue_max_per_session`
+  (atomic counter + lock, counts attempts not successes) — when exhausted the
+  page falls straight to Wayback.
+  **Single-flight per URL**: `_rescue_blocked()` registers an in-flight future
+  and keeps it until the result is CACHED (not just scraped) — concurrent
+  `fetch_page` calls for the same blocked page share one scrape + one quota
+  slot. Clearing the marker right after the scrape (before the cache write)
+  lets a second caller see no marker AND no cache entry and pay a duplicate
+  scrape credit. `_firecrawl_scrape` retries once on 429 and returns None on
+  any failure so the Wayback path always runs.
+  **PDF guard**: `_looks_like_pdf_url()` checks the path suffix AND query
+  strings (`?format=pdf`, `file=paper.pdf`, ...) — Firecrawl bills PDF parsing
+  PER PAGE, so a mis-detected PDF would blow past the attempt-based credit cap.
 - **PDF downloads** (`paths/url_source.py`): a blocked direct-PDF download
   (403/429/404/5xx) is retried via the same `/web/2/<url>` snapshot; when the
   capture is a real PDF (magic `%PDF-` check), it is saved to the normal PDF
@@ -264,6 +288,8 @@ and record the source — never to circumvent the block.
 | Tool | Backend | Retry strategy | Backoff |
 |------|---------|----------------|---------|
 | web_search | Tavily | `_tavily_with_retry()` — retries on `UsageLimitExceededError`, `TavilyKeylessLimitError`, `TimeoutError` | 2^attempt (1s, 2s, 4s) |
+| web_search | Firecrawl | `_firecrawl_search()` — retries on 429/408/5xx | 2^attempt (1s, 2s, 4s) |
+| fetch_page rescue | Firecrawl scrape | `_firecrawl_scrape()` — retries once on 429 | 2s |
 | scholar | Serper | `_backoff_retry()` — retries on 429/5xx | 2^attempt (1s, 2s) |
 | scholar | SearXNG | None (local, no rate limits) | — |
 | arxiv | arxiv.org | None (just spacing delay) | — |
@@ -289,11 +315,16 @@ reset — do not reintroduce module-level counters for this. (The old
 
 - Every config field has a default — no required config.yaml values
 - API keys read from environment vars, not config.yaml (security)
-- New search backends get a dedicated pydantic model (e.g., `TavilyConfig`, `SearXNGConfig`)
+- New search backends get a dedicated pydantic model (e.g., `TavilyConfig`, `SearXNGConfig`, `FirecrawlConfig`)
 - Rate-limit / quota config lives on the backend's config model:
   - `TavilyConfig.rate_limit_retries: int = 2`
   - `TavilyConfig.max_calls_per_session: int | None = None`
+  - `FirecrawlConfig.rate_limit_retries: int = 2`
+  - `FirecrawlConfig.max_calls_per_session: int | None = None`
   - `ScholarSerperConfig.max_calls_per_session: int | None = None`
+- Fetch-page rescue knobs live on `FetchPageConfig`:
+  - `firecrawl_rescue: bool = False` (opt-in; needs `search.firecrawl.api_key_env`)
+  - `firecrawl_rescue_endpoint`, `firecrawl_rescue_timeout_s`, `firecrawl_rescue_max_per_session`
 - Refinement knobs live on `AgentConfig`:
   - `max_refinement_depth: int = 2`
   - `max_refinement_per_researcher: int = 3`

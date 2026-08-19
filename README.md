@@ -151,7 +151,7 @@ Env var overrides for the secondary block:
 
 ### With web search (recommended)
 
-You need at least one search backend. Two options:
+You need at least one search backend. Three options:
 
 **Option 1 — Tavily** (cloud, no setup):
 
@@ -174,6 +174,31 @@ search:
   searxng:
     url: "http://localhost:8080/search"
 ```
+
+**Option 3 — Firecrawl** (cloud, second-priority fallback by default):
+
+Get an API key at [firecrawl.dev](https://firecrawl.dev) (free tier: 1,000
+credits; search costs 2 credits per 10 results), then:
+
+```yaml
+search:
+  primary: "tavily"
+  fallback_chain: ["firecrawl", "searxng"]
+  firecrawl:
+    api_key_env: "FIRECRAWL_API_KEY"   # then: export FIRECRAWL_API_KEY=fc-your_key
+```
+
+Without `FIRECRAWL_API_KEY` set, the backend is skipped silently and the
+chain behaves as before. See
+[docs/FIRECRAWL_INTEGRATION_PLAN.md](docs/FIRECRAWL_INTEGRATION_PLAN.md) for
+design details.
+
+The same key also unlocks an optional **Firecrawl scrape rescue** for
+bot-blocked pages: when `fetch_page.firecrawl_rescue: true`, a page that
+fails with bot detection / an HTTP error is retried through Firecrawl's
+proxy-backed scraper (1 credit/page, capped by
+`firecrawl_rescue_max_per_session`) before falling back to the Wayback
+Machine. PDF URLs and 404s are never rescued.
 
 ### With Google Scholar (academic mode only, optional)
 
@@ -226,6 +251,7 @@ configured, the academic path falls back to arXiv-only seeds with a warning.
 | `DEEP_RESEARCH_LLM_SECONDARY_API_KEY` | Secondary LLM auth |
 | `DEEP_RESEARCH_LLM_SECONDARY_MODEL` | Secondary LLM model name |
 | `TAVILY_API_KEY` | Tavily search |
+| `FIRECRAWL_API_KEY` | Firecrawl search (second-priority fallback, optional) |
 | `SERPER_API_KEY` | Google Scholar search (Serper backend) |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | Reddit search (optional) |
 | `DEEP_RESEARCH_PG_DSN` | Postgres connection string (optional) |
@@ -503,6 +529,12 @@ keeps off-topic keyword-overlap papers out of the synthesis and citation graph.
   llm.timeout_s` must stay comfortably below `researcher_timeout_s`
   (16 × 240s = 3840s, leaving headroom for tool I/O inside 5400s).
 - `tavily.search_depth: "advanced"` costs 2 credits per call.
+- Firecrawl search costs 2 credits per 10 results; free keys ship a
+  non-renewable 1,000 credits. Set `search.firecrawl.max_calls_per_session`
+  to cap spend per run when using it as a fallback.
+- Firecrawl scrape rescue (`fetch_page.firecrawl_rescue`) costs 1 credit per
+  rescued page and is capped by `firecrawl_rescue_max_per_session` (default
+  20). It only fires for bot-blocked / HTTP-error pages, never for every fetch.
 - PDF vision is the most expensive academic step (one vision call per paper
   with rendered pages). Disable `pdf_vision.enabled` when speed matters more
   than figure comprehension.

@@ -53,13 +53,19 @@ agent:
 
 search:
   primary: "tavily"
-  fallback_chain: ["searxng"]
+  fallback_chain: ["firecrawl", "searxng"]   # second priority: Firecrawl, then SearXNG
   tavily:
     api_key_env: "TAVILY_API_KEY"
     search_depth: "advanced"      # "basic" = 1 credit; "advanced" = 2 credits (better recall — recommended)
     max_results: 15               # more candidates per researcher (10 = default)
-    rate_limit_retries: 2        # retries on 429 before falling back to SearXNG
-    max_calls_per_session: null  # null = unlimited; set to switch to SearXNG proactively
+    rate_limit_retries: 2        # retries on 429 before falling back to the next backend
+    max_calls_per_session: null  # null = unlimited; set to switch to the next backend proactively
+  firecrawl:                      # optional second-priority backend (https://firecrawl.dev)
+    api_key_env: "FIRECRAWL_API_KEY"   # skipped silently when unset
+    endpoint: "https://api.firecrawl.dev/v2/search"
+    timeout_s: 30
+    rate_limit_retries: 2        # retries on 429/408/5xx before falling back to SearXNG
+    max_calls_per_session: null  # null = unlimited; free keys have 1,000 credits total (2 credits / 10 results)
   searxng:
     url: "http://localhost:8080/search"
     fetch_format: "json"
@@ -130,6 +136,13 @@ fetch_page:
   # When a page is blocked, retry it via the Wayback Machine before declaring
   # it unavailable.
   archive_org_fallback: true
+  # Firecrawl scrape rescue for bot-blocked pages (1 credit/page), tried
+  # BEFORE the Wayback fallback. Requires FIRECRAWL_API_KEY (same key as
+  # search.firecrawl); PDF URLs and 404s are never rescued.
+  firecrawl_rescue: false
+  firecrawl_rescue_endpoint: "https://api.firecrawl.dev/v2/scrape"
+  firecrawl_rescue_timeout_s: 60
+  firecrawl_rescue_max_per_session: 20   # credit cap per run
 
 cache:
   diskcache_dir: "./.cache/misc"

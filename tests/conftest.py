@@ -12,8 +12,8 @@ import deep_research  # noqa: F401  (sys.path fixup before any fastapi/pydantic 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # Load .env.local EXPLICITLY only when a test requests network via
-# `requires_tavily` / `requires_llm_endpoint` fixtures, so unit tests stay
-# deterministic.
+# `requires_tavily` / `requires_firecrawl` / `requires_llm_endpoint` fixtures,
+# so unit tests stay deterministic.
 _ENV_LOCAL_PATH = Path(__file__).resolve().parents[1] / ".env.local"
 _ENV_DOTLOCAL_LOADED = False
 
@@ -37,6 +37,10 @@ def _has_tavily_key() -> bool:
     return bool(os.environ.get("TAVILY_API_KEY", "").strip())
 
 
+def _has_firecrawl_key() -> bool:
+    return bool(os.environ.get("FIRECRAWL_API_KEY", "").strip())
+
+
 def _has_llm_endpoint() -> bool:
     return bool(os.environ.get("OPENAI_BASE_URL") or os.environ.get("LLM_BASE_URL"))
 
@@ -47,6 +51,13 @@ def requires_tavily():
     _load_env_dotlocal_once()
     if not _has_tavily_key():
         pytest.skip("TAVILY_API_KEY unset; skipping real-Tavily test")
+
+
+@pytest.fixture
+def requires_firecrawl():
+    _load_env_dotlocal_once()
+    if not _has_firecrawl_key():
+        pytest.skip("FIRECRAWL_API_KEY unset; skipping real-Firecrawl test")
 
 
 @pytest.fixture

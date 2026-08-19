@@ -196,16 +196,40 @@ class SearXNGConfig(BaseModel):
     max_results: int = 10
 
 
+class FirecrawlConfig(BaseModel):
+    """Firecrawl cloud search (https://firecrawl.dev) — second-priority backend.
+
+    Costs 2 credits per 10 results; free keys ship 1,000 credits, so set
+    ``max_calls_per_session`` to cap spend per run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key_env: str = "FIRECRAWL_API_KEY"
+    endpoint: str = "https://api.firecrawl.dev/v2/search"
+    timeout_s: float = 30.0
+    rate_limit_retries: int = 2  # retries on 429/408/5xx before falling back
+    max_calls_per_session: int | None = (
+        None  # None = unlimited; set to switch to the next backend proactively
+    )
+
+
 class SearchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    primary: Literal["tavily", "searxng"] = "tavily"
-    fallback_chain: list[Literal["tavily", "searxng"]] = Field(default_factory=lambda: ["searxng"])
+    primary: Literal["tavily", "searxng", "firecrawl"] = "tavily"
+    fallback_chain: list[Literal["tavily", "searxng", "firecrawl"]] = Field(
+        default_factory=lambda: ["firecrawl", "searxng"]
+    )
     tavily: TavilyConfig = Field(default_factory=TavilyConfig)
     searxng: SearXNGConfig = Field(default_factory=SearXNGConfig)
+    firecrawl: FirecrawlConfig = Field(default_factory=FirecrawlConfig)
 
     def resolve_tavily_key(self) -> str | None:
         return _env(self.tavily.api_key_env)
+
+    def resolve_firecrawl_key(self) -> str | None:
+        return _env(self.firecrawl.api_key_env)
 
 
 class BrowserConfig(BaseModel):
@@ -324,6 +348,15 @@ class FetchPageConfig(BaseModel):
     # When a page is blocked (bot detection / HTTP error), retry it through the
     # Wayback Machine's latest snapshot before declaring it unavailable.
     archive_org_fallback: bool = True
+    # Firecrawl scrape rescue for bot-blocked pages (1 credit/page), tried
+    # BEFORE the Wayback fallback. Requires search.firecrawl.api_key_env to be
+    # set; skipped silently otherwise. PDF URLs and 404s are never rescued.
+    firecrawl_rescue: bool = False
+    firecrawl_rescue_endpoint: str = "https://api.firecrawl.dev/v2/scrape"
+    firecrawl_rescue_timeout_s: int = 60
+    # Credit cap per run: after this many rescue attempts, fall straight to
+    # Wayback for the rest of the session.
+    firecrawl_rescue_max_per_session: int = 20
 
 
 class CacheConfig(BaseModel):

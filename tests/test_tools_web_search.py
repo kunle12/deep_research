@@ -184,3 +184,176 @@ async def test_live_tavily_search(requires_tavily) -> None:
     assert res.error is None
     assert len(res.citations) >= 1
     assert all(c.url.startswith("http") for c in res.citations)
+
+
+FIRECRAWL_ENDPOINT = "https://api.firecrawl.dev/v2/search"
+
+
+def _firecrawl_resp(*hits: tuple[str, str, str]) -> dict:
+    return {
+        "success": True,
+        "data": {
+            "web": [
+                {"url": url, "title": title, "description": desc}
+                for url, title, desc in hits
+            ]
+        },
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_firecrawl_search_returns_citations(monkeypatch) -> None:
+    cfg = AgentTopConfig()
+    cfg.search.primary = "firecrawl"
+    cfg.search.fallback_chain = []
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-fake-test-key")
+
+    respx.post(FIRECRAWL_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json=_firecrawl_resp(
+                ("https://example.com/a", "Result A", "Result A snippet."),
+                ("https://example.com/b", "Result B", "Result B snippet."),
+            ),
+        )
+    )
+
+    reg = await build_tool_registry(cfg)
+    res = await reg.call("web_search", {"query": "test query", "max_results": 5})
+    assert res.error is None
+    assert len(res.citations) == 2
+    assert res.citations[0].url == "https://example.com/a"
+    assert res.citations[0].title == "Result A"
+    assert res.citations[0].snippet == "Result A snippet."
+    # No relevance score from Firecrawl → uniform confidence
+    assert res.citations[0].confidence_score == 0.5
+    assert res.citations[1].url == "https://example.com/b"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_firecrawl_fallback_when_tavily_unavailable(monkeypatch) -> None:
+    """Second-priority ordering: Tavily 502s → Firecrawl serves."""
+    cfg = AgentTopConfig()
+    cfg.search.primary = "tavily"
+    cfg.search.fallback_chain = ["firecrawl", "searxng"]
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-fake-test-key")
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-fake-test-key")
+
+    respx.post("https://api.tavily.com/search").mock(return_value=httpx.Response(502))
+    fc_route = respx.post(FIRECRAWL_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200, json=_firecrawl_resp(("https://example.com/fc1", "FC 1", "snippet"))
+        )
+    )
+
+    reg = await build_tool_registry(cfg)
+    res = await reg.call("web_search", {"query": "test", "max_results": 5})
+    assert res.error is None, f"expected firecrawl fallback; error={res.error}"
+    assert fc_route.called
+    assert len(res.citations) == 1
+    assert res.citations[0].url == "https://example.com/fc1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_firecrawl_rate_limit_then_searxng_fallback(monkeypatch) -> None:
+    """Firecrawl 429 → retry exhausts → seamless fallback to SearXNG."""
+    cfg = AgentTopConfig()
+    cfg.search.primary = "firecrawl"
+    cfg.search.fallback_chain = ["searxng"]
+    cfg.search.firecrawl.rate_limit_retries = 1
+    cfg.search.searxng.url = "https://searxng.test/search"
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-fake-test-key")
+
+    fc_route = respx.post(FIRECRAWL_ENDPOINT).mock(
+        return_value=httpx.Response(429, json={"success": False, "error": "rate limit"})
+    )
+    searxng_resp = {
+        "results": [{"url": "https://example.com/sx1", "title": "SearX fallback", "content": "ok"}]
+    }
+    respx.get("https://searxng.test/search").mock(
+        return_value=httpx.Response(200, json=searxng_resp)
+    )
+
+    reg = await build_tool_registry(cfg)
+    res = await reg.call("web_search", {"query": "test", "max_results": 5})
+    assert res.error is None, f"expected fallback to succeed; error={res.error}"
+    assert fc_route.call_count == 2  # initial + 1 retry
+    assert len(res.citations) == 1
+    assert res.citations[0].url == "https://example.com/sx1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_firecrawl_proactive_quota_fallback(monkeypatch) -> None:
+    """When Firecrawl max_calls_per_session is exceeded, proactively fall back."""
+    cfg = AgentTopConfig()
+    cfg.search.primary = "firecrawl"
+    cfg.search.fallback_chain = ["searxng"]
+    cfg.search.firecrawl.max_calls_per_session = 1
+    cfg.search.searxng.url = "https://searxng.test/search"
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-fake-test-key")
+
+    respx.post(FIRECRAWL_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200, json=_firecrawl_resp(("https://example.com/a", "A", "snippet"))
+        )
+    )
+    searxng_resp = {
+        "results": [{"url": "https://example.com/sx1", "title": "SearX quota", "content": "ok"}]
+    }
+    respx.get("https://searxng.test/search").mock(
+        return_value=httpx.Response(200, json=searxng_resp)
+    )
+
+    reg = await build_tool_registry(cfg)
+    res1 = await reg.call("web_search", {"query": "first", "max_results": 5})
+    assert res1.error is None
+    assert res1.citations[0].url == "https://example.com/a"
+
+    # Second call exceeds quota → falls back to SearXNG
+    res2 = await reg.call("web_search", {"query": "second", "max_results": 5})
+    assert res2.error is None
+    assert res2.citations[0].url == "https://example.com/sx1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_firecrawl_skipped_without_key(monkeypatch) -> None:
+    """Chain includes firecrawl but no key set → skipped, SearXNG serves."""
+    cfg = AgentTopConfig()
+    cfg.search.primary = "firecrawl"
+    cfg.search.fallback_chain = ["searxng"]
+    cfg.search.searxng.url = "https://searxng.test/search"
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+
+    fc_route = respx.post(FIRECRAWL_ENDPOINT).mock(
+        return_value=httpx.Response(200, json=_firecrawl_resp())
+    )
+    searxng_resp = {
+        "results": [{"url": "https://example.com/sx1", "title": "SearX", "content": "ok"}]
+    }
+    respx.get("https://searxng.test/search").mock(
+        return_value=httpx.Response(200, json=searxng_resp)
+    )
+
+    reg = await build_tool_registry(cfg)
+    res = await reg.call("web_search", {"query": "test", "max_results": 5})
+    assert res.error is None
+    assert not fc_route.called  # firecrawl never hit without a key
+    assert res.citations[0].url == "https://example.com/sx1"
+
+
+@pytest.mark.asyncio
+async def test_live_firecrawl_search(requires_firecrawl) -> None:
+    """Real Firecrawl call — only runs when FIRECRAWL_API_KEY is set."""
+    cfg = AgentTopConfig()
+    cfg.search.primary = "firecrawl"
+    cfg.search.fallback_chain = []
+    reg = await build_tool_registry(cfg)
+    res = await reg.call("web_search", {"query": "python asyncio gather", "max_results": 3})
+    assert res.error is None
+    assert len(res.citations) >= 1
+    assert all(c.url.startswith("http") for c in res.citations)

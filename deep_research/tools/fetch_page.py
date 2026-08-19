@@ -21,6 +21,13 @@ This lets callers that hit a direct PDF link (e.g. scholar side-links in
 the academic path, blog_search PDF results in the applied path) get real
 extracted text instead of trafilatura choking on the binary stream and
 triggering a useless browser_navigate fallback.
+
+Firecrawl rescue — when `fetch_page.firecrawl_rescue` is enabled and a
+FIRECRAWL_API_KEY is configured, a bot-blocked / HTTP-error page is retried
+through Firecrawl's `/v2/scrape` endpoint (proxy network bypasses most
+anti-bot walls) BEFORE the Wayback fallback. Costs 1 credit per page and is
+capped per session via `firecrawl_rescue_max_per_session`. PDF URLs and 404s
+are never rescued.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -239,6 +247,10 @@ class _PageCache:
     ORIGINAL URL; the ``html`` slot then carries the concrete snapshot URL
     instead of raw HTML (see ``_call``).
 
+    A fifth kind, ``"firecrawl"``, stores Firecrawl-rescued markdown under
+    the original URL; the ``html`` slot carries the page title (there is no
+    raw HTML — Firecrawl returns extracted markdown directly).
+
     Blocked verdicts are stored under ``blocked:<url>`` with a separate,
     shorter TTL so a bot-blocked page is not re-fetched repeatedly within a
     run (the main cache only ever stores successful extractions).
@@ -399,6 +411,97 @@ def _annotate_archived(text: str, original_url: str) -> str:
     )
 
 
+def _annotate_firecrawl(text: str, original_url: str) -> str:
+    """Prefix Firecrawl-rescued content with provenance.
+
+    Keeps the retried-via-third-party retrieval transparent, mirroring the
+    Wayback annotation, so the researcher can weigh the source accordingly.
+    """
+    return (
+        f"(Original URL {original_url} was blocked by bot detection or a fetch "
+        f"error; this content was retrieved via the Firecrawl scraping API.)\n\n{text}"
+    )
+
+
+_MIN_FIRECRAWL_TEXT_CHARS = 100
+
+
+_PDF_QUERY_RX = re.compile(r"(?:format|type|filetype|ext|kind)=pdf")
+
+
+def _looks_like_pdf_url(url: str) -> bool:
+    """PDF heuristic used to exclude URLs from Firecrawl rescue.
+
+    (Firecrawl bills PDF parsing PER PAGE, so blocked PDFs must stay on the
+    Wayback path; the full ``_is_pdf`` Content-Type logic needs a live
+    response, which a blocked fetch does not reliably provide.)
+
+    Checks the path suffix AND query-string PDF signals (e.g.
+    ``/download?id=paper.pdf`` or ``?format=pdf``) so a PDF served via query
+    params cannot slip through and blow past the per-session credit cap.
+    """
+    lowered = url.lower()
+    path = lowered.split("?", 1)[0].split("#", 1)[0]
+    if path.endswith(".pdf"):
+        return True
+    query = lowered.split("?", 1)[1] if "?" in lowered else ""
+    return bool(_PDF_QUERY_RX.search(query)) or ".pdf" in query
+
+
+async def _firecrawl_scrape(
+    url: str,
+    api_key: str,
+    endpoint: str,
+    timeout_s: int,
+) -> tuple[str, str] | None:
+    """Rescue a blocked page via Firecrawl's /v2/scrape endpoint.
+
+    Returns ``(markdown_text, title)`` or None when the scrape is unusable
+    (HTTP error, ``success: false``, or markdown thinner than the minimum).
+    Best-effort by design: callers fall through to Wayback on None. Retries
+    once on 429 (free plan allows 10 scrape req/min).
+    """
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "url": url,
+        "formats": ["markdown"],
+        "onlyMainContent": True,
+        "proxy": "auto",
+        "timeout": timeout_s * 1000,
+    }
+    resp: httpx.Response | None = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s + 15) as client:
+                resp = await client.post(endpoint, json=payload, headers=headers)
+        except httpx.HTTPError:
+            return None
+        if resp.status_code == 429 and attempt == 0:
+            logger.warning("Firecrawl scrape 429 for %s; retrying once", url)
+            await asyncio.sleep(2)
+            continue
+        break
+    if resp is None or resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not data.get("success"):
+        return None
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        return None
+    markdown = inner.get("markdown") or ""
+    if len(markdown.strip()) < _MIN_FIRECRAWL_TEXT_CHARS:
+        return None
+    metadata = inner.get("metadata")
+    title: Any = metadata.get("title") if isinstance(metadata, dict) else ""
+    if isinstance(title, list):
+        title = title[0] if title else ""
+    return (markdown, str(title or ""))
+
+
 def _is_pdf(ctype: str, url: str) -> bool:
     """True when the response Content-Type or URL suffix indicates a PDF.
 
@@ -436,6 +539,108 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         blocked_ttl_seconds=cfg.blocked_cache_ttl_s,
     )
 
+    # Firecrawl rescue state. Reuses the search backend's API key (one key
+    # for both features). The counter caps *attempts* (not successes) per
+    # session so a persistently failing rescue stops burning time/credits.
+    firecrawl_key = config.search.resolve_firecrawl_key()
+    if cfg.firecrawl_rescue and not firecrawl_key:
+        logger.warning(
+            "fetch_page.firecrawl_rescue enabled but %s is unset; rescue disabled.",
+            config.search.firecrawl.api_key_env,
+        )
+    rescue_enabled = cfg.firecrawl_rescue and bool(firecrawl_key)
+    _rescue_call_count: int = 0
+    _rescue_call_lock = asyncio.Lock()
+    # Single-flight: only ONE Firecrawl scrape per URL at a time. Without
+    # this, concurrent fetch_page calls for the same blocked page each spend
+    # a paid scrape credit (verified: 1 URL -> 2 concurrent calls = 2 scrapes).
+    _in_flight_rescues: dict[str, asyncio.Future] = {}
+    _in_flight_lock = asyncio.Lock()
+
+    async def _rescue_blocked(target_url: str) -> ToolResult | None:
+        """Quota-guarded, single-flight Firecrawl rescue of a blocked page.
+
+        Only ONE task per URL runs the scrape (consuming one quota slot) and
+        caches the result; concurrent waiters reuse its outcome so a page
+        never pays twice. The in-flight marker is only cleared AFTER the
+        result is cached — clearing it earlier (right after the scrape)
+        left a window where a concurrent caller saw no in-flight marker AND
+        no cache entry and scraped again (2 paid scrapes for one page).
+        Returns None when the scrape is unusable, quota is exhausted, or the
+        owner task was cancelled mid-scrape (callers then fall to Wayback).
+        """
+        nonlocal _rescue_call_count
+        own = False
+        async with _in_flight_lock:
+            fut = _in_flight_rescues.get(target_url)
+            if fut is None:
+                async with _rescue_call_lock:
+                    if _rescue_call_count >= cfg.firecrawl_rescue_max_per_session:
+                        logger.info(
+                            "Firecrawl rescue quota exhausted (%d >= %d); falling through",
+                            _rescue_call_count,
+                            cfg.firecrawl_rescue_max_per_session,
+                        )
+                        return None
+                    _rescue_call_count += 1
+                fut = asyncio.get_running_loop().create_future()
+                _in_flight_rescues[target_url] = fut
+                own = True
+        if not own:
+            # Waiter: reuse the owner's scrape outcome (and quota slot).
+            result = await fut
+            if result is None:
+                return None
+            text, title = result
+        else:
+            try:
+                result = await _firecrawl_scrape(
+                    url=target_url,
+                    api_key=firecrawl_key or "",
+                    endpoint=cfg.firecrawl_rescue_endpoint,
+                    timeout_s=cfg.firecrawl_rescue_timeout_s,
+                )
+                if result is not None:
+                    text, title = result
+                    # Cache BEFORE resolving the future so waiters and any
+                    # caller that arrives after the pop hit the cache.
+                    await page_cache.aset(target_url, "firecrawl", title, text)
+            except Exception as e:
+                logger.warning(
+                    "Firecrawl rescue for %s raised %s: %s",
+                    target_url,
+                    type(e).__name__,
+                    e,
+                )
+                result = None
+            finally:
+                # Also covers CancelledError (not caught above): resolve the
+                # future and drop the marker so waiters never hang — they
+                # just fall through to Wayback like any failure.
+                if not fut.done():
+                    fut.set_result(result)
+                async with _in_flight_lock:
+                    _in_flight_rescues.pop(target_url, None)
+            if result is None:
+                return None
+        # Shared tail (owner + waiters). Waiters re-cache idempotently; the
+        # RAW markdown is cached and the annotation applied at return time.
+        await page_cache.aset(target_url, "firecrawl", title, text)
+        cit = Citation(
+            url=target_url,
+            title=title or target_url,
+            snippet=text[:200],
+            source_type="html",
+            confidence_score=0.6,
+            discovered_by=ToolName.fetch_page,
+        )
+        logger.info(
+            "fetch_page rescued %s via Firecrawl scrape (%d chars)",
+            target_url,
+            len(text),
+        )
+        return ToolResult(content=_annotate_firecrawl(text, target_url), citations=[cit])
+
     async def _call(url: str, **_: Any) -> ToolResult:
         if not url or not url.startswith(("http://", "https://")):
             return ToolResult(content="", error=f"invalid url: {url!r}")
@@ -468,6 +673,26 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     content=_annotate_archived(text, url),
                     citations=[cit],
                 )
+            if kind == "firecrawl":
+                # Firecrawl-rescued markdown cached under the original URL;
+                # the `html` slot carries the page title.
+                title = html or url
+                if not text.strip():
+                    return ToolResult(
+                        content="",
+                        error=(
+                            f"fetch_page cached Firecrawl content for {url} but it extracted 0 chars."
+                        ),
+                    )
+                cit = Citation(
+                    url=url,
+                    title=title,
+                    snippet=text[:200],
+                    source_type="html",
+                    confidence_score=0.6,
+                    discovered_by=ToolName.fetch_page,
+                )
+                return ToolResult(content=_annotate_firecrawl(text, url), citations=[cit])
             if kind == "pdf":
                 # Cached PDF extraction result — return directly. No browser
                 # fallback: a PDF URL is unambiguously a PDF, not a JS-heavy
@@ -507,6 +732,16 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
 
             verdict = classify_blocked_response(resp.status_code, resp.headers, resp.text)
             if verdict is not None:
+                # Firecrawl rescue first (fresh content via proxy network);
+                # 404s and PDF URLs are excluded, everything else is eligible.
+                if (
+                    rescue_enabled
+                    and verdict.category != "not_found"
+                    and not _looks_like_pdf_url(url)
+                ):
+                    rescued = await _rescue_blocked(url)
+                    if rescued is not None:
+                        return rescued
                 if cfg.archive_org_fallback and not _is_archive_url(url):
                     archived = await _fetch_wayback(url, cfg.user_agent, cfg.request_timeout_s)
                     if archived is not None:
@@ -647,8 +882,17 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             )
             browser_res = await reg.call_internal("browser_navigate", {"url": url})
             if browser_res.error and browser_res.error.startswith(BLOCKED_PREFIX):
-                # Browser hit the same challenge — propagate the blocked verdict
-                # instead of degrading to the challenge page's raw HTML.
+                # Browser hit the same challenge — try Firecrawl rescue first
+                # (same eligibility as the direct-HTTP blocked path), then
+                # propagate the verdict instead of degrading to the raw HTML.
+                if (
+                    rescue_enabled
+                    and not browser_res.error.startswith("BLOCKED:not_found")
+                    and not _looks_like_pdf_url(url)
+                ):
+                    rescued = await _rescue_blocked(url)
+                    if rescued is not None:
+                        return rescued
                 return ToolResult(content="", error=browser_res.error)
             if browser_res.error is None and browser_res.content:
                 # Browser render acceptable — surface its content + its citations.
