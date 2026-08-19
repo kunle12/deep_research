@@ -306,6 +306,9 @@ search:
 
 Now the agent will search through your local SearXNG instance.
 
+(There is also a cloud Firecrawl backend; if you have a `FIRECRAWL_API_KEY`,
+you can put it in the chain too, e.g. `fallback_chain: ["firecrawl", "tavily"]`.)
+
 ---
 
 ## Step 10 — Keep it running (optional)
