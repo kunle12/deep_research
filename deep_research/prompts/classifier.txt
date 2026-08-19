@@ -4,6 +4,7 @@ Paths:
 - "quick"     : Single fact lookup or short-answer question. 1 search + summarize, ~15 seconds.
 - "deep"      : Multi-source synthesis, survey-style question, or any query requiring parallel exploration across many sources + critique loops.
 - "academic"  : Research that requires comprehensive survey of arxiv papers or broader scholarly literature (Google Scholar), possibly recursive citation-graph traversal. Covers CS/ML/physics/math papers, but also non-arxiv venues (Nature, NEJM, ACM, IEEE, conferences). User explicitly asks for "comprehensive", "literature review", "papers", "arxiv", "state of the art", OR query is academic-sounding (e.g. "CRISPR off-target effects", "anti-amyloid antibodies phase 3").
+- "applied"   : Practical implementation/engineering questions best answered by technical blogs and hands-on posts — "how do I build/deploy/integrate/configure X", "best way to set up Y", tool/library usage, code-level guidance. The user wants working practice, not theory, news, or a literature survey.
 - "url_source": The user's query contains a URL they want analyzed (this should NEVER be returned by the classifier if a URL is detected — handled earlier in the pipeline).
 - "unclear"   : Ambiguous intent. Return clarifying questions.
 
@@ -13,11 +14,14 @@ Decision heuristics:
 - Multi-step but convergent (e.g., "Who won the 2022 Booker Prize and who published it?") → quick with chained queries
 - "Survey", "compare", "discuss", "review", "analyze in depth", "comprehensive overview", "recent developments", length > 30 chars → deep
 - Mentions arxiv, papers, "state of the art", "literature review", CS/ML/physics/math jargon, asks for "key references" → academic
+- "how do I build/deploy/integrate/configure X", "best way to ...", "setting up", practical engineering how-to → applied
 - If query is short, vague, or asks multiple unrelated things → unclear
+- When academic and applied both seem plausible, prefer academic for
+  understanding/survey intent and applied for build/implementation intent.
 
 Return JSON (and ONLY JSON, no markdown fences) with this schema:
 {
-  "path": "quick" | "deep" | "academic" | "unclear",
+  "path": "quick" | "deep" | "academic" | "applied" | "unclear",
   "rationale": "<short explanation of the decision>",
   "search_hint": "<if quick, what to search for; default: the original query>",
   "breadth_hint": <int 0..10, 0 means use default>,

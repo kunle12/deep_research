@@ -10,7 +10,7 @@ import logging
 
 from deep_research.llm.router import LLMClientLike
 from deep_research.state import ResearchPlan, SubQuestion
-from deep_research.util import VALID_TOOL_HINTS, load_prompt_template
+from deep_research.util import VALID_TOOL_HINTS, load_prompt_template, utc_today_str
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,11 @@ async def plan(
     # Validate tool_hint vocabulary client-side so we don't surprise downstream.
     valid_hints = VALID_TOOL_HINTS
 
-    prompt = prompt_template.replace("{max_subquestions}", str(breadth)).replace("{query}", query)
+    prompt = (
+        prompt_template.replace("{max_subquestions}", str(breadth))
+        .replace("{query}", query)
+        .replace("{today}", utc_today_str())
+    )
     try:
         resp = await client.chat.completions.create(
             model=model,

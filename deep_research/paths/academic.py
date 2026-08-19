@@ -767,6 +767,11 @@ async def _synthesize_markdown(
         "You are an academic synthesis writer. Given a set of analyses of "
         "discovered academic papers (with recursively-mined citations), write "
         "a 2-4 section markdown report answering the user's research query. "
+        "Begin with a `# ` title you compose yourself: a formal, descriptive "
+        "headline reformulated from the research query — do NOT copy the query "
+        "verbatim (it is often informal or phrased as a question). Immediately "
+        "below the title, on its own line, preserve the original query as: "
+        '_Original query: "<the exact query>"_. '
         "Stay strictly on the query's topic: use only the analyses that are "
         "genuinely relevant (higher `relevance` score), and DO NOT mention, "
         "summarize, or cite any paper that is off-topic or only shares a "

@@ -8,15 +8,19 @@ Your task:
    <https://example.com/source>, Y is Z."
 3. Then output a `citations` array covering every source cited.
 
+Base the answer on the fetched page contents; if a page fetch failed, fall
+back to that result's search snippet and say the answer relies on snippets.
+If the sources disagree, prefer the most authoritative and note the conflict.
+
 The FINAL output (your entire message) MUST be ONE JSON object with this
 schema, and NOTHING else (no markdown fences, no surrounding text):
 
-{{
+{
   "answer": "<your synthesized answer markdown>",
   "citations": [
-    {{"url": "...", "title": "...", "snippet": "...", "confidence_score": 0.8}}
+    {"url": "...", "title": "...", "snippet": "...", "confidence_score": 0.8}
   ]
-}}
+}
 
 User query: <<{query}>>
 

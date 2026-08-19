@@ -15,7 +15,7 @@ from deep_research.citations import extract_urls_from_markdown, normalize_url
 from deep_research.llm.router import LLMClientLike
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult, run_with_tools
 from deep_research.state import BLOCKED_PREFIX, BlockedSource, Citation, SubQuestion
-from deep_research.util import coerce_float, load_prompt_template
+from deep_research.util import coerce_float, load_prompt_template, utc_today_str
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +97,7 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
         return [n for n in super().names() if n not in _IMAGE_PRODUCING_TOOLS]
 
     def schemas(self) -> list[dict]:
-        return [
-            s
-            for s in super().schemas()
-            if s["function"]["name"] not in _IMAGE_PRODUCING_TOOLS
-        ]
+        return [s for s in super().schemas() if s["function"]["name"] not in _IMAGE_PRODUCING_TOOLS]
 
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         result = await super().call(name, arguments)
@@ -132,7 +128,9 @@ async def research(
     additional context so the researcher knows what we already know.
     """
     prompt_template = load_prompt_template("researcher")
-    prompt = prompt_template.replace("{question}", sub_q.question)
+    prompt = prompt_template.replace("{question}", sub_q.question).replace(
+        "{today}", utc_today_str()
+    )
 
     hint_blurb = _hint_blurb(sub_q.tool_hint, tools.names())
 

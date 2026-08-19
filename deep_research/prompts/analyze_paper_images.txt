@@ -6,10 +6,10 @@ Paper text (may be truncated):
 <<{paper_text}>>
 
 Return JSON only (no markdown fences):
-{{
+{
   "figure_descriptions": ["<one-sentence description per visible figure/table>"],
   "extraction_text": "<relevant visible text, especially equations, table cells, and captions that were not captured well by text extraction>"
-}}
+}
 
 Page images:
 <<{image_pages_section}>>

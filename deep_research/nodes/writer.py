@@ -5,7 +5,7 @@ import logging
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.router import LLMClientLike
 from deep_research.state import ResearchState
-from deep_research.util import load_prompt_template
+from deep_research.util import load_prompt_template, utc_today_str
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ async def write(
         prompt_template.replace("{query}", state.query)
         .replace("{sections}", sections_blob)
         .replace("{citations}", citations_blob)
+        .replace("{today}", utc_today_str())
     )
     try:
         system_msg = (

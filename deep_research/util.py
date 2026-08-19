@@ -9,6 +9,7 @@ carrying its own copy of a try/except.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,12 @@ def coerce_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def utc_today_str() -> str:
+    """Current UTC date as ``YYYY-MM-DD`` — injected into prompts so agents
+    can reason about recency ("recent", "state of the art")."""
+    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 _ARXIV_VERSION_RX = re.compile(r"v\d+$")
@@ -62,4 +69,5 @@ __all__ = [
     "coerce_float",
     "load_prompt_template",
     "strip_arxiv_version",
+    "utc_today_str",
 ]

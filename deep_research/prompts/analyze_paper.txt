@@ -5,7 +5,7 @@ First, judge how directly this paper is ABOUT the user's specific research topic
 When the paper text is prefixed with `[ABSTRACT-ONLY]`, the paper is paywalled or unavailable — you only have the abstract. Limit claims to what the abstract supports. Do not fabricate findings. Set `key_references = []` (these are leaf nodes).
 
 Return JSON only (no markdown fences):
-{{
+{
   "title": "<paper title>",
   "summary": "<3-5 sentence summary of the paper's contribution>",
   "key_findings": ["<finding 1>", "<finding 2>", ...],
@@ -17,16 +17,16 @@ Return JSON only (no markdown fences):
   "key_references": [
     // ONLY if the paper is on-topic (relevance_score >= 0.7), is_key_reference is true, AND mode is recursive.
     // For an off-topic paper leave this EMPTY — do not propagate its references.
-    // Each must include an arxiv_id (matching \\d{{4}}\\.\\d{{4,5}}(v\\d+)?).
-    {{
+    // Each must include an arxiv_id (matching \d{4}\.\d{4,5}(v\d+)?).
+    {
       "arxiv_id": "2401.12345",
       "title": "<title as cited in this paper>",
       "rationale": "<why this reference is key to understanding the field / the user's query>"
-    }}
+    }
   ],
   "extraction_text": "<copy of the paper's relevant text — improve text quality if vision reveals tables/equations>",
   "figure_descriptions": ["<one-sentence description of each significant figure / table>"]
-}}
+}
 
 Paper arxiv id: <<{arxiv_id}>>
 Paper text (may be truncated):

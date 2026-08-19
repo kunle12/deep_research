@@ -17,7 +17,13 @@ from deep_research.state import (
     ResearchState,
     SubQuestion,
 )
-from deep_research.util import ARXIV_ID_RE, VALID_TOOL_HINTS, coerce_float, load_prompt_template
+from deep_research.util import (
+    ARXIV_ID_RE,
+    VALID_TOOL_HINTS,
+    coerce_float,
+    load_prompt_template,
+    utc_today_str,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,7 @@ async def review(state: ResearchState, client: LLMClientLike, model: str) -> Cri
         prompt_template.replace("{query}", state.query)
         .replace("{sections}", sections_blob)
         .replace("{candidates}", candidates)
+        .replace("{today}", utc_today_str())
     )
     try:
         resp = await client.chat.completions.create(
@@ -47,7 +54,10 @@ async def review(state: ResearchState, client: LLMClientLike, model: str) -> Cri
                         "NOTHING ELSE - no markdown fences. Schema: "
                         '{"sufficient": bool, "rationale": str, '
                         '"gaps": [{"id": "gap1", "question": "...", '
-                        '"tool_hint": "general-web", "rationale": "..."}]}'
+                        '"tool_hint": "general-web", "rationale": "..."}], '
+                        '"papers_to_analyze": [{"arxiv_id": "2401.12345", '
+                        '"rationale": "...", "reason": "abstract_relevance", '
+                        '"priority_score": 0.9, "expected_title": "..."}]}'
                     ),
                 },
                 {"role": "user", "content": prompt},

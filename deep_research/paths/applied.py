@@ -119,7 +119,12 @@ async def _synthesize_applied(
             "content": (
                 "You are an applied research writer. Given blog posts from technical "
                 "sources, write a 1-3 section markdown report answering the user's "
-                "research query. Focus on practical implementation details, code "
+                "research query. Begin with a `# ` title you compose yourself: a "
+                "formal, descriptive headline reformulated from the research query — "
+                "do NOT copy the query verbatim (it is often informal or phrased as a "
+                "question). Immediately below the title, on its own line, preserve the "
+                'original query as: _Original query: "<the exact query>"_. '
+                "Focus on practical implementation details, code "
                 "examples (when available), and key takeaways. Cite each blog post "
                 "inline with an autolink like <https://example.com/post>."
             ),
