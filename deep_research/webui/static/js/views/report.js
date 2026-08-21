@@ -312,18 +312,26 @@ function refCard(citation, runId) {
 
 function refSnippet(snippet) {
   if (!snippet) return null;
-  const btn = el("button", {
+  const node = el("div", {
     class: "ref-snippet",
-    type: "button",
+    role: "button",
+    tabindex: "0",
     title: "Click to expand / collapse the abstract",
     "aria-expanded": "false",
-    onclick: () => {
-      const expanded = btn.classList.toggle("ref-snippet-expanded");
-      btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    onclick: toggle,
+    onkeydown: (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
     },
   });
-  btn.append(el("span", { text: snippet }));
-  return btn;
+  function toggle() {
+    const expanded = node.classList.toggle("ref-snippet-expanded");
+    node.setAttribute("aria-expanded", expanded ? "true" : "false");
+  }
+  node.append(el("span", { text: snippet }));
+  return node;
 }
 
 function deleteReferenceButton(citation, runId) {
