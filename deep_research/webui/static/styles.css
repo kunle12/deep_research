@@ -615,8 +615,13 @@ button { font-family: inherit; font-size: inherit; }
   -webkit-box-orient: vertical;
   overflow: hidden;
   cursor: pointer;
+  outline: none;
 }
 .ref-snippet:hover { color: var(--accent); }
+.ref-snippet:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
 .ref-snippet.ref-snippet-expanded {
   /* Expanded full abstract renders as a text box (left-aligned). */
   display: block;
