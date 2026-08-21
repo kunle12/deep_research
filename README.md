@@ -360,10 +360,10 @@ uv run deep-research-library glossary --out glossary.json  # export as JSON
   pass `--force`.
 - `rm-artifact <artifact_id>` (or `--arxiv <id>` / `--url <url>`) — remove a
   single misclassified document (its PDF/HTML + analysis) from the personal
-  library, even when it was never part of a report. The web UI has a per-
-  reference **Remove from library** button on the report page and a standalone
-  **Artifacts** page (`#/artifacts`) that lists every archived document with a
-  Delete button.
+  library, even when it was never part of a report. In the web UI, each
+  reference on the report page has a **Delete** button that removes the
+  reference from the report and cleans up its bibliography/`.bib`, deleting the
+  archived document too when one exists.
 
 ### Web UI (library browser)
 

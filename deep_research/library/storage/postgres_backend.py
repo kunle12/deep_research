@@ -324,6 +324,28 @@ class PostgresStorageBackend:
             run_id,
         )
 
+    async def update_report_content(
+        self, run_id: str, *, markdown: str | None, citations_json: str | None
+    ) -> None:
+        """Update a report's `markdown` and/or `citations_json` in place
+        (used when removing a reference). Only the provided columns change."""
+        await self._ensure_conn()
+        sets = []
+        params = []
+        if markdown is not None:
+            sets.append(f"markdown = ${len(params) + 1}")
+            params.append(markdown)
+        if citations_json is not None:
+            sets.append(f"citations_json = ${len(params) + 1}")
+            params.append(citations_json)
+        if not sets:
+            return
+        params.append(run_id)
+        await self._execute(
+            "UPDATE reports SET " + ", ".join(sets) + f" WHERE run_id = ${len(params)}",
+            *params,
+        )
+
     async def reassign_run(self, old_run_id: str, new_run_id: str) -> None:
         """Repoint analyses/citation_edges/glossary/artifact_versions from
         `old_run_id` to `new_run_id`. Run BEFORE `delete_report(old_run_id)`.

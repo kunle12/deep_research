@@ -64,14 +64,12 @@ export function deleteReport(runId) {
   });
 }
 
-export function listArtifacts(params) {
-  return request("/api/artifacts", { params });
-}
-
-export function deleteArtifact(artifactId) {
-  return request(`/api/artifacts/${encodeURIComponent(artifactId)}`, {
+export function deleteReportReference(runId, url, arxivId) {
+  return request(`/api/reports/${encodeURIComponent(runId)}/references`, {
     method: "DELETE",
     params: { confirm: "true" },
+    body: JSON.stringify({ url, arxiv_id: arxivId || null }),
+    headers: { "Content-Type": "application/json" },
   });
 }
 

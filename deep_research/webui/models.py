@@ -176,6 +176,17 @@ class RenameReportRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
 
 
+class DeleteReportReferenceRequest(BaseModel):
+    """Identify a single reference/citation to remove from a report.
+
+    The citation is matched by its URL (required) and, when present, its
+    arXiv id. All citations matching the URL are removed.
+    """
+
+    url: str = Field(min_length=3, max_length=2000)
+    arxiv_id: str | None = Field(default=None, max_length=64)
+
+
 class MergeReportsRequest(BaseModel):
     other_run_ids: list[str] = Field(min_length=1, max_length=19)
     name: str | None = Field(default=None, max_length=1000)

@@ -252,12 +252,15 @@ report never auto-deletes its PDFs. Two deletion seams:
   backends stays strict (refuses on report linkage) — the orchestration layer
   handles the UX. Do NOT re-implement `_remove_artifact_files` in CLI or the
   web router — import `remove_artifact_files` from writer.
-- **Frontend**: the report References panel shows a per-citation **Remove**
-  button when the citation has an archived copy (`_enrich_citations` adds
-  `local_artifact_id`); a standalone **Artifacts** page (`#/artifacts`,
-  `views/artifacts.js`) lists documents with relevance scores and delete buttons
-  (`GET /api/artifacts` list endpoint — add `list_artifacts`/`count_artifacts`
-  to BOTH backends when extending it).
+- **Frontend**: the report References panel shows a per-citation **Delete**
+  button (`DELETE /api/reports/{run_id}/references`, `confirm`-gated) that
+  removes the reference from the report's `citations_json` AND regenerates the
+  markdown `## Bibliography` section, so the References panel, Bibliography
+  panel, `.bib` and `-bibliography.md` exports all lose the deleted source. If
+  the deleted citation had a locally archived copy (`_enrich_citations` adds
+  `local_artifact_id`), that artifact is also removed (files + rows) only when
+  no other report still cites it. The standalone **Artifacts** page
+  (`#/artifacts`, `views/artifacts.js`) and its topbar link were removed.
 
 ---
 

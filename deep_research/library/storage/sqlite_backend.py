@@ -455,6 +455,30 @@ class SqliteStorageBackend:
         await self._conn.commit()
 
     @_serialized
+    async def update_report_content(
+        self, run_id: str, *, markdown: str | None, citations_json: str | None
+    ) -> None:
+        """Update a report's `markdown` and/or `citations_json` in place
+        (used when removing a reference). Only the provided columns change."""
+        await self._ensure_conn()
+        updates = []
+        params: list[str] = []
+        if markdown is not None:
+            updates.append("markdown = ?")
+            params.append(markdown)
+        if citations_json is not None:
+            updates.append("citations_json = ?")
+            params.append(citations_json)
+        if not updates:
+            return
+        params.append(run_id)
+        await self._execute(
+            f"UPDATE reports SET {', '.join(updates)} WHERE run_id = ?",
+            tuple(params),
+        )
+        await self._conn.commit()
+
+    @_serialized
     async def reassign_run(self, old_run_id: str, new_run_id: str) -> None:
         """Repoint analyses/citation_edges/glossary/artifact_versions from
         `old_run_id` to `new_run_id`. Run BEFORE `delete_report(old_run_id)`

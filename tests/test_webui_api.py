@@ -523,3 +523,100 @@ def test_artifact_detail_includes_relevance_score(client):
     body = client.get("/api/artifacts/art_b").json()
     assert "relevance_score" in body["analyses"][0]
     assert body["analyses"][0]["relevance_score"] is None
+
+
+def test_delete_reference_requires_confirmation(client):
+    r = client.request(
+        "DELETE",
+        "/api/reports/run_a/references",
+        json={"url": "https://arxiv.org/abs/2401.00001"},
+    )
+    assert r.status_code == 400
+    # Report is untouched.
+    report = client.get("/api/reports/run_a").json()
+    assert len(report["citations"]) == 1
+
+
+def test_delete_reference_not_found(client):
+    r = client.request(
+        "DELETE",
+        "/api/reports/run_a/references",
+        params={"confirm": "true"},
+        json={"url": "https://example.com/missing"},
+    )
+    assert r.status_code == 404
+    assert client.get("/api/reports/run_a").status_code == 200
+
+
+def test_delete_reference_removes_citation_and_cleans_bib(client):
+    """Deleting a reference removes it from citations_json, regenerates the
+    markdown bibliography, updates the .bib export, and removes the archived
+    artifact when no other report still cites it."""
+    root = Path(client.app.state.config.pdl.root_dir)
+    assert (root / "artifacts" / "pdf" / "art_b.pdf").is_file()
+
+    r = client.request(
+        "DELETE",
+        "/api/reports/run_a/references",
+        params={"confirm": "true"},
+        json={"url": "https://arxiv.org/abs/2401.00001"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["run_id"] == "run_a"
+    assert body["citations"] == []
+    assert "## Bibliography" not in body["markdown"]
+
+    # .bib export is empty now (no @misc entries).
+    bib = client.get("/api/reports/run_a/bibliography/bib").text
+    assert "@misc" not in bib
+    assert "Paper B" not in bib
+
+    # The archived artifact (PDF + analysis) is gone — no other report cites it.
+    assert client.get("/api/artifacts/art_b").status_code == 404
+    assert not (root / "artifacts" / "pdf" / "art_b.pdf").exists()
+
+
+async def test_delete_reference_keeps_shared_artifact(client, seeded_config: Path):
+    """When another report still cites the artifact, deleting the reference
+    from one report keeps the archived copy (only the citation is removed)."""
+    from deep_research.library.storage.rows import ReportRow
+    from deep_research.library.storage.sqlite_backend import SqliteStorageBackend
+
+    backend = SqliteStorageBackend(str(seeded_config.parent / "index.db"))
+    await backend.connect()
+    try:
+        await backend.insert_report(
+            ReportRow(
+                run_id="run_c",
+                started_at=_now(3),
+                completed_at=_now(3),
+                original_query="Another paper citing B",
+                path_taken="quick",
+                markdown="# Report C",
+                citations_json=json.dumps(
+                    [
+                        {
+                            "url": "https://arxiv.org/abs/2401.00001",
+                            "title": "Paper B",
+                            "arxiv_id": "2401.00001",
+                        }
+                    ]
+                ),
+            )
+        )
+    finally:
+        await backend.close()
+
+    r = client.request(
+        "DELETE",
+        "/api/reports/run_a/references",
+        params={"confirm": "true"},
+        json={"url": "https://arxiv.org/abs/2401.00001"},
+    )
+    assert r.status_code == 200
+    # run_a lost its reference…
+    report = client.get("/api/reports/run_a").json()
+    assert report["citations"] == []
+    # …but the shared artifact is kept.
+    assert client.get("/api/artifacts/art_b").status_code == 200

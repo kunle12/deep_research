@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from deep_research.citations import render_bibliography_markdown
+from deep_research.citations import normalize_url, render_bibliography_markdown
 from deep_research.config import AgentTopConfig
 from deep_research.library.citation_archive import archive_cited_pdf
 from deep_research.library.storage.base import StorageBackend
@@ -37,6 +38,7 @@ from deep_research.webui.models import (
     ArtifactListResponse,
     CitationEdgeInfo,
     DeleteArtifactResponse,
+    DeleteReportReferenceRequest,
     DeleteReportResponse,
     GlossaryInfo,
     MergeReportsRequest,
@@ -293,6 +295,64 @@ async def _require_report_artifact(backend: StorageBackend, run_id: str) -> str:
     if not report.artifact_id:
         raise HTTPException(status_code=400, detail="report has no artifact; cannot manage tags")
     return report.artifact_id
+
+
+def _citation_matches(c: dict[str, Any], url: str, arxiv_id: str) -> bool:
+    """True when a stored citation matches the reference-delete key (URL or
+    arXiv id). URLs compare via `normalize_url` so trailing slashes and
+    punctuation don't defeat the match."""
+    if url:
+        if c.get("url") == url:
+            return True
+        if normalize_url(c.get("url") or "") == normalize_url(url):
+            return True
+    if arxiv_id:
+        a = (c.get("arxiv_id") or "").strip()
+        if a and a == arxiv_id:
+            return True
+    return False
+
+
+def _replace_bibliography_section(markdown: str, citations: list[dict[str, Any]]) -> str:
+    """Regenerate the markdown `## Bibliography` section from *citations*.
+
+    When the report has a `## Bibliography` heading, its block (up to the next
+    `#` heading or EOF) is replaced with the freshly rendered bibliography —
+    so the `.md` download reflects the deleted reference. Reports without that
+    heading are returned unchanged (`citations_json` still drives the `.bib`
+    and bibliography exports)."""
+    lines = markdown.split("\n")
+    idx = None
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "## bibliography":
+            idx = i
+            break
+    if idx is None:
+        return markdown
+    end = len(lines)
+    for j in range(idx + 1, len(lines)):
+        if re.match(r"^#{1,6}\s", lines[j]):
+            end = j
+            break
+    bib = render_bibliography_markdown(_citations_objects(citations))
+    new_block = bib.split("\n") if bib else []
+    return "\n".join(lines[:idx] + new_block + lines[end:])
+
+
+async def _artifact_cited_by_other_report(
+    backend: StorageBackend, run_id: str, artifact: Any
+) -> bool:
+    """True when any report other than *run_id* still cites *artifact* (via its
+    `citations_json`), so the shared copy must not be deleted."""
+    reports = await backend.list_reports(limit=100000)
+    for r in reports:
+        if r.run_id == run_id:
+            continue
+        for c in parse_citations(r.citations_json):
+            other = await _citation_artifact(backend, c)
+            if other is not None and other.artifact_id == artifact.artifact_id:
+                return True
+    return False
 
 
 @router.get("/health")
@@ -592,6 +652,70 @@ async def delete_report(
         except Exception as e:
             logger.warning("report artifact cleanup failed for %s: %s", report_artifact_id, e)
     return DeleteReportResponse(removed_files=removed)
+
+
+@router.delete("/reports/{run_id}/references", response_model=ReportDetail)
+async def delete_report_reference(
+    run_id: str,
+    request: Request,
+    body: DeleteReportReferenceRequest,
+    confirm: bool = Query(False),
+) -> ReportDetail:
+    """Remove a reference from a report.
+
+    Deletes every citation matching the request's URL (or arXiv id) from the
+    report's `citations_json`, regenerates the markdown bibliography section,
+    and — when the removed citation had a locally archived copy that no other
+    report still cites — removes that artifact (PDF/HTML + analysis) too.
+    Returns the updated report detail so the UI can re-render.
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400, detail="confirm=true is required to delete a reference"
+        )
+    backend = get_storage(request)
+    root = get_root_dir(request)
+    report = await backend.get_report(run_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="report not found")
+
+    target_url = (body.url or "").strip()
+    target_aid = (body.arxiv_id or "").strip()
+    if not target_url and not target_aid:
+        raise HTTPException(status_code=422, detail="a url or arxiv_id is required")
+
+    citations = parse_citations(report.citations_json)
+    removed: list[dict[str, Any]] = []
+    kept: list[dict[str, Any]] = []
+    for c in citations:
+        if _citation_matches(c, target_url, target_aid):
+            removed.append(c)
+        else:
+            kept.append(c)
+    if not removed:
+        raise HTTPException(status_code=404, detail="reference not found in report")
+
+    new_citations_json = json.dumps(kept)
+    new_markdown = _replace_bibliography_section(report.markdown or "", kept)
+    await backend.update_report_content(
+        run_id, markdown=new_markdown, citations_json=new_citations_json
+    )
+
+    for c in removed:
+        artifact = await _citation_artifact(backend, c)
+        if artifact is None:
+            continue
+        # Never delete a report's own output artifact out from under it.
+        referencing = await backend.list_reports(limit=100000)
+        if any(r.artifact_id == artifact.artifact_id for r in referencing):
+            continue
+        # Keep shared copies still cited by other reports.
+        if await _artifact_cited_by_other_report(backend, run_id, artifact):
+            continue
+        remove_artifact_files(root, artifact)
+        await backend.delete_artifact(artifact.artifact_id)
+
+    return await get_report_detail(run_id, request)
 
 
 @router.delete("/artifacts/{artifact_id}", response_model=DeleteArtifactResponse)

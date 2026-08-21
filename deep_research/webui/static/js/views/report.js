@@ -4,7 +4,7 @@ import { el, clear } from "../dom.js";
 import { formatDate, plural } from "../format.js";
 import {
   addReportTag,
-  deleteArtifact,
+  deleteReportReference,
   deleteReport,
   fetchArxivPdf,
   getReport,
@@ -153,7 +153,7 @@ function buildReport(report) {
       "div",
       { class: "panel" },
       el("h2", { class: "panel-title", text: `References (${report.citations.length})` }),
-      refsList(report.citations),
+      refsList(report.citations, report.run_id),
     ),
     bibliographyPanel(report),
     glossaryPanel(report),
@@ -288,20 +288,19 @@ function bibliographyPanel(report) {
 
 
 
-function refsList(citations) {
+function refsList(citations, runId) {
   const list = el("div", { class: "ref-list" });
   if (!citations.length) {
     list.append(el("p", { class: "hint", text: "No references recorded for this report." }));
     return list;
   }
   for (const citation of citations) {
-    const card = refCard(citation, () => card.remove());
-    list.append(card);
+    list.append(refCard(citation, runId));
   }
   return list;
 }
 
-function refCard(citation, onRemoved) {
+function refCard(citation, runId) {
   const title = citation.title || citation.url;
   const metaParts = [];
   if (Array.isArray(citation.authors) && citation.authors.length) {
@@ -338,12 +337,7 @@ function refCard(citation, onRemoved) {
     if (citation.url && !urlDuplicatesArxiv) {
       actions.push(refLink("URL", citation.url));
     }
-    // Remove-from-library: only for citations with a locally archived copy
-    // (a paper the agent downloaded into the PDL). Deletes the archived
-    // artifact + its analysis from the library.
-    if (citation.local_artifact_id) {
-      actions.push(removeFromLibraryButton(citation, onRemoved));
-    }
+    actions.push(deleteReferenceButton(citation, runId));
     for (const action of actions) actionsEl.append(action);
   }
 
@@ -359,33 +353,33 @@ function refCard(citation, onRemoved) {
   );
 }
 
-function removeFromLibraryButton(citation, onRemoved) {
+function deleteReferenceButton(citation, runId) {
   let btn = null;
   async function onClick() {
     const ok = await confirmDialog({
-      title: "Remove from library",
-      message: `Remove the archived copy of "${citation.title || citation.url}" from your personal library (PDF + its analysis)? The reference stays in this report. This cannot be undone.`,
-      confirmText: "Remove",
+      title: "Delete reference",
+      message: `Delete "${citation.title || citation.url}" from this report? Its bibliography entry (and .bib export) will be removed, and any archived copy in your personal library will be deleted. This cannot be undone.`,
+      confirmText: "Delete",
       danger: true,
     });
     if (!ok) return;
     btn.disabled = true;
-    btn.textContent = "Removing…";
+    btn.textContent = "Deleting…";
     try {
-      await deleteArtifact(citation.local_artifact_id);
+      await deleteReportReference(runId, citation.url, citation.arxiv_id);
       document.dispatchEvent(new CustomEvent("dr:library"));
-      onRemoved();
+      window.location.reload();
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = "Remove";
-      window.alert(`Remove failed: ${err.message}`);
+      btn.textContent = "Delete";
+      window.alert(`Delete failed: ${err.message}`);
     }
   }
   btn = el("button", {
     class: "btn btn-sm btn-danger",
     type: "button",
-    text: "Remove",
-    title: "Delete this document (PDF + analysis) from the personal library",
+    text: "Delete",
+    title: "Remove this reference from the report and clean up its bibliography / archived copy",
     onclick: onClick,
   });
   return btn;

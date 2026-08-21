@@ -55,6 +55,13 @@ class StorageBackend(Protocol):
         """Update `reports.original_query` (the display name of a research)."""
         ...
 
+    async def update_report_content(
+        self, run_id: str, *, markdown: str | None, citations_json: str | None
+    ) -> None:
+        """Update a report's `markdown` and/or `citations_json` in place
+        without touching any other column (used when removing a reference)."""
+        ...
+
     async def reassign_run(self, old_run_id: str, new_run_id: str) -> None:
         """Repoint all run-scoped references from one run to another.
 
