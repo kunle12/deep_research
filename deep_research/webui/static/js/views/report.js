@@ -257,7 +257,7 @@ function bibliographyPanel(report) {
     if (c.year) metaParts.push(String(c.year));
     if (c.venue) metaParts.push(c.venue);
     if (metaParts.length) detail.append(el("div", { class: "bib-meta", text: metaParts.join(" · ") }));
-    li.append(link, info, detail);
+    li.append(link, info, deleteReferenceButton(c, report.run_id), detail);
     list.append(li);
   });
   panel.append(list);
