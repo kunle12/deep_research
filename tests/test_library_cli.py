@@ -433,3 +433,102 @@ def test_cli_add_source_not_found(runner):
     )
     assert result.exit_code != 0
     assert "No report found" in result.stdout
+
+
+def test_cli_rm_artifact_no_pdl(runner):
+    tmp = tempfile.mkdtemp()
+    cfg = _make_pdl_config(tmp, enabled=False)
+    result = runner.invoke(library_app, ["rm-artifact", "art1", "--config", cfg])
+    assert result.exit_code != 0
+
+
+def test_cli_rm_artifact_not_found(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(library_app, ["rm-artifact", "missing_id", "--config", cfg])
+    assert result.exit_code != 0
+    assert "not found" in result.stdout.lower()
+
+
+def test_cli_rm_artifact_requires_selector(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    result = runner.invoke(library_app, ["rm-artifact", "--config", cfg])
+    assert result.exit_code != 0
+    assert "artifact_id" in result.stdout
+
+
+def test_cli_rm_artifact_refuses_report_output(runner):
+    tmp = tempfile.mkdtemp()
+    _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    # art1 is the archived output of run001/run002 -> refuse.
+    result = runner.invoke(library_app, ["rm-artifact", "art1", "--config", cfg])
+    assert result.exit_code != 0
+    assert "archived output of report(s)" in result.stdout
+    # Artifact still present.
+    conn = sqlite3.connect(os.path.join(tmp, "pdl_root", "index.db"))
+    row = conn.execute("SELECT artifact_id FROM artifacts WHERE artifact_id='art1'").fetchone()
+    conn.close()
+    assert row is not None
+
+
+def test_cli_rm_artifact_deletes_unreferenced_artifact(runner):
+    tmp = tempfile.mkdtemp()
+    root = _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+
+    # Seed an unreferenced artifact (a paper PDF the agent archived but that no
+    # report points at) with a real on-disk file.
+    db_path = os.path.join(root, "index.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO artifacts (artifact_id, kind, source_url, source_type, title,"
+        " bytes_path, bytes_size, first_seen_at, last_touched_at)"
+        " VALUES ('art_x', 'pdf', 'https://arxiv.org/abs/2401.99999', 'arxiv',"
+        " 'Off Topic Paper', 'artifacts/pdf/art_x.pdf', 10,"
+        " '2024-01-02T00:00:00Z', '2024-01-02T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+    pdf_path = os.path.join(root, "artifacts", "pdf", "art_x.pdf")
+    os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+    with open(pdf_path, "wb") as f:
+        f.write(b"%PDF-fake")
+
+    result = runner.invoke(library_app, ["rm-artifact", "art_x", "--config", cfg])
+    assert result.exit_code == 0
+    assert "Deleting artifact" in result.stdout
+    assert "Deleted from database" in result.stdout
+    assert not os.path.exists(pdf_path)
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT artifact_id FROM artifacts WHERE artifact_id='art_x'").fetchone()
+    conn.close()
+    assert row is None
+
+
+def test_cli_rm_artifact_by_arxiv_id(runner):
+    tmp = tempfile.mkdtemp()
+    root = _seed_db(tmp)
+    cfg = _make_pdl_config(tmp, enabled=True)
+    db_path = os.path.join(root, "index.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO artifacts (artifact_id, kind, source_url, source_type, title,"
+        " arxiv_id, bytes_path, bytes_size, first_seen_at, last_touched_at)"
+        " VALUES ('art_y', 'pdf', 'https://arxiv.org/abs/2401.55555', 'arxiv',"
+        " 'Another Paper', '2401.55555', 'artifacts/pdf/art_y.pdf', 10,"
+        " '2024-01-03T00:00:00Z', '2024-01-03T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(library_app, ["rm-artifact", "--arxiv", "2401.55555", "--config", cfg])
+    assert result.exit_code == 0
+    assert "Deleted from database" in result.stdout
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT artifact_id FROM artifacts WHERE artifact_id='art_y'").fetchone()
+    conn.close()
+    assert row is None

@@ -29,38 +29,13 @@ from deep_research.library.storage.base import StorageBackend
 from deep_research.library.writer import LibraryWriter, remove_report_files
 from deep_research.llm.router import LLMRouter
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
+from deep_research.nodes.analyze_source import to_record_dict as analysis_to_record_dict
 from deep_research.paths.url_source import fetch_source, is_fetch_failure
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import Citation, Report
 from deep_research.tools import build_tool_registry
 
 logger = logging.getLogger(__name__)
-
-
-def _analysis_to_dict(analysis) -> dict:
-    """Map a SourceAnalysis to the fields record_analysis persists.
-
-    record_analysis reads `key_findings` (list of strings) and JSON-serializes
-    it; `limitations`/`gaps`/`follow_ups` are stored as raw TEXT, so list
-    fields are serialized here to survive the DB binding.
-    """
-    key_findings: list[str] = []
-    for c in analysis.key_claims:
-        if isinstance(c, dict):
-            claim = c.get("claim", "") or ""
-            ev = c.get("evidence", "") or ""
-            key_findings.append(f"{claim} — {ev}".strip(" —") if ev else claim)
-        elif c:
-            key_findings.append(str(c))
-    return {
-        "summary": analysis.summary,
-        "key_findings": key_findings,
-        "methodology": analysis.methodology,
-        "limitations": json.dumps(analysis.limitations or [], ensure_ascii=False),
-        "gaps": json.dumps(analysis.gaps or [], ensure_ascii=False),
-        "follow_ups": json.dumps(analysis.follow_ups or [], ensure_ascii=False),
-        "relevance_to_query": analysis.relevance_to_query,
-    }
 
 
 def _insert_section(markdown: str, section: str) -> str:
@@ -130,6 +105,39 @@ async def _build_tools(config: AgentTopConfig) -> AsyncIterator:
         await tools.close()
 
 
+async def _cleanup_orphaned_artifact(
+    storage: StorageBackend,
+    writer: LibraryWriter,
+    artifact_id: str,
+) -> None:
+    """Best-effort removal of an artifact archived during a *refused* attach.
+
+    Content-addressable dedup means the artifact may already belong to another
+    research (in which case it has analyses or a report pointing at it) — that
+    artifact is left untouched. A truly orphaned one (no analyses, no report
+    output) is deleted along with its on-disk file so a rejected off-topic
+    source leaves no trace in the library.
+    """
+    if not artifact_id:
+        return
+    try:
+        if await storage.get_analyses_for_artifact(artifact_id):
+            return
+        reports = await storage.list_reports(limit=1000)
+        if any(r.artifact_id == artifact_id for r in reports):
+            return
+        art = await storage.get_artifact(artifact_id)
+        if art is None or not art.bytes_path:
+            return
+        root_resolved = writer.root_dir.resolve()
+        file_path = (root_resolved / art.bytes_path).resolve()
+        if file_path.is_relative_to(root_resolved) and file_path.is_file():
+            file_path.unlink()
+        await storage.delete_artifact(artifact_id)
+    except Exception as e:
+        logger.warning("cleanup of refused-attach artifact failed: %s", e)
+
+
 async def attach_source(
     url: str,
     run_id: str,
@@ -138,12 +146,13 @@ async def attach_source(
     config: AgentTopConfig,
     router: LLMRouter,
     progress: ProgressReporter | None = None,
+    force: bool = False,
 ) -> dict:
     """Fetch + fully analyze *url* and attach it to the research *run_id*.
 
     Returns a dict describing what happened:
       {"status": "attached", "artifact_id": ..., "analysis_id": ...}
-      {"status": "skipped", "reason": ...}   # URL already attached
+      {"status": "skipped", "reason": ...}   # already attached, or off-topic
     Raises ValueError when the target report is missing or the URL cannot be
     fetched/analyzed (the research is left untouched in that case).
     """
@@ -191,13 +200,33 @@ async def attach_source(
             page_image_data_urls=fetched.page_image_data_urls or None,
         )
 
+        # Relevance gate: an off-topic source (keyword overlap but a different
+        # field) must not be attached to this research. The artifact archived
+        # during fetch is cleaned up when it is not shared with anything else.
+        threshold = config.url_source.attach_relevance_threshold
+        if (
+            not force
+            and threshold > 0
+            and analysis.relevance_score is not None
+            and analysis.relevance_score < threshold
+        ):
+            await _cleanup_orphaned_artifact(storage, writer, fetched.artifact_id)
+            return {
+                "status": "skipped",
+                "reason": (
+                    f"source appears off-topic for this research (relevance "
+                    f"{analysis.relevance_score:.2f} < threshold {threshold:.2f}); "
+                    f"pass force=true to attach anyway"
+                ),
+            }
+
     # 1. Record the analysis against the target run.
     analysis_id = ""
     if fetched.artifact_id:
         try:
             analysis_id = await writer.record_analysis(
                 fetched.artifact_id,
-                _analysis_to_dict(analysis),
+                analysis_to_record_dict(analysis),
                 run_id,
                 "analyze_source",
             )

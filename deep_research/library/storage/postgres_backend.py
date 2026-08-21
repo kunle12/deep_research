@@ -100,6 +100,9 @@ class PostgresStorageBackend:
                 END $$;
                 """
             )
+            # One-time migration: databases created before the relevance-ranking
+            # feature lack `analyses.relevance_score`. Idempotent.
+            await conn.execute("ALTER TABLE analyses ADD COLUMN IF NOT EXISTS relevance_score REAL")
         logger.info(
             "schema initialized from %s (%d statements)", _MIGRATION_FILE.name, len(statements)
         )
@@ -433,10 +436,55 @@ class PostgresStorageBackend:
         row = await self._fetchone(f"SELECT count(*) FROM reports r{where}", *params)
         return int(row[0]) if row else 0
 
-    async def count_artifacts(self) -> int:
+    async def count_artifacts(self, *, q: str | None = None, kind: str | None = None) -> int:
         await self._ensure_conn()
-        row = await self._fetchone("SELECT count(*) FROM artifacts")
+        where, params = self._artifact_filter_sql(q=q, kind=kind)
+        row = await self._fetchone(f"SELECT count(*) FROM artifacts a{where}", *params)
         return int(row[0]) if row else 0
+
+    def _artifact_filter_sql(
+        self,
+        *,
+        q: str | None = None,
+        kind: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        """Shared WHERE clause for artifact list/count queries."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if kind:
+            clauses.append(f"a.kind = ${len(params) + 1}")
+            params.append(kind)
+        if q:
+            like = f"%{_escape_like(q)}%"
+            n = len(params) + 1
+            clauses.append(
+                f"(COALESCE(a.title, '') ILIKE ${n} ESCAPE '\\' "
+                f"OR COALESCE(a.source_url, '') ILIKE ${n + 1} ESCAPE '\\' "
+                f"OR COALESCE(a.arxiv_id, '') ILIKE ${n + 2} ESCAPE '\\')"
+            )
+            params.extend([like, like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    async def list_artifacts(
+        self,
+        limit: int,
+        offset: int = 0,
+        *,
+        q: str | None = None,
+        kind: str | None = None,
+    ) -> list[ArtifactRow]:
+        await self._ensure_conn()
+        where, params = self._artifact_filter_sql(q=q, kind=kind)
+        n = len(params)
+        rows = await self._fetchall(
+            f"SELECT a.* FROM artifacts a{where} "
+            f"ORDER BY a.first_seen_at DESC LIMIT ${n + 1} OFFSET ${n + 2}",
+            *params,
+            limit,
+            offset,
+        )
+        return [self._row_to_artifact(r) for r in rows]
 
     def _row_to_report(self, row: tuple) -> ReportRow:
         return ReportRow(
@@ -462,14 +510,15 @@ class PostgresStorageBackend:
             INSERT INTO analyses (
                 analysis_id, artifact_id, run_id, analyzer, summary,
                 key_findings, methodology, limitations, gaps, follow_ups,
-                key_references, relevance_to_query, analyzed_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                key_references, relevance_to_query, relevance_score, analyzed_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (analysis_id) DO UPDATE SET
                 summary = EXCLUDED.summary, key_findings = EXCLUDED.key_findings,
                 methodology = EXCLUDED.methodology, limitations = EXCLUDED.limitations,
                 gaps = EXCLUDED.gaps, follow_ups = EXCLUDED.follow_ups,
                 key_references = EXCLUDED.key_references,
-                relevance_to_query = EXCLUDED.relevance_to_query
+                relevance_to_query = EXCLUDED.relevance_to_query,
+                relevance_score = EXCLUDED.relevance_score
         """
         await self._execute(
             sql,
@@ -485,6 +534,7 @@ class PostgresStorageBackend:
             analysis.follow_ups,
             analysis.key_references,
             analysis.relevance_to_query,
+            analysis.relevance_score,
             analysis.analyzed_at,
         )
         return analysis.analysis_id
@@ -507,6 +557,7 @@ class PostgresStorageBackend:
             follow_ups=row[9],
             key_references=row[10],
             relevance_to_query=row[11],
+            relevance_score=row[13],
             analyzed_at=row[12],
         )
 
@@ -529,6 +580,7 @@ class PostgresStorageBackend:
                     follow_ups=r[9],
                     key_references=r[10],
                     relevance_to_query=r[11],
+                    relevance_score=r[13],
                     analyzed_at=r[12],
                 )
             )
@@ -882,7 +934,8 @@ class PostgresStorageBackend:
         safe_query = SqliteStorageBackend._sanitize_fts_query(query)
         if kind == "any":
             sql = """
-                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
+                       an.relevance_score
                 FROM analyses an
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
                 WHERE (
@@ -894,7 +947,8 @@ class PostgresStorageBackend:
             rows = await self._fetchall(sql, safe_query, limit)
         else:
             sql = """
-                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
+                       an.relevance_score
                 FROM analyses an
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
                 WHERE a.kind = $1
@@ -915,6 +969,7 @@ class PostgresStorageBackend:
                     summary=r[3] or "",
                     extracted_text=r[4] or "",
                     score=1.0,
+                    relevance_score=r[5],
                 )
             )
         return results

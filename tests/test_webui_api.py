@@ -439,3 +439,87 @@ def test_security_headers(client):
     assert "script-src 'self'" in csp
     assert r.headers.get("x-content-type-options") == "nosniff"
     assert r.headers.get("referrer-policy") == "no-referrer"
+
+
+def test_list_artifacts(client):
+    r = client.get("/api/artifacts")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2
+    ids = [x["artifact_id"] for x in body["items"]]
+    assert set(ids) == {"art_a", "art_b"}
+
+    by_kind = client.get("/api/artifacts", params={"kind": "pdf"}).json()
+    assert by_kind["total"] == 2
+
+    by_q = client.get("/api/artifacts", params={"q": "Paper B"}).json()
+    assert by_q["total"] == 1
+    assert by_q["items"][0]["artifact_id"] == "art_b"
+
+    detail = by_q["items"][0]
+    assert detail["arxiv_id"] == "2401.00001"
+    assert detail["relevance_score"] is None  # seeded analysis has no score
+
+
+def test_delete_artifact_requires_confirmation(client):
+    r = client.delete("/api/artifacts/art_b")
+    assert r.status_code == 400
+    # Confirm required even for a valid artifact.
+    r = client.delete("/api/artifacts/art_b", params={"confirm": "false"})
+    assert r.status_code == 400
+    assert client.get("/api/artifacts/art_b").status_code == 200
+
+
+def test_delete_artifact_refuses_report_output(client):
+    r = client.delete("/api/artifacts/art_a", params={"confirm": "true"})
+    assert r.status_code == 409
+    assert "delete those report(s) instead" in r.json()["detail"]
+    # Report's own artifact is untouched.
+    assert client.get("/api/artifacts/art_a").status_code == 200
+
+
+def test_delete_artifact_removes_file_and_rows(client):
+    assert (
+        Path(client.app.state.config.pdl.root_dir) / "artifacts" / "pdf" / "art_b.pdf"
+    ).is_file()
+    r = client.delete("/api/artifacts/art_b", params={"confirm": "true"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert any(p.endswith("art_b.pdf") for p in body["removed_files"])
+    # Artifact + its analysis + FTS row are gone.
+    assert client.get("/api/artifacts/art_b").status_code == 404
+    # The referencing report still exists but its citation no longer resolves
+    # to a local copy.
+    report = client.get("/api/reports/run_a").json()
+    ref = report["citations"][0]
+    assert ref["arxiv_id"] == "2401.00001"
+    assert "local_pdf_url" not in ref
+    assert "local_artifact_id" not in ref
+
+
+def test_delete_report_cleans_up_report_artifact(client):
+    """Deleting a report also removes its own (report) artifact + file, since
+    no other report references it."""
+    root = Path(client.app.state.config.pdl.root_dir)
+    assert (root / "artifacts" / "pdf" / "art_a.pdf").is_file()
+    r = client.delete("/api/reports/run_a", params={"confirm": "true"})
+    assert r.status_code == 200
+    assert any(p.endswith("art_a.pdf") for p in r.json()["removed_files"])
+    assert client.get("/api/artifacts/art_a").status_code == 404
+
+
+def test_report_detail_citations_carry_local_artifact_id(client):
+    report = client.get("/api/reports/run_a").json()
+    ref = report["citations"][0]
+    assert ref["local_artifact_id"] == "art_b"
+    assert ref["local_artifact_kind"] == "pdf"
+    assert ref["local_pdf_url"].endswith("/api/artifacts/art_b/pdf")
+
+
+def test_artifact_detail_includes_relevance_score(client):
+    # Seed an analysis with a relevance score for art_b, then re-check.
+    # (art_b's existing analysis has no score; that's fine — field present.)
+    body = client.get("/api/artifacts/art_b").json()
+    assert "relevance_score" in body["analyses"][0]
+    assert body["analyses"][0]["relevance_score"] is None

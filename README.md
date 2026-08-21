@@ -325,6 +325,9 @@ uv run deep-research-library merge <id1> <id2> [--name "Combined"] [--delete-sou
 uv run deep-research-library add-source <run_id> <url>     # analyze a URL into an existing research
 uv run deep-research-library stats                         # library statistics
 uv run deep-research-library delete <run_id_prefix>        # delete a single report
+uv run deep-research-library rm-artifact <artifact_id>     # delete one archived document (PDF/HTML + analysis)
+uv run deep-research-library rm-artifact --arxiv <id>      # ... by arXiv id
+uv run deep-research-library rm-artifact --url <url>       # ... or by source URL
 uv run deep-research-library prune --older-than 90         # prune old reports
 uv run deep-research-library export-bibtex refs.bib
 uv run deep-research-library refresh                       # refresh stale artifacts
@@ -352,6 +355,15 @@ uv run deep-research-library glossary --out glossary.json  # export as JSON
   against that research, a "Added source" section is appended to its report,
   and its citation is added to the references. The web UI has an "Add source"
   button on the report page (runs as a tracked job with live progress).
+  Sources the agent scores as off-topic for the research (relevance below
+  `url_source.attach_relevance_threshold`) are refused with a reason unless you
+  pass `--force`.
+- `rm-artifact <artifact_id>` (or `--arxiv <id>` / `--url <url>`) — remove a
+  single misclassified document (its PDF/HTML + analysis) from the personal
+  library, even when it was never part of a report. The web UI has a per-
+  reference **Remove from library** button on the report page and a standalone
+  **Artifacts** page (`#/artifacts`) that lists every archived document with a
+  Delete button.
 
 ### Web UI (library browser)
 
@@ -515,6 +527,9 @@ the largest effect:
 | `agent.max_iterations` | 3 | 4–5 | More critic gap-following rounds |
 | `agent.max_citations_per_researcher` | 10 | 10 | Caps sources a single researcher may return; keeps the bibliography relevant |
 | `agent.deep_analysis_max_papers` | 3 | 3–5 | Critic-selected full PDF analyses per deep run (0 disables) |
+| `academic.seed_relevance_gate` | on | on | Batch LLM pre-filter of seed candidates; off-topic seeds never consume `max_papers` slots or library storage |
+| `agent.deep_analysis_relevance_threshold` | 0.5 | 0.5 | Deep-path papers scored below this are not archived to the library |
+| `url_source.attach_relevance_threshold` | 0.4 | 0.4 | `add-source` refuses sources scored below this against the research (override with `--force`) |
 | `search.tavily.search_depth` | basic | advanced | Better search recall (2 credits/call) |
 
 Keep `academic.key_reference_threshold` at `0.7`: it is the guardrail that

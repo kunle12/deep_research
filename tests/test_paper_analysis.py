@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -54,9 +54,7 @@ def _fake_analysis(title: str = "Paper") -> PaperAnalysis:
 def _fake_router(client: MagicMock, model: str = "text") -> MagicMock:
     """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
     router = MagicMock()
-    router.resolve.return_value = MagicMock(
-        client=client, model=model, max_context_tokens=131072
-    )
+    router.resolve.return_value = MagicMock(client=client, model=model, max_context_tokens=131072)
     return router
 
 
@@ -106,7 +104,12 @@ class TestRunPaperAnalysisPass:
             return_value=DeepAnalysisResult(analysis=_fake_analysis("T")),
         ):
             await run_paper_analysis_pass(
-                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
+                state,
+                requests,
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
             )
         assert set(state.deep_analyses) == {"2401.00002"}
         assert state.deep_analysis_requested == ["2401.00001", "2401.00002"]
@@ -152,7 +155,12 @@ class TestRunPaperAnalysisPass:
         state = ResearchState(query="q")
         requests = [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.99)]
         await run_paper_analysis_pass(
-            state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
+            state,
+            requests,
+            query="q",
+            router=_fake_router(MagicMock()),
+            config=cfg,
+            tools=ToolRegistry(),
         )
         assert state.deep_analyses == {}
 
@@ -170,7 +178,12 @@ class TestRunPaperAnalysisPass:
 
         with patch("deep_research.nodes.paper_analysis.analyze_paper_deep", side_effect=_boom):
             await run_paper_analysis_pass(
-                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
+                state,
+                requests,
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
             )
         assert state.deep_analyses == {}
         # requested ids are still recorded so we don't retry in this run
@@ -439,7 +452,12 @@ class TestPassEdgeBranches:
         requests = [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.9)]
         with patch("deep_research.nodes.paper_analysis.analyze_paper_deep", return_value=None):
             await run_paper_analysis_pass(
-                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
+                state,
+                requests,
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
             )
         assert state.deep_analyses == {}
         assert state.deep_analysis_requested == ["2401.00001"]
@@ -457,7 +475,122 @@ class TestPassEdgeBranches:
 
         with patch("deep_research.nodes.paper_analysis.analyze_paper_deep", side_effect=_hang):
             await run_paper_analysis_pass(
-                state, requests, query="q", router=_fake_router(MagicMock()), config=cfg, tools=ToolRegistry()
+                state,
+                requests,
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
+            )
+        assert state.deep_analyses == {}
+
+    @pytest.mark.asyncio
+    async def test_relevance_gate_skips_off_topic_analysis(self) -> None:
+        """A critic-selected paper whose LLM relevance is below the deep-path
+        threshold is not stored in the digest and not archived."""
+        cfg = _cfg(
+            deep_analysis_max_papers=5,
+            deep_analysis_min_priority=0.0,
+            deep_analysis_relevance_threshold=0.5,
+        )
+        state = ResearchState(query="q")
+        off_topic = _fake_analysis("Off Topic")
+        off_topic.relevance_score = 0.2
+        requests = [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.9)]
+        with patch(
+            "deep_research.nodes.paper_analysis.analyze_paper_deep",
+            return_value=DeepAnalysisResult(analysis=off_topic),
+        ):
+            await run_paper_analysis_pass(
+                state,
+                requests,
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
+            )
+        # Not stored, no citation absorbed, but the id stays requested so it is
+        # never re-analyzed (deliberate exclusion).
+        assert state.deep_analyses == {}
+        assert state.citations == {}
+        assert state.deep_analysis_requested == ["2401.00001"]
+
+    @pytest.mark.asyncio
+    async def test_relevance_gate_keeps_on_topic_analysis(self) -> None:
+        cfg = _cfg(
+            deep_analysis_max_papers=5,
+            deep_analysis_min_priority=0.0,
+            deep_analysis_relevance_threshold=0.5,
+        )
+        state = ResearchState(query="q")
+        on_topic = _fake_analysis("On Topic")
+        on_topic.relevance_score = 0.9
+        requests = [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.9)]
+        with patch(
+            "deep_research.nodes.paper_analysis.analyze_paper_deep",
+            return_value=DeepAnalysisResult(analysis=on_topic),
+        ):
+            await run_paper_analysis_pass(
+                state,
+                requests,
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
+            )
+        assert "2401.00001" in state.deep_analyses
+        assert state.deep_analyses["2401.00001"].relevance_score == 0.9
+        # The paper is absorbed as a citation so the writer can cite it.
+        assert "https://arxiv.org/abs/2401.00001" in state.citations
+
+    @pytest.mark.asyncio
+    async def test_relevance_gate_threshold_zero_disabled(self) -> None:
+        """threshold <= 0 disables the gate (everything kept)."""
+        cfg = _cfg(
+            deep_analysis_max_papers=5,
+            deep_analysis_min_priority=0.0,
+            deep_analysis_relevance_threshold=0,
+        )
+        state = ResearchState(query="q")
+        off_topic = _fake_analysis("Off Topic")
+        off_topic.relevance_score = 0.1
+        with patch(
+            "deep_research.nodes.paper_analysis.analyze_paper_deep",
+            return_value=DeepAnalysisResult(analysis=off_topic),
+        ):
+            await run_paper_analysis_pass(
+                state,
+                [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.9)],
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
+            )
+        assert "2401.00001" in state.deep_analyses
+
+    @pytest.mark.asyncio
+    async def test_relevance_gate_applies_to_cached_analysis(self) -> None:
+        """A cached library analysis with an explicitly-low relevance is also
+        gated out (not merely fresh analyses)."""
+        cfg = _cfg(
+            deep_analysis_max_papers=5,
+            deep_analysis_min_priority=0.0,
+            deep_analysis_relevance_threshold=0.5,
+        )
+        state = ResearchState(query="q")
+        cached = _fake_analysis("Cached Off Topic")
+        cached.relevance_score = 0.2
+        with patch(
+            "deep_research.nodes.paper_analysis._cached_analysis",
+            AsyncMock(return_value=cached),
+        ):
+            await run_paper_analysis_pass(
+                state,
+                [PaperAnalysisRequest(arxiv_id="2401.00001", priority_score=0.9)],
+                query="q",
+                router=_fake_router(MagicMock()),
+                config=cfg,
+                tools=ToolRegistry(),
             )
         assert state.deep_analyses == {}
 

@@ -64,6 +64,17 @@ export function deleteReport(runId) {
   });
 }
 
+export function listArtifacts(params) {
+  return request("/api/artifacts", { params });
+}
+
+export function deleteArtifact(artifactId) {
+  return request(`/api/artifacts/${encodeURIComponent(artifactId)}`, {
+    method: "DELETE",
+    params: { confirm: "true" },
+  });
+}
+
 export function renameReport(runId, query) {
   return request(`/api/reports/${encodeURIComponent(runId)}`, {
     method: "PATCH",

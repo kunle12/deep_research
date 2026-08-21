@@ -20,6 +20,12 @@ Return JSON only (no markdown fences):
   "methodology": "<null if N/A, else brief description>",
   "limitations": ["<if applicable>"],
   "relevance_to_query": "<null if no explicit user query, else 1-2 sentences>",
+  // How directly this source is ABOUT the user's query's specific topic — not
+  // merely whether it shares a keyword. 1.0 = core on-topic; 0.7+ = clearly
+  // relevant; 0.4-0.6 = tangential / keyword overlap only; <0.4 = off-topic,
+  // a different field. When the user query is empty, return 1.0 (an explicit
+  // URL is assumed on-topic unless the query says otherwise).
+  "relevance_score": <float 0.0-1.0>,
   // follow_ups and gaps are populated ONLY if the user's query asked for critique,
   // counterexamples, gaps, missing perspectives, etc. Otherwise return empty arrays.
   "follow_ups": [{"topic": "<research sub-topic to investigate>", "why": "<why this is a follow-up worth pursuing>"}],

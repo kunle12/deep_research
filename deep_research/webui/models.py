@@ -74,6 +74,7 @@ class AnalysisInfo(BaseModel):
     follow_ups: str | None = None
     key_references: list[str] = Field(default_factory=list)
     relevance_to_query: str | None = None
+    relevance_score: float | None = None
     analyzed_at: str = ""
 
 
@@ -119,6 +120,28 @@ class ArtifactDetail(BaseModel):
     citation_edges: list[CitationEdgeInfo] = Field(default_factory=list)
 
 
+class ArtifactListItem(BaseModel):
+    artifact_id: str
+    kind: str
+    source_url: str | None = None
+    source_type: str | None = None
+    title: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    arxiv_id: str | None = None
+    bytes_size: int | None = None
+    first_seen_at: str = ""
+    tags: list[str] = Field(default_factory=list)
+    relevance_score: float | None = None
+    summary: str = ""
+
+
+class ArtifactListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[ArtifactListItem] = Field(default_factory=list)
+
+
 class SearchHitItem(BaseModel):
     artifact_id: str
     title: str = ""
@@ -140,6 +163,11 @@ class StatsResponse(BaseModel):
 
 
 class DeleteReportResponse(BaseModel):
+    ok: bool = True
+    removed_files: list[str] = Field(default_factory=list)
+
+
+class DeleteArtifactResponse(BaseModel):
     ok: bool = True
     removed_files: list[str] = Field(default_factory=list)
 

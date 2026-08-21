@@ -388,6 +388,14 @@ button { font-family: inherit; font-size: inherit; }
 .badge-url_source { color: #a35b00; background: #fdf0d8; border-color: #f0d7a4; }
 .badge-applied { color: #0f766e; background: #dcf3f0; border-color: #b4e3dd; }
 .badge-merged { color: #7c3aed; background: #f0e9ff; border-color: #d5c4fb; }
+.badge-artifact { color: #475569; background: #eef2f7; border-color: #cbd5e1; }
+
+.rel-score {
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.card-actions { margin-top: 8px; }
 
 .card-meta {
   display: flex;

@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -301,6 +302,7 @@ class LibraryWriter:
             follow_ups=d.get("follow_ups"),
             key_references=json.dumps(d.get("key_references") or []),
             relevance_to_query=d.get("relevance_to_query"),
+            relevance_score=d.get("relevance_score"),
             analyzed_at=_now_iso(),
         )
         await self._storage.insert_analysis(row)
@@ -502,6 +504,28 @@ def remove_report_files(root: Path, run_id: str, date_str: str) -> None:
                 candidate.unlink()
         except OSError as e:
             logger.warning("could not remove %s: %s", candidate, e)
+
+
+def remove_artifact_files(root: Path, artifact) -> list[str]:
+    """Delete an artifact's on-disk file(s), if any. Handles both file artifacts
+    (PDF / report / image) and HTML directory artifacts. Path-traversal-safe:
+    refuses to touch anything outside *root*. Returns the removed paths;
+    never raises."""
+    if not artifact.bytes_path:
+        return []
+    root_resolved = root.resolve()
+    target = (root_resolved / artifact.bytes_path).resolve()
+    if not target.is_relative_to(root_resolved):
+        return []
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.is_file():
+            target.unlink()
+        return [str(target)]
+    except OSError as e:
+        logger.warning("could not remove artifact files for %s: %s", artifact.artifact_id, e)
+        return []
 
 
 class NullLibraryWriter:

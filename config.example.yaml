@@ -47,6 +47,9 @@ agent:
   deep_analysis_concurrency: 2
   deep_analysis_timeout_s: 900.0
   deep_analysis_use_library_cache: true
+  # Relevance gate for critic-selected deep-path papers: below this LLM-scored
+  # relevance the paper is NOT archived to the library nor shown in the report.
+  deep_analysis_relevance_threshold: 0.5
   classifier:
     enabled: true
     force_path: null             # null | "quick" | "deep" | "academic" | "url_source" | "applied"
@@ -158,6 +161,11 @@ academic:
   max_papers: 30                  # hard cap on total papers analyzed (15 = default; 25-30 recommended for richer surveys)
   concurrency: 3                  # parallel paper processing
   key_reference_threshold: 0.7    # keep >= 0.7: lower values let off-topic keyword-overlap papers into the report
+  # Pre-gate seed candidates (title + abstract, one batch LLM call) BEFORE any
+  # PDF download / full analysis, so off-topic seeds never consume max_papers
+  # slots or compute, and never get archived to the library.
+  seed_relevance_gate: true
+  seed_relevance_threshold: 0.7   # seeds scored below this are dropped
   always_extract_text: true
   seed_count: 10                  # arxiv/scholar seeds per query (5 = default)
   seed_backends: ["arxiv", "scholar"]  # ["arxiv"] | ["arxiv", "scholar"] — scholar covers Nature, ACM, IEEE, conferences (requires `scholar.enabled: true`)
@@ -174,6 +182,9 @@ url_source:
   follow_up_trigger_phrases: []   # extend built-in heuristic
   auto_follow_up: false           # recommended: only on explicit request
   min_content_chars_for_browser_fallback: 500
+  # `add-source` (attach) relevance gate: a source scored below this against
+  # the target research's query is refused (skipped) unless --force is passed.
+  attach_relevance_threshold: 0.4
 
 blog_search:
   enabled: true

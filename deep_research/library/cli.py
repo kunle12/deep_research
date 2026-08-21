@@ -16,6 +16,7 @@ import typer
 
 from deep_research.config import AgentTopConfig
 from deep_research.library.storage import get_backend
+from deep_research.library.writer import remove_artifact_files
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,86 @@ def library_delete(
         # Delete DB records
         await backend.delete_report(r.run_id)
         typer.echo("  Deleted from database.")
+
+        # Clean up the report's own output artifact when no other report still
+        # references it (delete_report deliberately keeps artifacts).
+        report_artifact_id = r.artifact_id
+        if report_artifact_id:
+            try:
+                reports = await backend.list_reports(limit=100000)
+                if not any(x.artifact_id == report_artifact_id for x in reports):
+                    art = await backend.get_artifact(report_artifact_id)
+                    if art is not None:
+                        removed = remove_artifact_files(root, art)
+                        for p in removed:
+                            typer.echo(f"  Removed artifact file: {p}")
+                        await backend.delete_artifact(report_artifact_id)
+                        typer.echo("  Deleted report artifact from database.")
+            except Exception as e:
+                typer.echo(f"  Warning: report artifact cleanup failed: {e}")
+
+        await backend.close()
+
+    asyncio.run(_run())
+
+
+@library_app.command("rm-artifact")
+def library_rm_artifact(
+    artifact_id: str | None = typer.Argument(None, help="Artifact ID to delete"),
+    arxiv_id: str | None = typer.Option(
+        None, "--arxiv", help="Delete the artifact for this arXiv ID"
+    ),
+    url: str | None = typer.Option(None, "--url", help="Delete the artifact archived for this URL"),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Delete a single artifact (PDF/HTML/image + its analyses) from the library.
+
+    Use this to remove a misclassified document that the agent archived but that
+    turned out to be off-topic. Refuses when the artifact is a report's own
+    output — delete that report instead. Re-run `deep-research-library ls` to
+    confirm the artifact is gone.
+    """
+
+    async def _run():
+        cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        if artifact_id:
+            art = await backend.get_artifact(artifact_id)
+        elif arxiv_id:
+            from deep_research.util import strip_arxiv_version
+
+            art = await backend.find_artifact_by_arxiv_id(strip_arxiv_version(arxiv_id))
+        elif url:
+            art = await backend.find_artifact_by_url(url)
+        else:
+            typer.echo("Provide an <artifact_id>, --arxiv <id>, or --url <url>.")
+            await backend.close()
+            raise typer.Exit(code=1)
+        if art is None:
+            typer.echo("Artifact not found.")
+            await backend.close()
+            raise typer.Exit(code=1)
+
+        # A report's own output artifact must not be deleted out from under it.
+        reports = await backend.list_reports(limit=100000)
+        owners = [r for r in reports if r.artifact_id == art.artifact_id]
+        if owners:
+            typer.echo(
+                "Cannot delete: this artifact is the archived output of report(s) "
+                + ", ".join(r.run_id[:12] for r in owners)
+                + ". Delete those report(s) instead."
+            )
+            await backend.close()
+            raise typer.Exit(code=1)
+
+        typer.echo(
+            f"Deleting artifact {art.artifact_id[:16]} ({art.title or art.source_url or art.kind})..."
+        )
+        root = Path(cfg.pdl.root_dir)
+        removed = remove_artifact_files(root, art)
+        for p in removed:
+            typer.echo(f"  Removed: {p}")
+        await backend.delete_artifact(art.artifact_id)
+        typer.echo("  Deleted from database.")
         await backend.close()
 
     asyncio.run(_run())
@@ -325,6 +406,9 @@ def library_merge(
 def library_add_source(
     run_id: str = typer.Argument(..., help="Run ID (or prefix) of the research"),
     url: str = typer.Argument(..., help="URL of the paper/doc/blog to attach"),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Attach even when the source is off-topic for the research"
+    ),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
     """Fetch, fully analyze, and attach a new source to an existing research."""
@@ -352,6 +436,7 @@ def library_add_source(
                 writer,
                 cfg,
                 router,
+                force=force,
             )
         if result.get("status") == "skipped":
             typer.echo(f"Skipped: {result.get('reason')}")

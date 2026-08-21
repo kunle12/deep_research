@@ -96,6 +96,7 @@ class SqliteStorageBackend:
         sql = _MIGRATION_FILE.read_text(encoding="utf-8")
         await self._conn.executescript(sql)
         await self._migrate_artifacts_image_kind()
+        await self._migrate_analyses_relevance_score()
         # One-time backfill for databases created before the glossary_fts sync
         # triggers existed: rebuild the content-backed index when it is empty
         # but the glossary table has rows (the triggers keep it in sync from
@@ -193,6 +194,26 @@ class SqliteStorageBackend:
             except Exception:
                 pass
             logger.warning("artifacts image-kind migration failed: %s: %s", type(e).__name__, e)
+
+    async def _migrate_analyses_relevance_score(self) -> None:
+        """Idempotent migration: add `analyses.relevance_score` for databases
+        created before the relevance-ranking feature. Appends at the end of the
+        table, so `SELECT *` row indices for the existing columns are unchanged.
+        """
+        if self._conn is None:
+            return
+        try:
+            rows = await self._fetchall("PRAGMA table_info(analyses)")
+        except Exception:
+            return
+        if any(r[1] == "relevance_score" for r in rows):
+            return
+        try:
+            await self._conn.execute("ALTER TABLE analyses ADD COLUMN relevance_score REAL")
+            await self._conn.commit()
+            logger.info("migrated analyses: added relevance_score column")
+        except Exception as e:
+            logger.warning("analyses relevance_score migration failed: %s: %s", type(e).__name__, e)
 
     async def _execute(self, sql: str, params: tuple = ()) -> Any:
         if self._conn is None:
@@ -537,10 +558,51 @@ class SqliteStorageBackend:
         return int(row[0]) if row else 0
 
     @_serialized
-    async def count_artifacts(self) -> int:
+    async def count_artifacts(self, *, q: str | None = None, kind: str | None = None) -> int:
         await self._ensure_conn()
-        row = await self._fetchone("SELECT count(*) FROM artifacts")
+        where, params = self._artifact_filter_sql(q=q, kind=kind)
+        row = await self._fetchone(f"SELECT count(*) FROM artifacts a{where}", params)
         return int(row[0]) if row else 0
+
+    def _artifact_filter_sql(
+        self,
+        *,
+        q: str | None = None,
+        kind: str | None = None,
+    ) -> tuple[str, tuple]:
+        """Shared WHERE clause for artifact list/count queries."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if kind:
+            clauses.append("a.kind = ?")
+            params.append(kind)
+        if q:
+            like = f"%{_escape_like(q)}%"
+            clauses.append(
+                "(COALESCE(a.title, '') LIKE ? ESCAPE '\\' "
+                "OR COALESCE(a.source_url, '') LIKE ? ESCAPE '\\' "
+                "OR COALESCE(a.arxiv_id, '') LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like, like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, tuple(params)
+
+    @_serialized
+    async def list_artifacts(
+        self,
+        limit: int,
+        offset: int = 0,
+        *,
+        q: str | None = None,
+        kind: str | None = None,
+    ) -> list[ArtifactRow]:
+        await self._ensure_conn()
+        where, params = self._artifact_filter_sql(q=q, kind=kind)
+        rows = await self._fetchall(
+            f"SELECT a.* FROM artifacts a{where} ORDER BY a.first_seen_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        return [self._row_to_artifact(r) for r in rows]
 
     def _row_to_report(self, row: tuple) -> ReportRow:
         return ReportRow(
@@ -570,8 +632,8 @@ class SqliteStorageBackend:
             INSERT INTO analyses (
                 analysis_id, artifact_id, run_id, analyzer, summary,
                 key_findings, methodology, limitations, gaps, follow_ups,
-                key_references, relevance_to_query, analyzed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                key_references, relevance_to_query, relevance_score, analyzed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(analysis_id) DO UPDATE SET
                 summary = excluded.summary,
                 key_findings = excluded.key_findings,
@@ -581,6 +643,7 @@ class SqliteStorageBackend:
                 follow_ups = excluded.follow_ups,
                 key_references = excluded.key_references,
                 relevance_to_query = excluded.relevance_to_query,
+                relevance_score = excluded.relevance_score,
                 analyzed_at = excluded.analyzed_at
         """
         await self._execute(
@@ -598,6 +661,7 @@ class SqliteStorageBackend:
                 analysis.follow_ups,
                 analysis.key_references,
                 analysis.relevance_to_query,
+                analysis.relevance_score,
                 analysis.analyzed_at,
             ),
         )
@@ -635,6 +699,7 @@ class SqliteStorageBackend:
             follow_ups=row[9],
             key_references=row[10],
             relevance_to_query=row[11],
+            relevance_score=row[13],
             analyzed_at=row[12],
         )
 
@@ -658,6 +723,7 @@ class SqliteStorageBackend:
                     follow_ups=r[9],
                     key_references=r[10],
                     relevance_to_query=r[11],
+                    relevance_score=r[13],
                     analyzed_at=r[12],
                 )
             )
@@ -1077,7 +1143,8 @@ class SqliteStorageBackend:
         safe_query = self._sanitize_fts_query(query)
         if kind == "any":
             sql = """
-                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
+                       an.relevance_score
                 FROM search_index
                 JOIN analyses an ON an.analysis_id = search_index.analysis_id
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
@@ -1087,7 +1154,8 @@ class SqliteStorageBackend:
             rows = await self._fetchall(sql, (safe_query, limit))
         else:
             sql = """
-                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings
+                SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
+                       an.relevance_score
                 FROM search_index
                 JOIN analyses an ON an.analysis_id = search_index.analysis_id
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
@@ -1105,6 +1173,7 @@ class SqliteStorageBackend:
                     summary=r[3] or "",
                     extracted_text=r[4] or "",
                     score=1.0,
+                    relevance_score=r[5],
                 )
             )
         return results

@@ -15,17 +15,24 @@ logger = logging.getLogger(__name__)
 
 _MAX_RESULTS = 5
 
+# Stored analyses with an explicitly-low relevance score are dropped from
+# recall so an archived off-topic document cannot pollute a later researcher's
+# prior context. None (pre-feature rows) are kept — lenient.
+_MIN_RELEVANCE = 0.3
+
 
 async def recall(
     query: str,
     storage: StorageBackend | None,
     max_results: int = _MAX_RESULTS,
+    min_relevance: float = _MIN_RELEVANCE,
 ) -> list[dict]:
     """Query the library's FTS5 index for prior analyses matching `query`.
 
     Returns a list of dicts with keys:
-      artifact_id, title, summary, key_findings, source_type, url
-    Empty list when storage is None or no matches found.
+      artifact_id, title, summary, key_findings, source_type, url, relevance_score
+    Empty list when storage is None or no matches found. Hits whose stored
+    relevance_score is below *min_relevance* are filtered out.
     """
     if storage is None:
         return []
@@ -49,6 +56,12 @@ async def recall(
         if aid in seen:
             continue
         seen.add(aid)
+        if (
+            min_relevance > 0
+            and hit.relevance_score is not None
+            and hit.relevance_score < min_relevance
+        ):
+            continue
         results.append(
             {
                 "artifact_id": aid,
@@ -57,6 +70,7 @@ async def recall(
                 "key_findings": hit.extracted_text or "",
                 "source_type": "",  # not returned by FTS5; caller may enrich
                 "url": "",  # not returned by FTS5; caller may enrich
+                "relevance_score": hit.relevance_score,
             }
         )
 

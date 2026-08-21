@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from deep_research.library.storage.rows import (
     GlossaryEntry,
     TagRow,
 )
-from deep_research.library.writer import LibraryWriter
+from deep_research.library.writer import LibraryWriter, remove_artifact_files
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.state import Citation
 from deep_research.tools import arxiv as arxiv_tool
@@ -32,7 +33,10 @@ from deep_research.webui.format import citation_count, make_snippet, parse_citat
 from deep_research.webui.models import (
     AnalysisInfo,
     ArtifactDetail,
+    ArtifactListItem,
+    ArtifactListResponse,
     CitationEdgeInfo,
+    DeleteArtifactResponse,
     DeleteReportResponse,
     GlossaryInfo,
     MergeReportsRequest,
@@ -47,6 +51,8 @@ from deep_research.webui.models import (
     TagInfo,
     TagUpdateResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["library"])
 
@@ -171,6 +177,7 @@ def _analysis_info(a: AnalysisRow) -> AnalysisInfo:
         follow_ups=a.follow_ups,
         key_references=_parse_json_list(a.key_references),
         relevance_to_query=a.relevance_to_query,
+        relevance_score=a.relevance_score,
         analyzed_at=a.analyzed_at,
     )
 
@@ -260,10 +267,12 @@ async def _enrich_citations(
     root: Path,
     citations_json: str | None,
 ) -> list[dict[str, Any]]:
-    """Attach `local_pdf_url` / `local_image_url` to citations that have an
-    archived PDF or screenshot copy."""
+    """Attach `local_pdf_url` / `local_image_url` (and `local_artifact_id` /
+    `local_artifact_kind` for the Remove-from-library action) to citations that
+    have an archived PDF or screenshot copy."""
     citations = parse_citations(citations_json)
     for c in citations:
+        artifact = await _citation_artifact(backend, c)
         local_pdf = await _citation_local_pdf_url(backend, root, c)
         if local_pdf:
             c["local_pdf_url"] = local_pdf
@@ -271,6 +280,9 @@ async def _enrich_citations(
             local_image = await _citation_local_image_url(backend, root, c)
             if local_image:
                 c["local_image_url"] = local_image
+        if artifact is not None:
+            c["local_artifact_id"] = artifact.artifact_id
+            c["local_artifact_kind"] = artifact.kind
     return citations
 
 
@@ -563,8 +575,56 @@ async def delete_report(
                     removed.append(str(candidate))
         except ValueError:
             pass
+    # Delete the report row + its run-scoped rows.
     await backend.delete_report(run_id)
+    # Clean up the report's own output artifact (report PDF / markdown) when no
+    # other report still references it — delete_report deliberately keeps
+    # artifacts, so without this the report's own artifact leaks forever.
+    report_artifact_id = report.artifact_id
+    if report_artifact_id:
+        try:
+            referencing = await backend.list_reports(limit=100000)
+            if not any(r.artifact_id == report_artifact_id for r in referencing):
+                art = await backend.get_artifact(report_artifact_id)
+                if art is not None:
+                    removed.extend(remove_artifact_files(root, art))
+                    await backend.delete_artifact(report_artifact_id)
+        except Exception as e:
+            logger.warning("report artifact cleanup failed for %s: %s", report_artifact_id, e)
     return DeleteReportResponse(removed_files=removed)
+
+
+@router.delete("/artifacts/{artifact_id}", response_model=DeleteArtifactResponse)
+async def delete_artifact(
+    artifact_id: str,
+    request: Request,
+    confirm: bool = Query(False),
+) -> DeleteArtifactResponse:
+    if not confirm:
+        raise HTTPException(
+            status_code=400, detail="confirm=true is required to delete an artifact"
+        )
+    backend = get_storage(request)
+    root = get_root_dir(request)
+    artifact = await backend.get_artifact(artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    # A report's own output artifact must not be deleted out from under it —
+    # steer the user to deleting the report instead.
+    referencing = await backend.list_reports(limit=100000)
+    owners = [r for r in referencing if r.artifact_id == artifact_id]
+    if owners:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this artifact is the archived output of report(s) "
+                + ", ".join(r.run_id[:12] for r in owners)
+                + "; delete those report(s) instead"
+            ),
+        )
+    removed = remove_artifact_files(root, artifact)
+    await backend.delete_artifact(artifact_id)
+    return DeleteArtifactResponse(removed_files=removed)
 
 
 @router.patch("/reports/{run_id}", response_model=ReportDetail)
@@ -629,6 +689,46 @@ async def list_tags(
     backend = get_storage(request)
     rows = await backend.list_tags(limit=limit)
     return [TagInfo(tag=t, count=c) for t, c in rows]
+
+
+@router.get("/artifacts", response_model=ArtifactListResponse)
+async def list_artifacts(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None, min_length=1, max_length=200),
+    kind: str | None = Query(None, max_length=32),
+) -> ArtifactListResponse:
+    backend = get_storage(request)
+    items = await backend.list_artifacts(limit, offset, q=q, kind=kind)
+    total = await backend.count_artifacts(q=q, kind=kind)
+    art_ids = [a.artifact_id for a in items]
+    tags_map = await backend.get_tags_for_artifacts(art_ids) if art_ids else {}
+    out: list[ArtifactListItem] = []
+    for a in items:
+        analyses = await backend.get_analyses_for_artifact(a.artifact_id)
+        rel = max(
+            (x.relevance_score for x in analyses if x.relevance_score is not None),
+            default=None,
+        )
+        summary = next((x.summary for x in analyses if x.summary), "") or ""
+        out.append(
+            ArtifactListItem(
+                artifact_id=a.artifact_id,
+                kind=a.kind,
+                source_url=a.source_url,
+                source_type=a.source_type,
+                title=a.title,
+                authors=_parse_json_list(a.authors),
+                arxiv_id=a.arxiv_id,
+                bytes_size=a.bytes_size,
+                first_seen_at=a.first_seen_at,
+                tags=sorted(t.tag for t in tags_map.get(a.artifact_id, [])),
+                relevance_score=rel,
+                summary=summary,
+            )
+        )
+    return ArtifactListResponse(total=total, limit=limit, offset=offset, items=out)
 
 
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactDetail)

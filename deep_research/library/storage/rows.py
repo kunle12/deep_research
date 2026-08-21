@@ -66,6 +66,7 @@ class AnalysisRow:
     follow_ups: str | None = None
     key_references: str | None = None  # JSON array
     relevance_to_query: str | None = None
+    relevance_score: float | None = None  # 0..1, LLM-scored
     analyzed_at: str = ""
 
 
@@ -134,3 +135,4 @@ class SearchHit:
     summary: str
     extracted_text: str
     score: float = 0.0
+    relevance_score: float | None = None  # stored analysis relevance, if any

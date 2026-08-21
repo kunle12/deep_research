@@ -390,3 +390,127 @@ async def test_artifact_versions(backend):
     await backend.insert_report(report)
 
     await backend.insert_artifact_version("old_id", "new_id", "content_changed", "run001")
+
+
+@pytest.mark.asyncio
+async def test_relevance_score_roundtrip(backend):
+    await backend.upsert_artifact(
+        ArtifactRow(
+            artifact_id="art_rel",
+            kind="pdf",
+            source_type="arxiv",
+            bytes_path="art_rel.pdf",
+            first_seen_at="2024-01-01T00:00:00Z",
+            last_touched_at="2024-01-01T00:00:00Z",
+        )
+    )
+    await backend.insert_report(
+        ReportRow(
+            run_id="run_rel",
+            started_at="2024-01-01T00:00:00Z",
+            original_query="q",
+            path_taken="deep",
+            markdown="# q",
+        )
+    )
+    aid = await backend.insert_analysis(
+        AnalysisRow(
+            analysis_id="an_rel",
+            artifact_id="art_rel",
+            run_id="run_rel",
+            analyzer="analyze_paper",
+            summary="summary",
+            relevance_to_query="on topic",
+            relevance_score=0.85,
+            analyzed_at="2024-01-01T00:00:00Z",
+        )
+    )
+    assert aid == "an_rel"
+    got = await backend.get_analysis("an_rel")
+    assert got is not None
+    assert got.relevance_score == 0.85
+    assert got.relevance_to_query == "on topic"
+
+    rows = await backend.get_analyses_for_artifact("art_rel")
+    assert len(rows) == 1
+    assert rows[0].relevance_score == 0.85
+
+
+@pytest.mark.asyncio
+async def test_old_schema_migrated_to_relevance_score():
+    """DBs created before the relevance-ranking feature get the
+    analyses.relevance_score column added (idempotently)."""
+    import sqlite3
+
+    tmp = tempfile.mkdtemp()
+    db_path = str(Path(tmp) / "old_schema.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE analyses ("
+        " analysis_id TEXT PRIMARY KEY, artifact_id TEXT, run_id TEXT,"
+        " analyzer TEXT, summary TEXT, key_findings TEXT, methodology TEXT,"
+        " limitations TEXT, gaps TEXT, follow_ups TEXT, key_references TEXT,"
+        " relevance_to_query TEXT, analyzed_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    be = SqliteStorageBackend(db_path=db_path)
+    await be.connect()
+    try:
+        # ensure_schema ran the ALTER migration.
+        cols = [r[1] for r in await be._fetchall("PRAGMA table_info(analyses)")]
+        assert "relevance_score" in cols
+    finally:
+        await be.close()
+
+    # Reconnect: migration must be idempotent (no duplicate column).
+    be2 = SqliteStorageBackend(db_path=db_path)
+    await be2.connect()
+    try:
+        cols = [r[1] for r in await be2._fetchall("PRAGMA table_info(analyses)")]
+        assert cols.count("relevance_score") == 1
+    finally:
+        await be2.close()
+
+
+@pytest.mark.asyncio
+async def test_list_artifacts_filters(backend):
+    await backend.upsert_artifact(
+        ArtifactRow(
+            artifact_id="art1",
+            kind="pdf",
+            source_url="https://arxiv.org/abs/2401.00001",
+            arxiv_id="2401.00001",
+            title="Reinforcement Paper",
+            bytes_path="a.pdf",
+            first_seen_at="2024-01-02T00:00:00Z",
+            last_touched_at="2024-01-02T00:00:00Z",
+        )
+    )
+    await backend.upsert_artifact(
+        ArtifactRow(
+            artifact_id="art2",
+            kind="html",
+            source_url="https://example.com/blog",
+            title="A blog post",
+            bytes_path="b",
+            first_seen_at="2024-01-01T00:00:00Z",
+            last_touched_at="2024-01-01T00:00:00Z",
+        )
+    )
+
+    all_rows = await backend.list_artifacts(10)
+    assert {r.artifact_id for r in all_rows} == {"art1", "art2"}
+    assert await backend.count_artifacts() == 2
+
+    pdf_rows = await backend.list_artifacts(10, kind="pdf")
+    assert [r.artifact_id for r in pdf_rows] == ["art1"]
+    assert await backend.count_artifacts(kind="pdf") == 1
+
+    q_rows = await backend.list_artifacts(10, q="reinforcement")
+    assert [r.artifact_id for r in q_rows] == ["art1"]
+    assert await backend.count_artifacts(q="reinforcement") == 1
+
+    # Ordering is first_seen_at DESC (art2 older -> last).
+    assert [r.artifact_id for r in all_rows] == ["art1", "art2"]

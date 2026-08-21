@@ -60,7 +60,9 @@ def _fake_source_analysis(title: str = "New Paper") -> SourceAnalysis:
     )
 
 
-async def _run_attach(backend, writer, *, analysis=None, fetch_error="", no_artifact=False):
+async def _run_attach(
+    backend, writer, *, analysis=None, fetch_error="", no_artifact=False, force=False
+):
     """Run attach_source with fetch/analyze/tools all stubbed out."""
     # The real fetch_source archives the artifact before analysis; mirror that.
     if not no_artifact:
@@ -104,6 +106,7 @@ async def _run_attach(backend, writer, *, analysis=None, fetch_error="", no_arti
 
     cfg = MagicMock()
     cfg.url_source.head_probe_timeout_s = 5
+    cfg.url_source.attach_relevance_threshold = 0.4
     cfg.pdf_vision.enabled = False
     cfg.arxiv.pdf_cache_dir = "/tmp/cache"
     cfg.fetch_page.archive_org_fallback = True
@@ -132,7 +135,7 @@ async def _run_attach(backend, writer, *, analysis=None, fetch_error="", no_arti
         from deep_research.library.attach import attach_source
 
         return await attach_source(
-            "https://example.com/new", "run_t", backend, writer, cfg, router
+            "https://example.com/new", "run_t", backend, writer, cfg, router, force=force
         )
 
 
@@ -323,3 +326,109 @@ async def test_attach_without_artifact_skips_analysis_but_updates_report(sqlite_
     # Section still appended even though no artifact/analysis recorded
     report = await sqlite_backend.get_report("run_t")
     assert "## Added source: New Paper" in report.markdown
+
+
+@pytest.mark.asyncio
+async def test_attach_refuses_off_topic_source_and_cleans_up_artifact(sqlite_backend, tmp_path):
+    """An off-topic source is skipped with a reason, and the artifact archived
+    during fetch (now orphaned) is deleted so it leaves no trace."""
+    from deep_research.library.writer import LibraryWriter
+
+    await _seed_report(sqlite_backend)
+    writer = LibraryWriter(sqlite_backend, str(tmp_path))
+    off_topic = _fake_source_analysis(title="Off Topic Paper")
+    off_topic.relevance_score = 0.15
+
+    result = await _run_attach(sqlite_backend, writer, analysis=off_topic)
+
+    assert result["status"] == "skipped"
+    assert "off-topic" in result["reason"]
+    assert "0.15" in result["reason"]
+    # Report untouched
+    report = await sqlite_backend.get_report("run_t")
+    assert "## Added source" not in report.markdown
+    # Orphaned artifact cleaned up (no analyses, no report references it)
+    assert await sqlite_backend.get_artifact("art_src") is None
+    assert await sqlite_backend.get_analyses_for_artifact("art_src") == []
+
+
+@pytest.mark.asyncio
+async def test_attach_keeps_shared_artifact_when_refused(sqlite_backend, tmp_path):
+    """A refused attach must NOT delete an artifact that is already shared with
+    another research (it has its own analyses)."""
+    from deep_research.library.writer import LibraryWriter
+
+    await _seed_report(sqlite_backend)
+    writer = LibraryWriter(sqlite_backend, str(tmp_path))
+    # Pre-create the artifact (as a prior run would have) and its analysis, so
+    # the artifact is shared and must survive the refused attach.
+    await sqlite_backend.upsert_artifact(
+        ArtifactRow(
+            artifact_id="art_src",
+            kind="html",
+            source_type="html",
+            title="New Paper",
+            source_url="https://example.com/new",
+            bytes_path="artifacts/html/art_src",
+            bytes_size=10,
+            first_seen_at=_now(),
+            last_touched_at=_now(),
+        )
+    )
+    await sqlite_backend.insert_analysis(
+        AnalysisRow(
+            analysis_id="an_prior",
+            artifact_id="art_src",
+            run_id="run_t",
+            analyzer="analyze_paper",
+            summary="prior analysis",
+            analyzed_at=_now(),
+        )
+    )
+    off_topic = _fake_source_analysis(title="Off Topic Paper")
+    off_topic.relevance_score = 0.1
+
+    result = await _run_attach(sqlite_backend, writer, analysis=off_topic)
+
+    assert result["status"] == "skipped"
+    # Shared artifact survives.
+    assert await sqlite_backend.get_artifact("art_src") is not None
+    # And its prior analysis is untouched.
+    analyses = await sqlite_backend.get_analyses_for_artifact("art_src")
+    assert any(a.analysis_id == "an_prior" for a in analyses)
+
+
+@pytest.mark.asyncio
+async def test_attach_force_overrides_relevance_gate(sqlite_backend, tmp_path):
+    from deep_research.library.writer import LibraryWriter
+
+    await _seed_report(sqlite_backend)
+    writer = LibraryWriter(sqlite_backend, str(tmp_path))
+    off_topic = _fake_source_analysis(title="Off Topic Paper")
+    off_topic.relevance_score = 0.1
+
+    result = await _run_attach(sqlite_backend, writer, analysis=off_topic, force=True)
+
+    assert result["status"] == "attached"
+    report = await sqlite_backend.get_report("run_t")
+    assert "## Added source" in report.markdown
+    # The artifact is kept and the analysis recorded (with its score).
+    analyses = await sqlite_backend.get_analyses_for_artifact("art_src")
+    assert len(analyses) == 1
+    assert analyses[0].relevance_score == 0.1
+
+
+@pytest.mark.asyncio
+async def test_attach_records_relevance_score(sqlite_backend, tmp_path):
+    from deep_research.library.writer import LibraryWriter
+
+    await _seed_report(sqlite_backend)
+    writer = LibraryWriter(sqlite_backend, str(tmp_path))
+    analysis = _fake_source_analysis(title="Relevant Paper")
+    analysis.relevance_score = 0.85
+
+    result = await _run_attach(sqlite_backend, writer, analysis=analysis)
+
+    assert result["status"] == "attached"
+    analyses = await sqlite_backend.get_analyses_for_artifact("art_src")
+    assert analyses[0].relevance_score == 0.85

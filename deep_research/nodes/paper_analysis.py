@@ -273,6 +273,25 @@ async def run_paper_analysis_pass(
 
     rep.phase("deep.analysis", f"analyzing {len(selected)} paper(s)")
     sem = asyncio.Semaphore(max(1, config.agent.deep_analysis_concurrency))
+    threshold = config.agent.deep_analysis_relevance_threshold
+
+    def _gate(aid: str, analysis: PaperAnalysis) -> bool:
+        """Relevance gate: off-topic papers never reach the digest or the
+        library. Returns True when the analysis should be kept."""
+        if (
+            threshold > 0
+            and analysis.relevance_score is not None
+            and analysis.relevance_score < threshold
+        ):
+            logger.info(
+                "deep analysis %s off-topic (relevance %.2f < %.2f); not archived",
+                aid,
+                analysis.relevance_score,
+                threshold,
+            )
+            rep.step("deep.analysis.offtopic", aid)
+            return False
+        return True
 
     async def _one(r: PaperAnalysisRequest) -> None:
         aid = (r.arxiv_id or "").strip()
@@ -281,9 +300,10 @@ async def run_paper_analysis_pass(
                 if config.agent.deep_analysis_use_library_cache:
                     cached = await _cached_analysis(aid, writer)
                     if cached is not None:
-                        state.deep_analyses[aid] = cached
-                        logger.info("deep analysis: reused library analysis for %s", aid)
-                        rep.step("deep.analysis.cache", aid)
+                        if _gate(aid, cached):
+                            state.deep_analyses[aid] = cached
+                            logger.info("deep analysis: reused library analysis for %s", aid)
+                            rep.step("deep.analysis.cache", aid)
                         return
 
                 result = await asyncio.wait_for(
@@ -299,6 +319,8 @@ async def run_paper_analysis_pass(
                 if result is None:
                     logger.warning("deep analysis skipped for %s (no extractable content)", aid)
                     rep.step("deep.analysis.skip", aid)
+                    return
+                if not _gate(aid, result.analysis):
                     return
 
                 state.deep_analyses[aid] = result.analysis
@@ -398,15 +420,19 @@ def _analysis_from_row(artifact: Any, row: Any) -> PaperAnalysis:
                 )
             )
 
-    return PaperAnalysis(
-        title=artifact.title or getattr(row, "summary", "") or "",
-        summary=getattr(row, "summary", "") or "",
-        key_findings=_as_list(getattr(row, "key_findings", None)),
-        methodology=getattr(row, "methodology", "") or "",
-        limitations=_as_list(getattr(row, "limitations", None)),
-        relevance_to_query=getattr(row, "relevance_to_query", "") or "",
-        key_references=key_references,
-    )
+    rel = getattr(row, "relevance_score", None)
+    fields: dict[str, Any] = {
+        "title": artifact.title or getattr(row, "summary", "") or "",
+        "summary": getattr(row, "summary", "") or "",
+        "key_findings": _as_list(getattr(row, "key_findings", None)),
+        "methodology": getattr(row, "methodology", "") or "",
+        "limitations": _as_list(getattr(row, "limitations", None)),
+        "relevance_to_query": getattr(row, "relevance_to_query", "") or "",
+        "key_references": key_references,
+    }
+    if rel is not None:
+        fields["relevance_score"] = rel
+    return PaperAnalysis(**fields)
 
 
 async def _archive_and_record(

@@ -360,17 +360,18 @@ class ResearchJobManager:
                 # The target report already exists in the library.
                 job.archived = True
                 job.status = "done"
-                self.emit(
-                    job,
-                    {
-                        "type": "done",
-                        "run_id": job.attach_to,
-                        "archived": True,
-                        "path": "attach",
-                        "query": job.query,
-                        "attach_status": result.get("status", "attached"),
-                    },
-                )
+                attach_status = result.get("status", "attached")
+                done: dict[str, Any] = {
+                    "type": "done",
+                    "run_id": job.attach_to,
+                    "archived": True,
+                    "path": "attach",
+                    "query": job.query,
+                    "attach_status": attach_status,
+                }
+                if attach_status == "skipped" and result.get("reason"):
+                    done["reason"] = result["reason"]
+                self.emit(job, done)
                 return
             report = await self._runner(config, job.query, job.path_override, reporter, run_id)
             if job.status != "running":

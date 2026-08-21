@@ -427,22 +427,7 @@ async def fetch_source(
 
     artifact_id = ""
     if isinstance(writer, LibraryWriter) and run_id:
-        try:
-            art = None
-            if url_type == UrlType.arxiv and arxiv_id:
-                art = await writer.storage.find_artifact_by_arxiv_id(arxiv_id)
-                if art is None:
-                    from deep_research.util import strip_arxiv_version
-
-                    art = await writer.storage.find_artifact_by_arxiv_id(
-                        strip_arxiv_version(arxiv_id)
-                    )
-            if art is None:
-                art = await writer.storage.find_artifact_by_url(url)
-            if art is not None:
-                artifact_id = art.artifact_id
-        except Exception as e:
-            logger.warning("artifact lookup after fetch failed: %s", e)
+        artifact_id = await _source_artifact_id(writer, url_type, arxiv_id, url)
 
     return FetchedSource(
         url=url,
@@ -454,6 +439,33 @@ async def fetch_source(
         page_image_data_urls=page_image_data_urls,
         artifact_id=artifact_id,
     )
+
+
+async def _source_artifact_id(
+    writer: LibraryWriter,
+    url_type: UrlType,
+    arxiv_id: str | None,
+    url: str,
+) -> str:
+    """Resolve the archived artifact_id for a fetched source, if any.
+
+    Mirrors the lookup in `fetch_source`: arxiv sources are keyed by arxiv_id
+    (version-stripped), everything else by source_url.
+    """
+    try:
+        art = None
+        if url_type == UrlType.arxiv and arxiv_id:
+            art = await writer.storage.find_artifact_by_arxiv_id(arxiv_id)
+            if art is None:
+                from deep_research.util import strip_arxiv_version
+
+                art = await writer.storage.find_artifact_by_arxiv_id(strip_arxiv_version(arxiv_id))
+        if art is None:
+            art = await writer.storage.find_artifact_by_url(url)
+        return art.artifact_id if art is not None else ""
+    except Exception as e:
+        logger.warning("artifact lookup for source failed: %s", e)
+        return ""
 
 
 def _render_analysis_markdown(
@@ -493,6 +505,8 @@ def _render_analysis_markdown(
         parts.append("")
     if analysis.relevance_to_query:
         parts.append(f"\n## Relevance to Query\n\n{analysis.relevance_to_query}\n")
+    if analysis.relevance_score is not None:
+        parts.append(f"\n**Relevance score:** {analysis.relevance_score:.2f} / 1.00\n")
     if analysis.gaps:
         parts.append("\n## Identified Gaps\n")
         for g in analysis.gaps:
@@ -637,6 +651,20 @@ async def url_source(
     )
 
     md = _render_analysis_markdown(url, url_type.value, analysis, query or None)
+
+    # Persist the analysis row (with relevance_score) so the source is
+    # FTS-searchable and rankable in the library, not just archived as bytes.
+    if isinstance(writer, LibraryWriter) and run_id:
+        artifact_id = await _source_artifact_id(writer, url_type, arxiv_id, url)
+        if artifact_id:
+            try:
+                from deep_research.nodes.analyze_source import to_record_dict
+
+                await writer.record_analysis(
+                    artifact_id, to_record_dict(analysis), run_id, "analyze_source"
+                )
+            except Exception as e:
+                logger.warning("url_source record_analysis failed: %s", e)
 
     # Optional follow-up: spawn deep path with the analysis gaps as planner seeds
     followup_md = ""

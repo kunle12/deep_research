@@ -193,6 +193,74 @@ researchers -> critic (sufficient? gaps? papers_to_analyze?)
 
 ---
 
+## Relevance Gating Pattern (ingest-time topic filtering)
+
+Misclassified documents are filtered at ingest time so irrelevant material never
+reaches the report, the citation graph, or the personal library. The LLM-scored
+`relevance_score` is the single currency across all gates.
+
+- **Persisted**: `analyses.relevance_score REAL` (SQLite + Postgres, added by
+  idempotent migration — `sqlite_backend._migrate_analyses_relevance_score`,
+  Postgres `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). `writer.record_analysis`
+  maps `relevance_score` from the analysis dict. Stored rows are rankable in
+  recall / search / the web UI.
+- **Academic seed pre-gate** (`nodes/seed_relevance.py::filter_relevant_seeds`):
+  one batch LLM call scores seed candidates (title + abstract only) BEFORE any
+  PDF download / full analysis; seeds below `academic.seed_relevance_threshold`
+  (0.7) are dropped so keyword-overlap papers never consume `max_papers` slots
+  or library storage. Non-fatal: LLM failure keeps all seeds. The per-paper
+  `key_reference_threshold` gate in the academic loop remains the backstop.
+- **Deep-path gate** (`run_paper_analysis_pass._one`): papers below
+  `agent.deep_analysis_relevance_threshold` (0.5) are NOT stored in
+  `state.deep_analyses`, NOT absorbed as citations, and NOT archived. Applies to
+  fresh analyses AND library-cache reuse. `_analysis_from_row` restores
+  `relevance_score` (guarded: `PaperAnalysis.relevance_score` is non-Optional,
+  so omit the kwarg when the stored value is None).
+- **Attach gate** (`library/attach.py`): `attach_source(..., force=False)`
+  refuses a source whose `relevance_score` is below
+  `url_source.attach_relevance_threshold` (0.4), returning
+  `{"status": "skipped", "reason": ...}`. The artifact archived during fetch is
+  cleaned up via `_cleanup_orphaned_artifact` ONLY when it is truly orphaned
+  (no analyses, no report output) — shared artifacts (content-addressable dedup)
+  are left untouched.
+- **`analyze_source`** (`nodes/analyze_source.py`): tolerant `relevance_score`
+  coercion; missing/malformed → None with a query (lenient), 1.0 without a
+  query (an explicit URL is assumed on-topic). The url_source path persists the
+  analysis row via `to_record_dict` (shared with attach — do NOT re-implement
+  the mapping).
+- **recall** (`nodes/recall.py`): FTS hits with a stored `relevance_score` below
+  `_MIN_RELEVANCE` (0.3) are dropped so an archived off-topic document cannot
+  pollute a later researcher's prior context. `full_text_search` (both backends)
+  must keep returning `an.relevance_score`.
+
+## Artifact Deletion Pattern (PDL cleanup)
+
+The PDL keeps content-addressed artifacts separate from reports, so deleting a
+report never auto-deletes its PDFs. Two deletion seams:
+
+- **Report delete cleans up its own output artifact**: `delete_report(run_id)`
+  (CLI + `DELETE /api/reports/{id}`) afterwards deletes the report's own
+  artifact (`reports.artifact_id`, `source_type == "research_report"`) ONLY when
+  no other report references it — otherwise the report's PDF artifact leaks
+  forever. Never put this inside `storage.delete_report` (artifacts must stay
+  shared-safe).
+- **Single-artifact delete** (`DELETE /api/artifacts/{id}` + CLI `rm-artifact`,
+  both `confirm`-gated): refuses with 409 when the artifact is a report's own
+  output (`reports.artifact_id`), deletes on-disk file(s) via the shared
+  `library/writer.py::remove_artifact_files` (handles PDF files AND HTML
+  directories), then `storage.delete_artifact`. `delete_artifact` in both
+  backends stays strict (refuses on report linkage) — the orchestration layer
+  handles the UX. Do NOT re-implement `_remove_artifact_files` in CLI or the
+  web router — import `remove_artifact_files` from writer.
+- **Frontend**: the report References panel shows a per-citation **Remove**
+  button when the citation has an archived copy (`_enrich_citations` adds
+  `local_artifact_id`); a standalone **Artifacts** page (`#/artifacts`,
+  `views/artifacts.js`) lists documents with relevance scores and delete buttons
+  (`GET /api/artifacts` list endpoint — add `list_artifacts`/`count_artifacts`
+  to BOTH backends when extending it).
+
+---
+
 ## Search Fallback Chain Pattern
 
 Both `web_search.py` and `scholar.py` use the same fallback pattern:
@@ -336,6 +404,10 @@ reset — do not reintroduce module-level counters for this. (The old
   - `deep_analysis_concurrency: int = 2`
   - `deep_analysis_timeout_s: float = 900.0`
   - `deep_analysis_use_library_cache: bool = True`
+  - `deep_analysis_relevance_threshold: float = 0.5` (deep-path relevance gate)
+- Relevance-filtering knobs:
+  - `AcademicConfig.seed_relevance_gate: bool = True` + `seed_relevance_threshold: float = 0.7`
+  - `UrlSourceConfig.attach_relevance_threshold: float = 0.4` (`add-source` gate; `--force`/`force=true` overrides)
 
 ---
 

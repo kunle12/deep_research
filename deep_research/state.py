@@ -305,6 +305,10 @@ class SourceAnalysis(BaseModel):
     methodology: str | None = None  # arxiv only
     limitations: list[str] | None = None
     relevance_to_query: str | None = None
+    # LLM-scored 0..1: how directly this source is ABOUT the user's query's
+    # topic. Defaults to 1.0 when there is no explicit user query (an explicit
+    # URL is assumed on-topic unless the query says otherwise); gates `attach`.
+    relevance_score: float | None = Field(default=None, ge=0.0, le=1.0)
     follow_ups: list[dict] = Field(default_factory=list)
     # each: {"topic": str, "why": str}
     gaps: list[str] = Field(default_factory=list)

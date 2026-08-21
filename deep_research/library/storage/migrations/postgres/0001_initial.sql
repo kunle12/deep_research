@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS analyses (
     follow_ups        TEXT,
     key_references    TEXT,
     relevance_to_query TEXT,
-    analyzed_at       TEXT NOT NULL
+    analyzed_at       TEXT NOT NULL,
+    relevance_score   REAL
 );
 
 CREATE TABLE IF NOT EXISTS citation_edges (

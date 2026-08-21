@@ -25,6 +25,7 @@ import respx
 from deep_research.config import AgentTopConfig
 from deep_research.llm.tool_loop import ToolRegistry, ToolResult
 from deep_research.nodes.analyze_source import analyze as analyze_source_node
+from deep_research.nodes.analyze_source import to_record_dict as source_to_record_dict
 from deep_research.paths.url_source import (
     _fetch_arxiv_source,
     _fetch_html_source,
@@ -69,9 +70,7 @@ class _FakeAsyncOpenAI:
 def _fake_router(client, model: str = "text") -> MagicMock:
     """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
     router = MagicMock()
-    router.resolve.return_value = MagicMock(
-        client=client, model=model, max_context_tokens=131072
-    )
+    router.resolve.return_value = MagicMock(client=client, model=model, max_context_tokens=131072)
     return router
 
 
@@ -209,6 +208,52 @@ class TestAnalyzeSourceNode:
         assert user_msg["role"] == "user"
         # Text-only form: content is a plain string
         assert isinstance(user_msg["content"], str)
+
+    @pytest.mark.asyncio
+    async def test_parses_relevance_score(self) -> None:
+        payload = {"title": "T", "summary": "S", "relevance_score": 0.35}
+        client = _FakeAsyncOpenAI(json.dumps(payload))
+        result = await analyze_source_node("https://x", "pdf", "c", "some query", client, "m")
+        assert result.relevance_score == 0.35
+
+    @pytest.mark.asyncio
+    async def test_missing_relevance_with_query_keeps_none(self) -> None:
+        """No query -> explicit URL is assumed on-topic (1.0); with a query and
+        a missing score, the field stays None (lenient, no gate)."""
+        client = _FakeAsyncOpenAI(json.dumps({"title": "T", "summary": "S"}))
+        with_q = await analyze_source_node("https://x", "html", "c", "my query", client, "m")
+        assert with_q.relevance_score is None
+
+    @pytest.mark.asyncio
+    async def test_missing_relevance_without_query_defaults_to_one(self) -> None:
+        client = _FakeAsyncOpenAI(json.dumps({"title": "T", "summary": "S"}))
+        no_q = await analyze_source_node("https://x", "html", "c", "", client, "m")
+        assert no_q.relevance_score == 1.0
+
+    @pytest.mark.asyncio
+    async def test_invalid_relevance_score_does_not_fail_analysis(self) -> None:
+        payload = {"title": "T", "summary": "S", "relevance_score": "way too high"}
+        client = _FakeAsyncOpenAI(json.dumps(payload))
+        result = await analyze_source_node("https://x", "html", "c", "q", client, "m")
+        assert result.relevance_score is None
+        assert result.title == "T"
+
+    def test_to_record_dict_flattens_and_keeps_relevance(self) -> None:
+        analysis = SourceAnalysis(
+            title="T",
+            summary="S",
+            key_claims=[{"claim": "c1", "evidence": "e1"}, {"claim": "plain claim"}],
+            limitations=["lim"],
+            gaps=["gap"],
+            relevance_to_query="on topic",
+            relevance_score=0.8,
+        )
+        d = source_to_record_dict(analysis)
+        assert d["relevance_score"] == 0.8
+        assert d["relevance_to_query"] == "on topic"
+        kf = d["key_findings"]
+        assert any("c1" in str(x) for x in kf)
+        assert "plain claim" in kf
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +565,53 @@ class TestUrlSourceDispatcher:
         assert any(c.url == "https://arxiv.org/abs/2401.12345" for c in report.citations)
 
     @pytest.mark.asyncio
+    async def test_records_analysis_with_relevance_when_writer_configured(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """url_source persists a SourceAnalysis row (with relevance_score) when
+        a LibraryWriter + run_id are configured."""
+
+        async def _fake_arxiv(_aid: str, _tools: ToolRegistry, **_kw: Any):
+            return ("paper body", "My Title", [_cit("https://arxiv.org/abs/2401.9")], [])
+
+        monkeypatch.setattr(_us_module, "_fetch_arxiv_source", _fake_arxiv)
+
+        async def _fake_analyze(**kw: Any) -> SourceAnalysis:
+            return _analysis(title="My Title", summary="s", relevance_score=0.9)
+
+        monkeypatch.setattr(_us_module, "analyze_source_node", _fake_analyze)
+
+        from deep_research.library.writer import LibraryWriter
+
+        storage = MagicMock()
+        storage.find_artifact_by_arxiv_id = AsyncMock(return_value=MagicMock(artifact_id="art_z"))
+        storage.find_artifact_by_url = AsyncMock(return_value=None)
+        storage.insert_analysis = AsyncMock(return_value="an_rec")
+        writer = LibraryWriter(storage, str(tmp_path))
+
+        cfg = _cfg()
+        reg = _registry()
+        client = _FakeAsyncOpenAI("")
+        report = await url_source(
+            "https://arxiv.org/abs/2401.9",
+            "summarize",
+            _fake_router(client),
+            reg,
+            cfg,
+            writer=writer,
+            run_id="run_url",
+        )
+        assert report.path == "url_source"
+        call = storage.insert_analysis.await_args
+        assert call is not None
+        row = call.args[0]
+        assert row.artifact_id == "art_z"
+        assert row.run_id == "run_url"
+        assert row.analyzer == "analyze_source"
+        assert row.relevance_score == 0.9
+        assert row.summary == "s"
+
+    @pytest.mark.asyncio
     async def test_html_url_uses_fetch_page_then_analyze(self, monkeypatch) -> None:
         async def _fake_html(_url: str, _tools: ToolRegistry, _cfg: AgentTopConfig, **kw: Any):
             return ("extracted blog text", [_cit("https://blog.example/post")], "")
@@ -534,7 +626,9 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source("https://blog.example/post", "what does it say", _fake_router(client), reg, cfg)
+        report = await url_source(
+            "https://blog.example/post", "what does it say", _fake_router(client), reg, cfg
+        )
         assert report.path == "url_source"
         assert "blog summary here" in report.markdown
         assert "html" in report.markdown
@@ -603,7 +697,9 @@ class TestUrlSourceDispatcher:
         cfg = _cfg()
         reg = _registry()
         client = _FakeAsyncOpenAI("")
-        report = await url_source("https://broken.test", "summarize", _fake_router(client), reg, cfg)
+        report = await url_source(
+            "https://broken.test", "summarize", _fake_router(client), reg, cfg
+        )
         assert report.path == "url_source"
         assert "Source Fetch Failed" in report.markdown
         assert "HTTP 503" in report.markdown
@@ -638,7 +734,11 @@ class TestUrlSourceDispatcher:
         reg = _registry()
         client = _FakeAsyncOpenAI("")
         report = await url_source(
-            "https://arxiv.org/abs/2401.12345", "summarize this paper", _fake_router(client), reg, cfg
+            "https://arxiv.org/abs/2401.12345",
+            "summarize this paper",
+            _fake_router(client),
+            reg,
+            cfg,
         )
         assert report.path == "url_source"  # NOT url_source_with_followup
         # Gaps are surfaced in the rendered analysis section, but no follow-up research

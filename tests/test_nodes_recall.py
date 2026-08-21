@@ -128,3 +128,64 @@ def test_format_recall_context_multiple() -> None:
     assert "**1. Paper A**" in md
     assert "**2. Paper B**" in md
     assert "Summary A" in md
+
+
+@pytest.mark.asyncio
+async def test_recall_filters_low_relevance_hits() -> None:
+    """Stored analyses with an explicitly-low relevance score are dropped from
+    recall so an archived off-topic document can't pollute prior context."""
+    hits = [
+        SearchHit(
+            artifact_id="on_topic",
+            title="On Topic",
+            summary="RLHF summary",
+            extracted_text="findings",
+            score=0.9,
+            relevance_score=0.8,
+            authors="",
+        ),
+        SearchHit(
+            artifact_id="off_topic",
+            title="Off Topic",
+            summary="adversarial attacks summary",
+            extracted_text="findings",
+            score=0.8,
+            relevance_score=0.1,
+            authors="",
+        ),
+        SearchHit(
+            artifact_id="pre_feature",
+            title="No Score",
+            summary="summary",
+            extracted_text="findings",
+            score=0.7,
+            relevance_score=None,
+            authors="",
+        ),
+    ]
+    storage = _FakeStorage(hits)
+    result = await recall("rlhf", storage, max_results=5)
+    ids = {r["artifact_id"] for r in result}
+    assert ids == {"on_topic", "pre_feature"}
+    assert "off_topic" not in ids
+    # The kept hit carries its relevance through.
+    by_id = {r["artifact_id"]: r for r in result}
+    assert by_id["on_topic"]["relevance_score"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_recall_min_relevance_zero_disables_filter() -> None:
+    hits = [
+        SearchHit(
+            artifact_id="off_topic",
+            title="Off Topic",
+            summary="s",
+            extracted_text="f",
+            score=0.8,
+            relevance_score=0.05,
+            authors="",
+        ),
+    ]
+    storage = _FakeStorage(hits)
+    result = await recall("q", storage, max_results=5, min_relevance=0)
+    assert len(result) == 1

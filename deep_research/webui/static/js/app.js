@@ -1,6 +1,7 @@
 /* App bootstrap: theme, routing, keyboard shortcuts, header search. */
 
 import { el, clear } from "./dom.js";
+import { renderArtifacts } from "./views/artifacts.js";
 import { renderList } from "./views/list.js";
 import { renderReport } from "./views/report.js";
 import { openResearchModal } from "./views/research.js";
@@ -21,6 +22,7 @@ function routeFromHash() {
   const hash = location.hash.replace(/^#/, "") || "/";
   const m = hash.match(/^\/report\/([^/]+)/);
   if (m) return { name: "report", reportId: decodeURIComponent(m[1]) };
+  if (hash.startsWith("/artifacts")) return { name: "artifacts" };
   return { name: "list" };
 }
 
@@ -34,6 +36,8 @@ function render() {
   currentRoute = route;
   if (route.name === "report") {
     currentCleanup = renderReport(app, route.reportId);
+  } else if (route.name === "artifacts") {
+    currentCleanup = renderArtifacts(app, searchInput);
   } else {
     currentCleanup = renderList(app, searchInput);
   }

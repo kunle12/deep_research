@@ -99,7 +99,19 @@ class StorageBackend(Protocol):
         """Count reports matching the same filters as list/search."""
         ...
 
-    async def count_artifacts(self) -> int: ...
+    async def count_artifacts(self, *, q: str | None = None, kind: str | None = None) -> int: ...
+
+    async def list_artifacts(
+        self,
+        limit: int,
+        offset: int = 0,
+        *,
+        q: str | None = None,
+        kind: str | None = None,
+    ) -> list[ArtifactRow]:
+        """List artifacts ordered by first_seen_at DESC, with optional full-
+        text-ish filtering on title / source_url / arxiv_id and kind."""
+        ...
 
     async def list_tags(self, limit: int = 200) -> list[tuple[str, int]]:
         """All distinct tags with counts, ordered by count DESC then tag."""

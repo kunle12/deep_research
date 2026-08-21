@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -84,9 +84,7 @@ class _FakeAsyncOpenAI:
 def _fake_router(client, model: str = "text") -> MagicMock:
     """Wrap a fake OpenAI client in a fake LLMRouter exposing `resolve`."""
     router = MagicMock()
-    router.resolve.return_value = MagicMock(
-        client=client, model=model, max_context_tokens=131072
-    )
+    router.resolve.return_value = MagicMock(client=client, model=model, max_context_tokens=131072)
     return router
 
 
@@ -736,6 +734,113 @@ class TestAcademicResearchE2E:
         # would normally be enqueued, but stripped both == 2401.10 -> dedup
         # So we analyze exactly 2 papers (2401.10v2 and 2401.20).
         assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_seed_relevance_gate_drops_off_topic_seeds(self, monkeypatch) -> None:
+        """An off-topic seed is dropped by the batch pre-gate before any PDF
+        download / analysis, so it never consumes a max_papers slot."""
+        cfg = _cfg(max_depth=0, max_papers=10, seed_count=5, concurrency=1)
+        cfg.academic.seed_relevance_gate = True
+        cfg.academic.seed_relevance_threshold = 0.7
+        classified = _classified(search_hint="rlhf")
+        # 3 seeds; the batch gate keeps 2 and drops 1 (2401.3).
+        seeds = ["2401.1", "2401.2", "2401.3"]
+        analyses = {aid: _analysis(aid) for aid in seeds}
+        calls = _patch_analyze(monkeypatch, analyses)
+        reg = _tools_for(monkeypatch, seeds)
+
+        gate_client = _FakeAsyncOpenAI('{"scores": {"2401.1": 0.9, "2401.2": 0.8, "2401.3": 0.1}}')
+        # The same fake router serves both the gate (ANALYSIS role) and the
+        # synthesis writer. The router.resolve returns one client — the gate
+        # uses it too. _patch_analyze has already swapped the analyze node.
+        router = _fake_router(gate_client)
+        report = await academic_research(classified, "rlhf", router, reg, cfg)
+        # Only the 2 on-topic seeds were analyzed.
+        assert calls["n"] == 2
+        assert "2401.3" not in report.citation_graph.nodes
+        urls = [c.url for c in report.citations]
+        assert "https://arxiv.org/abs/2401.3" not in urls
+
+    @pytest.mark.asyncio
+    async def test_seed_gate_drops_scholar_only_seed_and_its_citation(self, monkeypatch) -> None:
+        """An off-topic scholar-only seed (synthetic `scholar:` id, citation with
+        no arxiv_id) must be dropped AND its citation removed from the report."""
+        cfg = _cfg(max_depth=0, max_papers=10, seed_count=5, concurrency=1)
+        cfg.academic.seed_relevance_gate = True
+        cfg.academic.seed_relevance_threshold = 0.7
+        cfg.academic.seed_backends = ["arxiv", "scholar"]
+        cfg.scholar.enabled = True
+        classified = _classified(search_hint="rlhf")
+        analyses = {"2401.1": _analysis("2401.1")}
+        calls = _patch_analyze(monkeypatch, analyses)
+
+        arxiv_cit = _citation("2401.1", title="On Topic")
+        scholar_cit = Citation(
+            url="https://nature.com/articles/offtopic",
+            title="Off Topic Scholar",
+            snippet="abstract",
+            source_type="scholar",
+            confidence_score=0.7,
+        )
+
+        async def _arxiv_search(**kwargs: Any) -> ToolResult:
+            return ToolResult(content="arxiv", citations=[arxiv_cit])
+
+        async def _scholar_search(**kwargs: Any) -> ToolResult:
+            return ToolResult(content="scholar", citations=[scholar_cit])
+
+        async def _arxiv_download(**kwargs: Any) -> ToolResult:
+            return ToolResult(content="/tmp/fake.pdf")
+
+        async def _pdf_extract(**kwargs: Any) -> ToolResult:
+            return ToolResult(content="paper body text")
+
+        reg = _registry(
+            {
+                "arxiv_search": _arxiv_search,
+                "arxiv_download_pdf": _arxiv_download,
+                "pdf_extract_text": _pdf_extract,
+                "scholar_search": _scholar_search,
+            }
+        )
+        # Gate keeps the arxiv seed, drops the scholar-only seed. The synthetic
+        # id is "scholar:" + sha256(url)[:12] (see _gather_seeds).
+        import hashlib
+
+        scholar_id = "scholar:" + hashlib.sha256(scholar_cit.url.encode()).hexdigest()[:12]
+        gate_client = _FakeAsyncOpenAI(json.dumps({"scores": {"2401.1": 0.9, scholar_id: 0.1}}))
+        router = _fake_router(gate_client)
+        report = await academic_research(classified, "rlhf", router, reg, cfg)
+        assert calls["n"] == 1
+        urls = [c.url for c in report.citations]
+        assert "https://arxiv.org/abs/2401.1" in urls
+        assert "https://nature.com/articles/offtopic" not in urls
+
+    @pytest.mark.asyncio
+    async def test_seed_relevance_gate_disabled_keeps_all_seeds(self, monkeypatch) -> None:
+        """When seed_relevance_gate=false, the gate client is never called and
+        all seeds are analyzed."""
+        cfg = _cfg(max_depth=0, max_papers=10, seed_count=3, concurrency=1)
+        cfg.academic.seed_relevance_gate = False
+        classified = _classified(search_hint="rlhf")
+        seeds = ["2401.1", "2401.2", "2401.3"]
+        analyses = {aid: _analysis(aid) for aid in seeds}
+        calls = _patch_analyze(monkeypatch, analyses)
+        reg = _tools_for(monkeypatch, seeds)
+        gate_client = MagicMock()
+        gate_client.chat.completions.create = AsyncMock()
+        # Two separate clients: gate + writer. Use a router that resolves a
+        # fresh client per resolve call.
+        router = MagicMock()
+        router.resolve.return_value = MagicMock(
+            client=gate_client, model="m", max_context_tokens=131072
+        )
+        with patch.object(
+            academic, "_synthesize_markdown", new=AsyncMock(return_value="# Synth\n")
+        ):
+            await academic_research(classified, "rlhf", router, reg, cfg)
+        gate_client.chat.completions.create.assert_not_awaited()
+        assert calls["n"] == 3
 
     @pytest.mark.asyncio
     async def test_citations_deduped_by_url_keeps_highest_confidence(self, monkeypatch) -> None:

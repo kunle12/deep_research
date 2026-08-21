@@ -53,6 +53,7 @@ from deep_research.nodes.paper_analysis import (
 )
 from deep_research.nodes.recall import format_recall_context
 from deep_research.nodes.recall import recall as recall_run
+from deep_research.nodes.seed_relevance import filter_relevant_seeds
 from deep_research.progress import ProgressReporter, ensure_reporter
 from deep_research.state import (
     Citation,
@@ -205,6 +206,42 @@ async def academic_research(
     reporter.phase("academic.seed", f"gathering seeds (n ≤ {cfg.seed_count})")
     seeds = await _gather_seeds(classified, original_query, tools, config, seeds_citations)
     reporter.step("academic.seed", f"{len(seeds)} seed papers")
+
+    # P-relevance: pre-gate seed candidates (title + abstract) before any PDF
+    # download / full analysis. Stops off-topic keyword-overlap papers from
+    # consuming max_papers slots, PDF/vision compute, or library storage.
+    if cfg.seed_relevance_gate and seeds:
+        reporter.phase("academic.seed.gate", f"filtering {len(seeds)} seeds")
+        gate_llm = router.resolve(LLMRole.ANALYSIS)
+        kept = await filter_relevant_seeds(
+            original_query,
+            seeds,
+            gate_llm.client,
+            gate_llm.model,
+            cfg.seed_relevance_threshold,
+        )
+        kept_ids = {s.arxiv_id for s in kept}
+        dropped = [s for s in seeds if s.arxiv_id not in kept_ids]
+        if dropped:
+            # Scholar-only seeds carry a synthetic `scholar:<hash>` id and their
+            # citations have NO arxiv_id, so filter those by source URL; arxiv
+            # seeds by (stripped) arxiv id. Otherwise a dropped off-topic paper
+            # would still leak into the bibliography via seeds_citations.
+            drop_bases = {_strip_version(s.arxiv_id) for s in dropped}
+            drop_urls = {s.url for s in dropped if (s.arxiv_id or "").startswith("scholar:")}
+            seeds = kept
+            seeds_citations[:] = [
+                c
+                for c in seeds_citations
+                if not (
+                    (c.arxiv_id and _strip_version(c.arxiv_id) in drop_bases)
+                    or (c.url in drop_urls)
+                )
+            ]
+            reporter.step(
+                "academic.seed.gate",
+                f"dropped {len(dropped)} off-topic seed(s)",
+            )
 
     # P10.0 optional: run parallel blog fetch and merge into citations
     blog_citations: list[Citation] = []

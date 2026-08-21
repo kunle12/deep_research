@@ -14,6 +14,7 @@ from typing import Any
 from deep_research.llm.router import LLMClientLike
 from deep_research.llm.vision import MAX_TEXT_CHARS_WITH_IMAGES, is_context_overflow
 from deep_research.state import SourceAnalysis
+from deep_research.util import coerce_float
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,34 @@ def _build_messages(
     ]
 
 
+def to_record_dict(analysis) -> dict:
+    """Map a SourceAnalysis to the fields `writer.record_analysis` persists.
+
+    `record_analysis` reads `key_findings` (list of strings) and JSON-serializes
+    it; `limitations`/`gaps`/`follow_ups` are stored as raw TEXT, so list
+    fields are serialized here to survive the DB binding. Shared by the attach
+    flow and the url_source path so both persist identical analysis rows.
+    """
+    key_findings: list[str] = []
+    for c in analysis.key_claims:
+        if isinstance(c, dict):
+            claim = c.get("claim", "") or ""
+            ev = c.get("evidence", "") or ""
+            key_findings.append(f"{claim} — {ev}".strip(" —") if ev else claim)
+        elif c:
+            key_findings.append(str(c))
+    return {
+        "summary": analysis.summary,
+        "key_findings": key_findings,
+        "methodology": analysis.methodology,
+        "limitations": json.dumps(analysis.limitations or [], ensure_ascii=False),
+        "gaps": json.dumps(analysis.gaps or [], ensure_ascii=False),
+        "follow_ups": json.dumps(analysis.follow_ups or [], ensure_ascii=False),
+        "relevance_to_query": analysis.relevance_to_query,
+        "relevance_score": analysis.relevance_score,
+    }
+
+
 async def analyze(
     url: str,
     source_type: str,
@@ -96,6 +125,23 @@ async def analyze(
                 title=f"[unparseable] {url}",
                 summary=raw[:3000],
             )
+        if not isinstance(data, dict):
+            return SourceAnalysis(
+                title=f"[unparseable] {url}",
+                summary=f"LLM returned a {type(data).__name__} instead of a JSON object",
+            )
+        data = dict(data)
+        # Tolerant relevance_score coercion: a missing/malformed value must not
+        # fail the whole analysis. When the user gave no query, an explicit URL
+        # is assumed on-topic (1.0).
+        raw_rel = data.get("relevance_score")
+        rel = coerce_float(raw_rel, -1.0)
+        if rel < 0.0:
+            rel = 1.0 if not (user_query or "").strip() else None
+        if rel is None:
+            data.pop("relevance_score", None)
+        else:
+            data["relevance_score"] = max(0.0, min(1.0, rel))
         return SourceAnalysis.model_validate(data)
     except Exception as e:
         if page_image_data_urls and is_context_overflow(e):
@@ -110,4 +156,4 @@ async def analyze(
         )
 
 
-__all__ = ["analyze"]
+__all__ = ["analyze", "to_record_dict"]

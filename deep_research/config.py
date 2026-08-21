@@ -173,6 +173,12 @@ class AgentConfig(BaseModel):
     # Reuse prior analyze_paper results from the personal library instead of
     # re-running the LLM analysis for papers already analyzed.
     deep_analysis_use_library_cache: bool = True
+    # 0..1 — relevance gate for critic-selected deep-path papers. A paper whose
+    # LLM-scored `relevance_score` is below this is treated as off-topic: it is
+    # NOT stored in `state.deep_analyses` and NOT archived to the personal
+    # library. Lower than academic.key_reference_threshold because deep mode is
+    # broad multi-source coverage, not a focused literature review.
+    deep_analysis_relevance_threshold: float = 0.5
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
 
 
@@ -387,6 +393,12 @@ class AcademicConfig(BaseModel):
     # are treated as off-topic: excluded from the synthesis digest, the
     # bibliography, and recursive reference mining (prevents topic drift).
     key_reference_threshold: float = 0.7
+    # Batch LLM pre-gate on seed candidates (title + abstract) before any
+    # PDF download / full analysis. Stops clearly off-topic keyword-overlap
+    # papers from consuming max_papers slots, compute, or library storage.
+    seed_relevance_gate: bool = True
+    # Seeds scored below this (0..1) are dropped by the pre-gate.
+    seed_relevance_threshold: float = 0.7
     always_extract_text: bool = True
     seed_count: int = 5
     output_citation_graph: bool = True
@@ -430,6 +442,10 @@ class UrlSourceConfig(BaseModel):
     auto_follow_up: bool = False
     # If fetch_page returns fewer content chars than this for an HTML url, try browser
     min_content_chars_for_browser_fallback: int = 500
+    # 0..1 — relevance gate for `add-source` (attach). A source whose
+    # LLM-scored `relevance_score` to the target research's query is below
+    # this is refused with `status: "skipped"` (unless attach is forced).
+    attach_relevance_threshold: float = 0.4
 
 
 class PDLStorageSQLiteConfig(BaseModel):
