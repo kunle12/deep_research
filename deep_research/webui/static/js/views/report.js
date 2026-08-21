@@ -154,8 +154,25 @@ function buildReport(report) {
       { class: "panel" },
       el("h2", { class: "panel-title", text: `References (${report.citations.length})` }),
       refsList(report.citations, report.run_id),
+      el(
+        "div",
+        { class: "panel-export" },
+        el("a", {
+          class: "btn",
+          href: report.bibliography_bib_url,
+          download: `${report.run_id}.bib`,
+          text: "Download .bib",
+          title: "Download the report references as BibTeX",
+        }),
+        el("a", {
+          class: "btn",
+          href: report.bibliography_url,
+          download: `${report.run_id}-bibliography.md`,
+          text: "Download .md",
+          title: "Download the report bibliography as Markdown",
+        }),
+      ),
     ),
-    bibliographyPanel(report),
     glossaryPanel(report),
 
 
@@ -227,66 +244,6 @@ function glossaryPanel(report) {
   return panel;
 }
 
-function bibliographyPanel(report) {
-  const citations = report.citations || [];
-  const panel = el("div", { class: "panel" });
-  panel.append(el("h2", { class: "panel-title", text: `Bibliography (${citations.length})` }));
-  if (!citations.length) {
-    panel.append(el("p", { class: "hint", text: "No cited sources recorded for this report." }));
-    return panel;
-  }
-  const list = el("ol", { class: "bib-list" });
-  citations.forEach((c) => {
-    const li = el("li", { class: "bib-item" });
-    const title = c.title || c.url;
-    const link = el("a", { href: safeUrl(c.url), target: "_blank", rel: "noopener noreferrer", text: title });
-    const info = el("button", {
-      class: "bib-info",
-      type: "button",
-      title: "Show abstract",
-      "aria-label": `Show abstract for ${title}`,
-      text: "ℹ",
-      onclick: () => {
-        detail.hidden = !detail.hidden;
-      },
-    });
-    const detail = el("div", { class: "bib-detail", hidden: true });
-    detail.append(el("div", { class: "bib-abstract", text: c.snippet || "(no abstract available)" }));
-    const metaParts = [];
-    if (Array.isArray(c.authors) && c.authors.length) metaParts.push(c.authors.join(", "));
-    if (c.year) metaParts.push(String(c.year));
-    if (c.venue) metaParts.push(c.venue);
-    if (metaParts.length) detail.append(el("div", { class: "bib-meta", text: metaParts.join(" · ") }));
-    li.append(link, info, deleteReferenceButton(c, report.run_id), detail);
-    list.append(li);
-  });
-  panel.append(list);
-  panel.append(
-    el(
-      "div",
-      { class: "panel-export" },
-      el("a", {
-        class: "btn",
-        href: report.bibliography_bib_url,
-        download: `${report.run_id}.bib`,
-        text: "Download .bib",
-        title: "Download the report references as BibTeX",
-      }),
-      el("a", {
-        class: "btn",
-        href: report.bibliography_url,
-        download: `${report.run_id}-bibliography.md`,
-        text: "Download .md",
-        title: "Download the report bibliography as Markdown",
-      }),
-    ),
-  );
-  return panel;
-}
-
-
-
-
 
 function refsList(citations, runId) {
   const list = el("div", { class: "ref-list" });
@@ -348,9 +305,25 @@ function refCard(citation, runId) {
     { class: "ref-card" },
     el("h3", { class: "ref-title", text: title }),
     metaParts.length ? el("p", { class: "ref-meta", text: metaParts.join(" · ") }) : null,
-    citation.snippet ? el("p", { class: "ref-snippet", text: citation.snippet }) : null,
+    refSnippet(citation.snippet),
     actionsEl,
   );
+}
+
+function refSnippet(snippet) {
+  if (!snippet) return null;
+  const btn = el("button", {
+    class: "ref-snippet",
+    type: "button",
+    title: "Click to expand / collapse the abstract",
+    "aria-expanded": "false",
+    onclick: () => {
+      const expanded = btn.classList.toggle("ref-snippet-expanded");
+      btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    },
+  });
+  btn.append(el("span", { text: snippet }));
+  return btn;
 }
 
 function deleteReferenceButton(citation, runId) {
