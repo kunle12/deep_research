@@ -44,6 +44,7 @@ changes.
 | `webui/jobs.py` | In-memory `ResearchJobManager` — runs `run_research` as an asyncio task, broadcasts phase/step events to SSE subscribers |
 | `webui/routers/library.py` | Library browsing API (reports, tags, artifacts, search, stats, PDF/markdown serving) |
 | `webui/routers/research.py` | Research job API: start, status, cancel, SSE stream |
+| `docs/REST_API.md` | Human-readable REST API reference for the web UI + microservice; committed OpenAPI snapshots in `deep_research/api.openapi.json` and `deep_research/microservice.openapi.json`. Regenerate them with `app.openapi()` whenever a router/model changes |
 | `webui/static/` | Vanilla-JS SPA (no build step): `markdown.js` safe parser/renderer, views for list/report/research |
 
 ---

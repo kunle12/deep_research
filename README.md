@@ -411,7 +411,8 @@ Notes:
   Cancel abandons the job and discards its checkpoint.
 - Only one research job runs at a time; the UI disables Start while one is running.
 - The frontend is plain ES modules with no npm or build step. Interactive API
-  docs are available at `/docs`.
+  docs are available at `/docs`. A full endpoint reference (and committed
+  OpenAPI snapshots) is in [`docs/REST_API.md`](docs/REST_API.md).
 
 Refresh scheduler (daemon that auto-refreshes upstream URLs):
 
@@ -442,7 +443,8 @@ asyncio.run(main())
 
 The web UI above is the recommended way to use the agent over HTTP. A minimal
 programmatic microservice (`POST /research` → report markdown/citations) is
-also available:
+also available. Full request/response schemas and error codes are in
+[`docs/REST_API.md`](docs/REST_API.md):
 
 ```bash
 uv run uvicorn deep_research.microservice:app --host 127.0.0.1 --port 8080
