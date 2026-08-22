@@ -24,6 +24,7 @@ from deep_research.state import Citation, Report
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "merge_reports.txt"
+_TITLE_PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "merge_title.txt"
 # Per-source markdown cap so two large reports fit comfortably in a 131k
 # context window even with the prompt + citations appended.
 _MAX_SOURCE_CHARS = 50000
@@ -48,6 +49,39 @@ def _render_reports_blob(reports) -> str:
             f"=== REPORT {i} (run {r.run_id}, query: {r.original_query}) ===\n{md[:_MAX_SOURCE_CHARS]}"
         )
     return "\n\n".join(sections)
+
+
+async def _synthesize_title(reports, llm: LLMClientLike, model: str) -> str:
+    """One LLM call composes a fresh merged title from the source queries.
+
+    Falls back to the deterministic concatenation (`_auto_name`) on any failure
+    so a title is always produced.
+    """
+    lines = [f"- {r.original_query.strip() or '(untitled)'}" for r in reports]
+    blob = "\n".join(lines) or "(no queries available)"
+    try:
+        prompt_template = _TITLE_PROMPT_FILE.read_text(encoding="utf-8")
+        prompt = prompt_template.replace("{reports}", blob)
+        system = (
+            "You are a research report titling assistant. Return only the "
+            "single-line merged report title — no markdown, no quotes."
+        )
+        resp = await llm.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        title = (resp.choices[0].message.content or "").strip()
+        title = title.strip("#").strip()
+        title = title.strip("\"'")
+        if title:
+            return title
+    except Exception as e:
+        logger.warning("merge title LLM call failed (%s: %s); using auto name", type(e).__name__, e)
+    return _auto_name(reports)
 
 
 async def _synthesize_merged_markdown(
@@ -98,6 +132,14 @@ def _stitch_fallback(reports, merged_name: str) -> str:
         parts.append((r.markdown or "").strip())
         parts.append("")
     return "\n".join(parts)
+
+
+def _ensure_title_heading(md: str, merged_name: str) -> str:
+    """Defense in depth: the merged document must carry an H1 title."""
+    md = (md or "").strip()
+    if not md.startswith("# "):
+        return f"# {merged_name}\n\n{md}"
+    return md
 
 
 def _merge_citations(reports) -> list[Citation]:
@@ -152,11 +194,15 @@ async def merge_reports(
             raise ValueError(f"report not found: {rid}")
         reports.append(r)
 
-    merged_name = (name or "").strip() or _auto_name(reports)
     merged_llm = router.resolve(LLMRole.POST)
+    if (name or "").strip():
+        merged_name = name.strip()
+    else:
+        merged_name = await _synthesize_title(reports, merged_llm.client, merged_llm.model)
     merged_markdown = await _synthesize_merged_markdown(
         reports, merged_name, merged_llm.client, merged_llm.model
     )
+    merged_markdown = _ensure_title_heading(merged_markdown, merged_name)
 
     # Provenance note (visible in the rendered report + on disk).
     provenance = ", ".join(f"`{r.run_id}` ({r.original_query})" for r in reports)

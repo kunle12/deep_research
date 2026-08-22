@@ -235,6 +235,10 @@ function textOf(tokens) {
   return out;
 }
 
+export function headingText(block) {
+  return block && block.type === "heading" ? textOf(block.tokens).trim() : "";
+}
+
 function indentOf(line) {
   const m = line.match(/^[ \t]*/);
   return m ? m[0].length : 0;

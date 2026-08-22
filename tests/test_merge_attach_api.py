@@ -100,6 +100,9 @@ def test_rename_report(client):
 
     detail = client.get("/api/reports/run_a").json()
     assert detail["query"] == "Brand new name"
+    # The web UI renders the title from the markdown's first heading, so rename
+    # must keep it in sync with the new name.
+    assert detail["markdown"].startswith("# Brand new name")
 
 
 def test_rename_report_validation(client):

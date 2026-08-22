@@ -571,6 +571,12 @@ run_id. Key behaviors:
   `prompts/merge_reports.txt` produces the unified markdown (each source capped
   at `_MAX_SOURCE_CHARS`); on any failure a `_stitch_fallback` concatenates the
   sources under sub-headers so merge never hard-fails.
+- **Title is regenerated, not concatenated**: when no explicit `name` is given,
+  `_synthesize_title` (`prompts/merge_title.txt`) makes one LLM call to compose a
+  fresh descriptive headline from the source queries; `_auto_name` (the old
+  "Merged: A + B" concatenation) is only the failure fallback. `_ensure_title_heading`
+  guarantees the merged markdown carries `# <title>`, keeping the markdown H1 in
+  sync with the report's `original_query` (the web UI renders the title from it).
 - **Citations** = union deduped by `citations.normalize_url`.
 - **Tags**: the union of all source artifacts' tags is copied onto the merged
   artifact via `writer.tag`.

@@ -753,13 +753,37 @@ async def delete_artifact(
 
 @router.patch("/reports/{run_id}", response_model=ReportDetail)
 async def rename_report(run_id: str, body: RenameReportRequest, request: Request) -> ReportDetail:
-    """Rename a research report (updates its display name/title)."""
+    """Rename a research report (updates its display name/title).
+
+    The web UI renders the report title from the markdown's first heading, so
+    rename also rewrites that heading to keep the visible title in sync.
+    """
     backend = get_storage(request)
     report = await backend.get_report(run_id)
     if report is None:
         raise HTTPException(status_code=404, detail="report not found")
-    await backend.rename_report(run_id, body.query.strip())
+    new_title = body.query.strip()
+    await backend.rename_report(run_id, new_title)
+    updated_md = _replace_report_title(report.markdown or "", new_title)
+    if updated_md != (report.markdown or ""):
+        await backend.update_report_content(run_id, markdown=updated_md, citations_json=None)
     return await get_report_detail(run_id, request)
+
+
+def _replace_report_title(markdown: str, new_title: str) -> str:
+    """Rewrite the first heading in a report's markdown to `new_title`.
+
+    Matches the web UI's title extraction (first heading of any level), so a
+    renamed report keeps its visible title consistent with `original_query`.
+    """
+    if not markdown:
+        return markdown
+    lines = markdown.splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r"^#{1,6}\s+", line):
+            lines[i] = f"# {new_title}"
+            return "\n".join(lines)
+    return markdown
 
 
 @router.post("/reports/{run_id}/merge", response_model=MergeReportsResponse)

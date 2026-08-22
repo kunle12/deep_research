@@ -14,9 +14,13 @@ import {
   renameReport,
   startResearch,
 } from "../api.js";
-import { parse, renderBlocks, safeUrl } from "../markdown.js";
+import { headingText, parse, renderBlocks, safeUrl } from "../markdown.js";
 import { hasActiveJob, trackJob } from "../jobs.js";
 import { confirmDialog } from "./dialog.js";
+
+// One report view renders at a time; track any open query popover so the
+// route cleanup can dismiss it (removing its document click listener).
+let _activeQueryCleanup = null;
 
 export function renderReport(root, runId) {
   clear(root);
@@ -63,15 +67,22 @@ export function renderReport(root, runId) {
   return () => {
     window.removeEventListener("scroll", onScroll);
     bar.remove();
+    if (_activeQueryCleanup) _activeQueryCleanup();
   };
 }
 
 function buildReport(report) {
+  // Parse once; the first heading becomes the header title and is excluded
+  // from the rendered body so the title never appears twice.
+  const blocks = parse(report.markdown);
+  const titleBlock = blocks.find((b) => b.type === "heading");
+  const titleText = headingText(titleBlock) || (report.query || report.run_id).trim();
+
   const header = el(
     "header",
     { class: "report-header" },
     el("a", { class: "link-btn", href: "#/", text: "← Library" }),
-    el("h1", { class: "report-title", text: report.query || report.run_id }),
+    reportTitle(titleText, report),
     el(
       "div",
       { class: "report-meta" },
@@ -113,7 +124,11 @@ function buildReport(report) {
     ),
   );
 
-  const body = el("div", { class: "md-body" }, ...renderBlocks(parse(report.markdown)));
+  const body = el(
+    "div",
+    { class: "md-body" },
+    ...renderBlocks(blocks.filter((b) => b !== titleBlock)),
+  );
   stripBibliography(body);
 
   const headings = [...body.querySelectorAll("[data-heading]")];
@@ -192,6 +207,69 @@ function buildReport(report) {
   );
 
   return el("div", { class: "layout report-layout" }, toc, article, refs);
+}
+
+function reportTitle(titleText, report) {
+  const title = el("h1", { class: "report-title", text: titleText });
+  const query = (report.query || report.run_id).trim();
+  if (query) title.append(queryBadge(query));
+  return title;
+}
+
+function queryBadge(query) {
+  const btn = el(
+    "button",
+    {
+      class: "query-badge",
+      type: "button",
+      "aria-label": "Show original research query",
+      "aria-expanded": "false",
+      title: "Show original research query",
+    },
+    el("svg", { viewBox: "0 0 24 24", width: "1em", height: "1em", "aria-hidden": "true" },
+      el("path", {
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        d: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-4.35-4.35",
+      }),
+    ),
+  );
+
+  const popover = el(
+    "div",
+    { class: "query-popover", role: "tooltip" },
+    el("div", { class: "query-popover-label", text: "Original query" }),
+    el("div", { class: "query-popover-text", text: query }),
+  );
+
+  let open = false;
+  function onDocClick(e) {
+    if (open && !e.target.closest(".query-badge") && !popover.contains(e.target)) {
+      close();
+    }
+  }
+  function close() {
+    open = false;
+    btn.setAttribute("aria-expanded", "false");
+    popover.classList.remove("query-popover-open");
+    document.removeEventListener("click", onDocClick, true);
+    if (_activeQueryCleanup === close) _activeQueryCleanup = null;
+  }
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (open) {
+      close();
+      return;
+    }
+    open = true;
+    btn.setAttribute("aria-expanded", "true");
+    popover.classList.add("query-popover-open");
+    document.addEventListener("click", onDocClick, true);
+    _activeQueryCleanup = close;
+  });
+
+  return el("span", { class: "query-badge-wrap" }, btn, popover);
 }
 
 function stripBibliography(container) {

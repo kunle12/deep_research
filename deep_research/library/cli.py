@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +22,22 @@ from deep_research.library.writer import remove_artifact_files
 logger = logging.getLogger(__name__)
 
 library_app = typer.Typer(name="library", help="Personal Digital Library commands")
+
+
+def _replace_title_heading(markdown: str, new_title: str) -> str:
+    """Rewrite the first heading in a report's markdown to `new_title`.
+
+    Matches the web UI's title extraction (first heading of any level), so a
+    renamed report keeps its visible title consistent with `original_query`.
+    """
+    if not markdown:
+        return markdown
+    lines = markdown.splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r"^#{1,6}\s+", line):
+            lines[i] = f"# {new_title}"
+            return "\n".join(lines)
+    return markdown
 
 
 async def _get_backend_and_writer(config_path: str):
@@ -347,6 +364,11 @@ def library_rename(
             await backend.close()
             raise typer.Exit(code=1)
         await backend.rename_report(r.run_id, new_name)
+        # The web UI renders the report title from the markdown's first
+        # heading, so keep it in sync with the new name (same as the API).
+        updated_md = _replace_title_heading(r.markdown or "", new_name)
+        if updated_md != (r.markdown or ""):
+            await backend.update_report_content(r.run_id, markdown=updated_md, citations_json=None)
         typer.echo(f"Renamed '{r.original_query[:60]}' -> '{new_name}'")
         await backend.close()
 
