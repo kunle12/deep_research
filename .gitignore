@@ -7,3 +7,6 @@ __pycache__
 .DS_Store
 .deep_research_library
 config.yaml
+*.json
+*.key
+nohup.out
