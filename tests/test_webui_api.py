@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from deep_research.library.storage.rows import (
@@ -18,7 +22,9 @@ from deep_research.library.storage.rows import (
     TagRow,
 )
 from deep_research.library.storage.sqlite_backend import SqliteStorageBackend
+from deep_research.state import Report
 from deep_research.webui import create_app
+from deep_research.webui.jobs import ResearchJobManager
 
 
 @pytest.fixture
@@ -620,3 +626,51 @@ async def test_delete_reference_keeps_shared_artifact(client, seeded_config: Pat
     assert report["citations"] == []
     # …but the shared artifact is kept.
     assert client.get("/api/artifacts/art_b").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Webhook artifact/reference counts (pdl-enabled backend)
+# ---------------------------------------------------------------------------
+
+
+class _WebhookRunner:
+    def __init__(self):
+        self.received_run_id: str | None = None
+
+    async def __call__(self, cfg, query, path_override, progress, run_id):
+        self.received_run_id = run_id
+        return Report(
+            markdown="# Webhook Report\n\nbody",
+            path=path_override or "deep",
+            query=query,
+            citations=[
+                {"url": "https://arxiv.org/abs/2401.00001", "arxiv_id": "2401.00001"},
+                {"url": "https://nope.test/source", "title": "No archive"},
+            ],
+        )
+
+
+@respx.mock
+async def test_webhook_artifact_count(seeded_config: Path, tmp_path):
+    """Artifact count counts distinct archived artifacts cited by the report."""
+    runner = _WebhookRunner()
+    manager = ResearchJobManager(
+        str(seeded_config),
+        runner=runner,
+        checkpoint_dir=tmp_path / "checkpoints",
+    )
+    route = respx.post("https://hooks.test/count").mock(return_value=httpx.Response(200))
+    job = manager.start("webhook me", webhook_url="https://hooks.test/count")
+    assert job is not None
+
+    deadline = time.time() + 5
+    while time.time() < deadline and (route.called == 0 or job.status != "done"):
+        await asyncio.sleep(0.02)
+
+    assert job.status == "done"
+    assert route.called == 1
+    payload = json.loads(route.calls[0].request.content)
+    # arxiv 2401.00001 maps to seeded artifact art_b; the other URL has no archive.
+    assert payload["artifacts"] == 1
+    assert payload["references"] == 2
+    assert payload["research_id"] == runner.received_run_id

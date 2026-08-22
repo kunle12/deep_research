@@ -53,11 +53,27 @@ All responses are JSON unless noted. Destructive endpoints are gated on
 | `query` | `str` | Required, 1–1000 chars. |
 | `path_override` | `str?` | `"quick"` \| `"deep"` \| `"academic"` \| `"url_source"`. |
 | `attach_to_run_id` | `str?` | Attach mode: `query` must be an `http(s)` URL and the target report must exist. |
+| `webhook_url` | `str?` | Optional http(s) URL POSTed when the job completes or fails (see Webhook). |
 
 Only one research job runs at a time; a second `POST` returns `409` ("a research
 job is already running"). Jobs live in memory, so a restart drops running jobs,
 but checkpoints survive on disk and are restored automatically as resumable
 paused jobs.
+
+**Webhook** — when `webhook_url` is set, the server POSTs a JSON payload
+(`application/json`) **fire-and-forget** (delivery failures are logged, never
+retried, and never block the job) when the job reaches a terminal state. It
+fires on **done** and **error**, but not on cancel/pause. Payload:
+
+| Field | Notes |
+|-------|-------|
+| `event` | `"done"` \| `"error"`. |
+| `job_id` | Matches the `job_id` returned by the `POST /api/research` response. |
+| `research_id` | The library report `run_id` (empty on error). |
+| `report` | Full report markdown (empty on error, and for attach jobs which have no generated report). |
+| `artifacts` | Count of distinct locally-archived artifacts cited by the report. |
+| `references` | Count of citations in the report. |
+| `error` | Error message (only on `event="error"`). |
 
 **SSE stream** (`GET /api/research/jobs/{job_id}/stream`) — `text/event-stream`.
 Emits a `data:` JSON line per event with a `type` field; a status snapshot is

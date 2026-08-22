@@ -41,9 +41,9 @@ changes.
 | `prompts/glossary_extract.txt` | Prompt template for glossary extraction |
 | `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call`; `ScopedToolRegistry` for per-researcher tool isolation; context management with summarisation at 75% of max context window |
 | `webui/app.py` | P12.5 web UI app factory: `create_app(config_path, *, backend, research_runner)`; lifespan-owned storage, CSP headers, static mount |
-| `webui/jobs.py` | In-memory `ResearchJobManager` — runs `run_research` as an asyncio task, broadcasts phase/step events to SSE subscribers |
+| `webui/jobs.py` | In-memory `ResearchJobManager` — runs `run_research` as an asyncio task, broadcasts phase/step events to SSE subscribers; optional fire-and-forget webhook POST (`webhook_url`) on job done/error with `job_id`, `research_id`, report markdown, artifact/reference counts |
 | `webui/routers/library.py` | Library browsing API (reports, tags, artifacts, search, stats, PDF/markdown serving) |
-| `webui/routers/research.py` | Research job API: start, status, cancel, SSE stream |
+| `webui/routers/research.py` | Research job API: start (optional `webhook_url`), status, cancel, SSE stream |
 | `docs/REST_API.md` | Human-readable REST API reference for the web UI + microservice; committed OpenAPI snapshots in `deep_research/api.openapi.json` and `deep_research/microservice.openapi.json`. Regenerate them with `app.openapi()` whenever a router/model changes |
 | `webui/static/` | Vanilla-JS SPA (no build step): `markdown.js` safe parser/renderer, views for list/report/research |
 

@@ -19,6 +19,7 @@ class ResearchStartRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     path_override: Literal["quick", "deep", "academic", "url_source"] | None = None
     attach_to_run_id: str | None = Field(default=None, max_length=64)
+    webhook_url: str | None = Field(default=None, max_length=2048)
 
 
 class ResearchStartResponse(BaseModel):
@@ -77,6 +78,10 @@ async def start_research(body: ResearchStartRequest, request: Request):
     if not query:
         raise HTTPException(status_code=422, detail="query must not be blank")
 
+    # Webhook must be an http(s) URL (scheme-only check; no host filtering).
+    if body.webhook_url and not body.webhook_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="webhook_url must be an http(s) URL")
+
     # Attach mode: query must be a URL and the target report must exist.
     if body.attach_to_run_id:
         if not query.startswith(("http://", "https://")):
@@ -88,7 +93,12 @@ async def start_research(body: ResearchStartRequest, request: Request):
         if target is None:
             raise HTTPException(status_code=404, detail="target report not found")
 
-    job = _jobs(request).start(query, body.path_override, attach_to=body.attach_to_run_id)
+    job = _jobs(request).start(
+        query,
+        body.path_override,
+        attach_to=body.attach_to_run_id,
+        webhook_url=body.webhook_url,
+    )
     if job is None:
         raise HTTPException(
             status_code=409,

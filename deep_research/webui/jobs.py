@@ -19,10 +19,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from deep_research.checkpoint import _CHECKPOINT_DIR
 from deep_research.config import AgentTopConfig
 from deep_research.progress import ProgressReporter
 from deep_research.state import Report
+from deep_research.util import strip_arxiv_version
 from deep_research.webui.progress import JobProgressReporter
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,18 @@ logger = logging.getLogger(__name__)
 _MAX_JOBS = 50
 _QUEUE_MAX = 500
 _TERMINAL_EVENTS = {"done", "error", "cancelled"}
+_WEBHOOK_TIMEOUT_S = 10.0
+
+# Fire-and-forget webhook tasks: keep a strong ref (the event loop only keeps
+# running tasks alive while they're awaited) so a delivery can't be GC'd
+# mid-flight. Each task removes itself on completion.
+_WEBHOOK_TASKS: set[asyncio.Task] = set()
+
+
+def _track_webhook_task(task: asyncio.Task) -> None:
+    _WEBHOOK_TASKS.add(task)
+    task.add_done_callback(_WEBHOOK_TASKS.discard)
+
 
 ResearchRunner = Callable[
     [AgentTopConfig, str, str | None, ProgressReporter, str], Awaitable[Report]
@@ -46,6 +61,7 @@ class ResearchJob:
     query: str
     path_override: str | None = None
     attach_to: str | None = None
+    webhook_url: str | None = None
     status: str = "running"  # running | done | failed | cancelled
     phase: str = ""
     step: str = ""
@@ -143,6 +159,7 @@ class ResearchJobManager:
         path_override: str | None = None,
         *,
         attach_to: str | None = None,
+        webhook_url: str | None = None,
     ) -> ResearchJob | None:
         """Start a research job, or return None when at the concurrency cap."""
         if self._running >= self._max_concurrent:
@@ -152,6 +169,7 @@ class ResearchJobManager:
             query=query,
             path_override=path_override,
             attach_to=attach_to,
+            webhook_url=webhook_url,
         )
         if attach_to:
             # Attach jobs mutate an existing report; use its run_id so the
@@ -348,6 +366,7 @@ class ResearchJobManager:
         # Store the run_id up front (not just on success): pause/resume and
         # cancel need it to find the on-disk checkpoint while the job lives.
         job.run_id = run_id
+        config: AgentTopConfig | None = None
         try:
             config = AgentTopConfig.load_yaml(self._config_path)
             if job.attach_to:
@@ -372,6 +391,9 @@ class ResearchJobManager:
                 if attach_status == "skipped" and result.get("reason"):
                     done["reason"] = result["reason"]
                 self.emit(job, done)
+                # Attach jobs have no generated report of their own (they mutate
+                # an existing report), so the webhook carries no report text.
+                self._fire_webhook(job, "done", config)
                 return
             report = await self._runner(config, job.query, job.path_override, reporter, run_id)
             if job.status != "running":
@@ -409,6 +431,7 @@ class ResearchJobManager:
                     "query": job.query,
                 },
             )
+            self._fire_webhook(job, "done", config, report=report)
         except asyncio.CancelledError:
             if job.status == "paused":
                 job.paused_at = job.paused_at or time.time()
@@ -430,6 +453,7 @@ class ResearchJobManager:
             job.status = "failed"
             job.error = str(exc)
             self.emit(job, {"type": "error", "error": str(exc)})
+            self._fire_webhook(job, "error", config, error=str(exc))
         finally:
             if job.status == "paused":
                 job.paused_at = job.paused_at or time.time()
@@ -452,3 +476,72 @@ class ResearchJobManager:
         except Exception:
             logger.debug("archival check failed for %s", run_id, exc_info=True)
             return False
+
+    def _fire_webhook(
+        self,
+        job: ResearchJob,
+        event: str,
+        config: AgentTopConfig | None,
+        report: Report | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Best-effort, fire-and-forget webhook POST when a job completes or fails.
+
+        Never awaited, so job completion is never blocked by a slow/unreachable
+        webhook. Failures are logged only — no retry.
+        """
+        if not job.webhook_url:
+            return
+        _track_webhook_task(
+            asyncio.create_task(self._send_webhook(job, event, config, report, error))
+        )
+
+    async def _send_webhook(
+        self,
+        job: ResearchJob,
+        event: str,
+        config: AgentTopConfig | None,
+        report: Report | None,
+        error: str | None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "event": event,
+            "job_id": job.job_id,
+            "research_id": job.run_id or "",
+            "report": report.markdown if report else "",
+            "artifacts": 0,
+            "references": len(report.citations) if report else 0,
+            "error": error or "",
+        }
+        if report is not None and config is not None and config.pdl.enabled:
+            try:
+                payload["artifacts"] = await self._webhook_artifact_count(config, report)
+            except Exception:
+                logger.exception("webhook artifact count failed for job %s", job.job_id)
+        try:
+            async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT_S) as client:
+                resp = await client.post(job.webhook_url, json=payload)
+                resp.raise_for_status()
+        except Exception:
+            logger.exception("webhook delivery failed for job %s", job.job_id)
+
+    async def _webhook_artifact_count(self, config: AgentTopConfig, report: Report) -> int:
+        """Distinct locally-archived artifacts cited by *report*."""
+        from deep_research.library.storage import get_backend
+
+        backend = await get_backend(config)
+        try:
+            seen: set[str] = set()
+            for c in report.citations:
+                artifact: Any = None
+                if c.arxiv_id and not c.arxiv_id.startswith("scholar:"):
+                    artifact = await backend.find_artifact_by_arxiv_id(
+                        strip_arxiv_version(c.arxiv_id)
+                    )
+                if artifact is None and c.url.startswith(("http://", "https://")):
+                    artifact = await backend.find_artifact_by_url(c.url)
+                if artifact is not None:
+                    seen.add(artifact.artifact_id)
+            return len(seen)
+        finally:
+            await backend.close()

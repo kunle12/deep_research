@@ -410,6 +410,9 @@ Notes:
   resumable paused jobs** after a restart, so an interrupted run is never lost.
   Cancel abandons the job and discards its checkpoint.
 - Only one research job runs at a time; the UI disables Start while one is running.
+- `POST /api/research` accepts an optional `webhook_url`; the server POSTs a
+  JSON payload (job id, report markdown, artifact/reference counts) when the
+  job completes or fails (see [`docs/REST_API.md`](docs/REST_API.md)).
 - The frontend is plain ES modules with no npm or build step. Interactive API
   docs are available at `/docs`. A full endpoint reference (and committed
   OpenAPI snapshots) is in [`docs/REST_API.md`](docs/REST_API.md).

@@ -6,7 +6,9 @@ import asyncio
 import json
 import time
 
+import httpx
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from deep_research.state import Report
@@ -387,3 +389,98 @@ def test_restore_paused_skips_tracked_and_corrupt(tmp_path):
 
     restored = manager.restore_paused()
     assert restored == []
+
+
+# ---------------------------------------------------------------------------
+# Webhook delivery
+# ---------------------------------------------------------------------------
+
+
+def _wait_webhook(route, timeout: float = 3.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline and route.called == 0:
+        time.sleep(0.02)
+
+
+@respx.mock
+def test_start_job_rejects_bad_webhook_url(client):
+    assert (
+        client.post("/api/research", json={"query": "x", "webhook_url": "ftp://bad"}).status_code
+        == 422
+    )
+    assert (
+        client.post("/api/research", json={"query": "x", "webhook_url": "not-a-url"}).status_code
+        == 422
+    )
+    # A valid http(s) URL passes validation.
+    r = client.post("/api/research", json={"query": "x", "webhook_url": "https://ok.test/h"})
+    assert r.status_code == 202
+
+
+@respx.mock
+def test_webhook_fired_on_success(client, runner):
+    route = respx.post("https://hooks.test/done").mock(return_value=httpx.Response(200))
+    job_id = client.post(
+        "/api/research",
+        json={"query": "webhook me", "webhook_url": "https://hooks.test/done"},
+    ).json()["job_id"]
+    _wait_status(client, job_id, {"done"})
+    _wait_webhook(route)
+
+    assert route.called == 1
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["event"] == "done"
+    assert payload["job_id"] == job_id
+    assert payload["research_id"] == runner.received_run_id
+    assert payload["report"] == "# Fake Report\n\ncontent"
+    assert payload["references"] == 0
+    assert payload["artifacts"] == 0
+    assert payload["error"] == ""
+
+
+@respx.mock
+def test_webhook_fired_on_error(client, runner):
+    runner.fail = True
+    route = respx.post("https://hooks.test/err").mock(return_value=httpx.Response(200))
+    job_id = client.post(
+        "/api/research",
+        json={"query": "boom", "webhook_url": "https://hooks.test/err"},
+    ).json()["job_id"]
+    _wait_status(client, job_id, {"failed"})
+    _wait_webhook(route)
+
+    assert route.called == 1
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["event"] == "error"
+    assert payload["job_id"] == job_id
+    assert payload["research_id"] == runner.received_run_id
+    assert payload["report"] == ""
+    assert payload["error"] == "simulated research failure"
+    assert payload["references"] == 0
+    assert payload["artifacts"] == 0
+
+
+@respx.mock
+def test_webhook_not_fired_on_cancel(client, runner):
+    runner.hold = asyncio.Event()
+    route = respx.post("https://hooks.test/cancel").mock(return_value=httpx.Response(200))
+    job_id = client.post(
+        "/api/research",
+        json={"query": "long running", "webhook_url": "https://hooks.test/cancel"},
+    ).json()["job_id"]
+    time.sleep(0.1)  # let the task start and reach the hold
+    client.post(f"/api/research/jobs/{job_id}/cancel")
+    _wait_status(client, job_id, {"cancelled"})
+    time.sleep(0.2)  # give a (shouldn't-happen) delivery a chance to occur
+    assert route.called == 0
+
+
+@respx.mock
+def test_webhook_failure_does_not_block_job(client, runner):
+    respx.post("https://hooks.test/fail").mock(side_effect=httpx.ConnectError("no route"))
+    job_id = client.post(
+        "/api/research",
+        json={"query": "ok", "webhook_url": "https://hooks.test/fail"},
+    ).json()["job_id"]
+    status = _wait_status(client, job_id, {"done"})
+    assert status["status"] == "done"
