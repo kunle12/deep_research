@@ -877,6 +877,113 @@ class TestAcademicResearchE2E:
         assert calls["n"] == 1, "same paper analyzed more than once (TOCTOU)"
         assert report.iterations == 1
 
+    @pytest.mark.asyncio
+    async def test_archives_blog_posts_when_writer_configured(self, monkeypatch) -> None:
+        """Academic-mode blog citations are fetched + archived as artifacts."""
+        from deep_research.library.writer import LibraryWriter
+
+        cfg = _cfg(max_depth=0, max_papers=1, seed_count=1, concurrency=1)
+        classified = _classified(search_hint="rlhf")
+
+        blog_cit = Citation(
+            url="https://blog.example/post",
+            title="Blog Post",
+            snippet="snippet",
+            source_type="blog",
+            confidence_score=0.7,
+        )
+
+        async def _blog_search(**kw: Any) -> ToolResult:
+            return ToolResult(content="", citations=[blog_cit])
+
+        async def _fetch_page(**kw: Any) -> ToolResult:
+            return ToolResult(content="article body", citations=[])
+
+        async def _arxiv_search(**kw: Any) -> ToolResult:
+            return ToolResult(content="", citations=[_citation("2401.1", "Paper 2401.1")])
+
+        async def _arxiv_download(**kw: Any) -> ToolResult:
+            return ToolResult(content="/tmp/fake.pdf")
+
+        async def _pdf_extract(**kw: Any) -> ToolResult:
+            return ToolResult(content="paper body text")
+
+        reg = _registry(
+            {
+                "arxiv_search": _arxiv_search,
+                "arxiv_download_pdf": _arxiv_download,
+                "pdf_extract_text": _pdf_extract,
+                "blog_search": _blog_search,
+                "fetch_page": _fetch_page,
+            }
+        )
+        calls = _patch_analyze(monkeypatch, {"2401.1": _analysis("2401.1")})
+        client = _FakeAsyncOpenAI("# Synthesis OK\n")
+
+        writer = LibraryWriter(MagicMock(), "/tmp/dr_test_academic_blog")
+        with patch(
+            "deep_research.paths.academic.archive_html_source", new=AsyncMock()
+        ) as archive:
+            await academic_research(
+                classified, "rlhf", _fake_router(client), reg, cfg,
+                writer=writer, run_id="run1",
+            )
+        archive.assert_awaited()
+        url, html = archive.await_args.args[:2]
+        assert url == "https://blog.example/post"
+        assert html == "article body"
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_blog_archiving_when_fetched_html_flag_off(self, monkeypatch) -> None:
+        """`pdl.archive_fetched_html=False` opts out of academic blog archiving."""
+        from deep_research.library.writer import LibraryWriter
+
+        cfg = _cfg(max_depth=0, max_papers=1, seed_count=1, concurrency=1)
+        cfg.pdl.archive_fetched_html = False
+        classified = _classified(search_hint="rlhf")
+
+        blog_cit = Citation(
+            url="https://blog.example/post",
+            title="Blog Post",
+            snippet="snippet",
+            source_type="blog",
+            confidence_score=0.7,
+        )
+
+        async def _blog_search(**kw: Any) -> ToolResult:
+            return ToolResult(content="", citations=[blog_cit])
+
+        async def _arxiv_search(**kw: Any) -> ToolResult:
+            return ToolResult(content="", citations=[_citation("2401.1", "Paper 2401.1")])
+
+        async def _arxiv_download(**kw: Any) -> ToolResult:
+            return ToolResult(content="/tmp/fake.pdf")
+
+        async def _pdf_extract(**kw: Any) -> ToolResult:
+            return ToolResult(content="paper body text")
+
+        reg = _registry(
+            {
+                "arxiv_search": _arxiv_search,
+                "arxiv_download_pdf": _arxiv_download,
+                "pdf_extract_text": _pdf_extract,
+                "blog_search": _blog_search,
+            }
+        )
+        _patch_analyze(monkeypatch, {"2401.1": _analysis("2401.1")})
+        client = _FakeAsyncOpenAI("# Synthesis OK\n")
+
+        writer = LibraryWriter(MagicMock(), "/tmp/dr_test_academic_blog")
+        with patch(
+            "deep_research.paths.academic.archive_html_source", new=AsyncMock()
+        ) as archive:
+            await academic_research(
+                classified, "rlhf", _fake_router(client), reg, cfg,
+                writer=writer, run_id="run1",
+            )
+        archive.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Tiny helpers

@@ -210,6 +210,12 @@ pdl:
   # browser tool, and only if both fail store the fetched HTML text.
   archive_html_as_pdf: true
   archive_html_image_fallback: true
+  # Archive web/blog pages fetched during deep & academic research as library
+  # artifacts (otherwise they live only as citations). Disable to save storage
+  # / wall-clock time on HTML-heavy runs.
+  archive_fetched_html: true
+  # Per-archive wall-clock budget for the render+image-fallback pipeline.
+  archive_timeout_s: 120
   storage:
     backend: "sqlite"                    # "sqlite" | "postgres" (postgres requires asyncpg)
     sqlite:

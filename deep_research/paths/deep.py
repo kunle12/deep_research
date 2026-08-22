@@ -137,6 +137,8 @@ async def deep_research(
             _storage=storage,
             _timeout=timeout,
             _analyses=None,
+            _writer=writer,
+            _run_id=run_id,
         ):
             if _analyses is None:
                 _analyses = dict(state.deep_analyses)
@@ -149,6 +151,8 @@ async def deep_research(
                         tools,
                         _storage,
                         deep_analyses=_analyses,
+                        writer=_writer,
+                        run_id=_run_id,
                     ),
                     timeout=_timeout,
                 )
@@ -327,6 +331,8 @@ async def _run_one_researcher_with_recall(
     tools: ToolRegistry,
     storage: Any | None,
     deep_analyses: dict[str, PaperAnalysis] | None = None,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    run_id: str = "",
 ) -> tuple[str, list, list]:
     """Run the researcher for one sub-question with library recall for prior context."""
     prior_context = ""
@@ -356,6 +362,9 @@ async def _run_one_researcher_with_recall(
         max_refinement_depth=config.agent.max_refinement_depth,
         max_context_tokens=researcher.max_context_tokens,
         max_citations_per_researcher=config.agent.max_citations_per_researcher,
+        writer=writer,
+        config=config,
+        run_id=run_id,
     )
 
 

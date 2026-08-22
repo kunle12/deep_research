@@ -498,6 +498,13 @@ class PDLConfig(BaseModel):
     # fail, the fetched HTML text is stored as before.
     archive_html_as_pdf: bool = True
     archive_html_image_fallback: bool = True
+    # Archive web/blog pages fetched during deep and academic research as
+    # library artifacts (otherwise they live only as citations). Disable to
+    # save storage / wall-clock time on HTML-heavy runs.
+    archive_fetched_html: bool = True
+    # Per-archive wall-clock budget for the render+image-fallback pipeline so a
+    # slow weasyprint/browser step can never stall the researcher or run.
+    archive_timeout_s: float = 120.0
 
 
 class AgentTopConfig(BaseModel):

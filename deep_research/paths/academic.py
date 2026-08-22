@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from deep_research.config import AgentTopConfig, LLMRole
+from deep_research.library.render_archive import archive_html_source
 from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.router import LLMClientLike, LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
@@ -256,6 +257,37 @@ async def academic_research(
                 reporter.step("academic.seed", f"{len(blog_citations)} blog citations")
         except Exception:
             logger.info("blog_search in academic path failed; skipping")
+
+    # P10.0b: fetch + archive blog posts as library artifacts so academic-mode
+    # web/blog sources are preserved, not just cited. Mirrors the applied-path
+    # behavior (top-N posts, best-effort, never breaks the run). Gated on
+    # `pdl.archive_fetched_html` and bounded by `pdl.archive_timeout_s`.
+    if (
+        blog_citations
+        and isinstance(writer, LibraryWriter)
+        and config.pdl.archive_fetched_html
+        and run_id
+    ):
+        reporter.step("academic.seed", f"archiving up to {min(len(blog_citations), 3)} blog posts")
+
+        async def _fetch_and_archive(c: Citation) -> None:
+            if "fetch_page" not in tools.names():
+                return
+            res = await tools.call("fetch_page", {"url": c.url})
+            if res.error is None and res.content:
+                try:
+                    await asyncio.wait_for(
+                        archive_html_source(
+                            c.url, res.content, tools=tools, config=config, writer=writer
+                        ),
+                        timeout=config.pdl.archive_timeout_s,
+                    )
+                except TimeoutError:
+                    logger.debug("academic blog archive timed out for %s", c.url)
+                except Exception:
+                    logger.debug("academic blog archive failed for %s", c.url)
+
+        await asyncio.gather(*[_fetch_and_archive(c) for c in blog_citations[:3]])
 
     # Enqueue seed nodes at depth 0 (parent_arxiv_id=None, rationale="")
     queue_white: deque[tuple[PaperNode, int, str | None]] = deque((node, 0, None) for node in seeds)

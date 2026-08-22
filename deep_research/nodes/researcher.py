@@ -7,11 +7,15 @@ their returned citations into state.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
 
 from deep_research.citations import extract_urls_from_markdown, normalize_url
+from deep_research.config import AgentTopConfig
+from deep_research.library.render_archive import archive_html_source
+from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.router import LLMClientLike
 from deep_research.llm.tool_loop import ScopedToolRegistry, ToolRegistry, ToolResult, run_with_tools
 from deep_research.state import BLOCKED_PREFIX, BlockedSource, Citation, SubQuestion
@@ -86,12 +90,24 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
 
     Intercepts fetch/browser calls so skipped sources are captured
     programmatically — not just at the LLM's discretion — and can be surfaced
-    as an "Unavailable Sources" section in the final report.
+    as an "Unavailable Sources" section in the final report. When a library
+    writer is configured it also archives successfully-fetched web pages as
+    artifacts (deep-mode blog/web sources otherwise live only as citations).
     """
 
-    def __init__(self, parent: ToolRegistry, collector: list[BlockedSource]) -> None:
+    def __init__(
+        self,
+        parent: ToolRegistry,
+        collector: list[BlockedSource],
+        writer: LibraryWriter | NullLibraryWriter | None = None,
+        config: AgentTopConfig | None = None,
+        run_id: str = "",
+    ) -> None:
         super().__init__(parent)
         self._collector = collector
+        self._writer = writer
+        self._config = config
+        self._run_id = run_id
 
     def names(self) -> list[str]:
         return [n for n in super().names() if n not in _IMAGE_PRODUCING_TOOLS]
@@ -105,6 +121,39 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
             url = arguments.get("url", "") if isinstance(arguments, dict) else ""
             if url:
                 self._collector.append(BlockedSource(url=url, reason=result.error))
+        # Archive successfully-fetched web pages (blog posts / HTML) as library
+        # artifacts so deep-mode sources are preserved, not just cited. Gated on
+        # `pdl.archive_fetched_html` and bounded by `pdl.archive_timeout_s` so a
+        # slow render/screenshot can never stall the researcher's tool loop.
+        if (
+            name == "fetch_page"
+            and result.error is None
+            and result.content
+            and isinstance(self._writer, LibraryWriter)
+            and self._config is not None
+            and self._config.pdl.archive_fetched_html
+            and self._run_id
+        ):
+            url = arguments.get("url", "") if isinstance(arguments, dict) else ""
+            if url:
+                try:
+                    await asyncio.wait_for(
+                        archive_html_source(
+                            url,
+                            result.content,
+                            tools=self._parent,
+                            config=self._config,
+                            writer=self._writer,
+                        ),
+                        timeout=self._config.pdl.archive_timeout_s,
+                    )
+                except TimeoutError:
+                    # Budget exhausted — skip the artifact, keep the tool result.
+                    logger.debug("deep-mode fetch_page archive timed out for %s", url)
+                except Exception:
+                    # Archiving is best-effort: a failure must never break the
+                    # tool result the researcher is already consuming.
+                    logger.debug("deep-mode fetch_page archive failed for %s", url)
         return result
 
 
@@ -119,6 +168,9 @@ async def research(
     max_refinement_depth: int = 2,
     max_context_tokens: int = 131072,
     max_citations_per_researcher: int = 10,
+    writer: LibraryWriter | NullLibraryWriter | None = None,
+    config: AgentTopConfig | None = None,
+    run_id: str = "",
 ) -> tuple[str, list[Citation], list[SubQuestion], list[BlockedSource]]:
     """Run the researcher loop for one sub-question.
 
@@ -158,7 +210,9 @@ async def research(
     ]
 
     blocked_sources: list[BlockedSource] = []
-    scoped = _BlockedTrackingScopedRegistry(tools, blocked_sources)
+    scoped = _BlockedTrackingScopedRegistry(
+        tools, blocked_sources, writer=writer, config=config, run_id=run_id
+    )
     refine_calls_collector: list[dict] = []
 
     async def _refine_handler(**kwargs) -> ToolResult:

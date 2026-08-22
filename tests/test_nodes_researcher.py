@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from deep_research.config import AgentTopConfig
+from deep_research.library.writer import LibraryWriter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.researcher import _hint_blurb, _parse_final_assistant, research
 from deep_research.state import SubQuestion
@@ -435,9 +437,102 @@ class TestCitationGating:
             await research(_sub_q(), client, "m", reg, max_turns=1)
 
 
+class TestResearchArchive:
+    """Deep-path researchers archive successfully-fetched web/blog pages."""
+
+    @pytest.mark.asyncio
+    async def test_archives_fetched_page_when_writer_configured(self) -> None:
+        from deep_research.llm.tool_loop import ToolResult
+
+        async def _fetch_page(**kw: Any) -> ToolResult:
+            return ToolResult(content="article text", citations=[])
+
+        reg = ToolRegistry()
+        reg.register("fetch_page", _fetch_page, {"type": "function", "name": "fetch_page"})
+
+        seq = [
+            _FakeToolResponse(
+                [_FakeToolCall(name="fetch_page", arguments='{"url": "https://blog.example/post"}')]
+            ),
+            _FakeResponse(json.dumps({"answer": "answer", "citations": []})),
+        ]
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=seq)
+
+        writer = LibraryWriter(MagicMock(), "/tmp/dr_test_researcher_archive")
+        cfg = AgentTopConfig()
+        with patch(
+            "deep_research.nodes.researcher.archive_html_source", new=AsyncMock()
+        ) as archive:
+            await research(
+                _sub_q(), client, "m", reg, max_turns=2,
+                writer=writer, config=cfg, run_id="run1",
+            )
+        archive.assert_awaited()
+        url, html = archive.await_args.args[:2]
+        assert url == "https://blog.example/post"
+        assert html == "article text"
+
+    @pytest.mark.asyncio
+    async def test_does_not_archive_without_writer(self) -> None:
+        from deep_research.llm.tool_loop import ToolResult
+
+        async def _fetch_page(**kw: Any) -> ToolResult:
+            return ToolResult(content="article text", citations=[])
+
+        reg = ToolRegistry()
+        reg.register("fetch_page", _fetch_page, {"type": "function", "name": "fetch_page"})
+        seq = [
+            _FakeToolResponse(
+                [_FakeToolCall(name="fetch_page", arguments='{"url": "https://blog.example/post"}')]
+            ),
+            _FakeResponse(json.dumps({"answer": "answer", "citations": []})),
+        ]
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=seq)
+
+        with patch(
+            "deep_research.nodes.researcher.archive_html_source", new=AsyncMock()
+        ) as archive:
+            await research(_sub_q(), client, "m", reg, max_turns=2)
+        archive.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_does_not_archive_when_fetched_html_flag_off(self) -> None:
+        """`pdl.archive_fetched_html=False` opts out of deep-mode archiving."""
+        from deep_research.llm.tool_loop import ToolResult
+
+        async def _fetch_page(**kw: Any) -> ToolResult:
+            return ToolResult(content="article text", citations=[])
+
+        reg = ToolRegistry()
+        reg.register("fetch_page", _fetch_page, {"type": "function", "name": "fetch_page"})
+        seq = [
+            _FakeToolResponse(
+                [_FakeToolCall(name="fetch_page", arguments='{"url": "https://blog.example/post"}')]
+            ),
+            _FakeResponse(json.dumps({"answer": "answer", "citations": []})),
+        ]
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=seq)
+
+        writer = LibraryWriter(MagicMock(), "/tmp/dr_test_researcher_archive")
+        cfg = AgentTopConfig()
+        cfg.pdl.archive_fetched_html = False
+        with patch(
+            "deep_research.nodes.researcher.archive_html_source", new=AsyncMock()
+        ) as archive:
+            await research(
+                _sub_q(), client, "m", reg, max_turns=2,
+                writer=writer, config=cfg, run_id="run1",
+            )
+        archive.assert_not_awaited()
+
+
 __all__ = [
     "TestCitationGating",
     "TestHintBlurb",
     "TestParseFinalAssistant",
     "TestResearch",
+    "TestResearchArchive",
 ]
