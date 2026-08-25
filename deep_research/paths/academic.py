@@ -557,6 +557,8 @@ async def academic_research(
         blog_citations,
         writer,
         run_id,
+        tools,
+        config,
     )
 
     # Collect citations from PaperNodes (use what we resolved; metadata is
@@ -789,12 +791,22 @@ async def _synthesize_markdown(
     blog_citations: list | None = None,
     writer: LibraryWriter | NullLibraryWriter | None = None,
     run_id: str = "",
+    tools: ToolRegistry | None = None,
+    config: AgentTopConfig | None = None,
 ) -> str:
     """Run a single LLM synthesis call over all paper analyses.
 
     Falls back to a deterministic markdown rendering when the LLM is unreachable.
     """
     if not analyses:
+        # No arxiv papers were gathered/analyzed. Academic mode is not limited
+        # to arxiv: fall back to a report synthesized from blog/web content when
+        # any was found, otherwise surface the boilerplate so the run is honest
+        # about the empty arxiv result.
+        if blog_citations:
+            return await _synthesize_blog_only(
+                original_query, blog_citations, client, model, tools, config
+            )
         return (
             "# Academic Research Report\n\n"
             "No arxiv papers were successfully analyzed. Re-check the arxiv tool "
@@ -818,6 +830,13 @@ async def _synthesize_markdown(
         )
     digest = "\n\n".join(digest_lines)
     if not digest.strip():
+        # Every arxiv paper lacked extractable text. Same blog/web fallback as
+        # the empty-analyses case so the report is still generated from the
+        # web/blog sources that were found.
+        if blog_citations:
+            return await _synthesize_blog_only(
+                original_query, blog_citations, client, model, tools, config
+            )
         return (
             "# Academic Research Report\n\n"
             "No arxiv papers had extractable text. Re-check the arxiv tool "
@@ -878,6 +897,87 @@ async def _synthesize_markdown(
             "academic synthesis LLM call failed: %s: %s; using fallback", type(e).__name__, e
         )
         return _fallback_synthesis(original_query, analyses)
+
+
+async def _synthesize_blog_only(
+    original_query: str,
+    blog_citations: list[Citation],
+    client: LLMClientLike,
+    model: str,
+    tools: ToolRegistry | None = None,
+    config: AgentTopConfig | None = None,
+) -> str:
+    """Synthesize an academic-mode report from blog/web citations when no
+    arxiv papers were analyzable. Mirrors the applied path's blog-first
+    synthesis so web/blog content still yields a report even when arxiv came
+    up empty.
+    """
+    # Fetch page content for up to 3 posts so the writer has real material
+    # rather than only search snippets.
+    fetched_texts: dict[str, str] = {}
+    if tools is not None and "fetch_page" in tools.names():
+        for c in blog_citations[:3]:
+            res = await tools.call("fetch_page", {"url": c.url})
+            if res.error is None and res.content:
+                fetched_texts[c.url] = res.content[:8000]
+
+    blog_digest = "\n\n".join(
+        f"### {c.title}\nURL: {c.url}\n\n{fetched_texts.get(c.url, c.snippet or '')}"
+        for c in blog_citations
+    )
+
+    system_msg = (
+        "You are an academic synthesis writer. No peer-reviewed arxiv papers "
+        "could be analyzed for this query, so you are synthesizing from "
+        "technical blog and web content instead. Write a 2-4 section markdown "
+        "report answering the user's research query. Begin with a `# ` title "
+        "you compose yourself: a formal, descriptive headline reformulated "
+        "from the research query — do NOT copy the query verbatim (it is often "
+        "informal or phrased as a question). Immediately below the title, on "
+        "its own line, preserve the original query as: "
+        '_Original query: "<the exact query>"_. '
+        "Stay strictly on the query's topic and cite each blog post inline "
+        "with an autolink like <https://example.com/post>."
+    )
+
+    messages = [
+        {"role": "system", "content": system_msg},
+        {
+            "role": "user",
+            "content": (
+                f"# Research query\n{original_query}\n\n"
+                f"# Blog/web content digest\n"
+                f"{blog_digest or '(no content fetched; using search snippets only)'}"
+            ),
+        },
+    ]
+    try:
+        resp = await client.chat.completions.create(model=model, messages=messages, temperature=0.0)
+        md = (resp.choices[0].message.content or "").strip()
+        if md:
+            return md
+    except Exception as e:
+        logger.warning(
+            "academic blog fallback synthesis failed: %s: %s", type(e).__name__, e
+        )
+    return _fallback_blog_synthesis(original_query, blog_citations)
+
+
+def _fallback_blog_synthesis(original_query: str, blog_citations: list[Citation]) -> str:
+    """Deterministic markdown fallback when the LLM call is unavailable."""
+    lines: list[str] = [
+        "# Academic Research Report\n",
+        f"**Query:** {original_query}\n",
+        f"**Web/blog sources found:** {len(blog_citations)}\n",
+        "\n*No peer-reviewed arxiv papers could be analyzed; this report is "
+        "synthesized from blog and web content.*\n",
+    ]
+    for i, c in enumerate(blog_citations, start=1):
+        lines.append(f"\n## {i}. {c.title}\n")
+        lines.append(f"URL: {c.url}\n")
+        if c.snippet:
+            lines.append(f"> {c.snippet}\n")
+    return "\n".join(lines)
 
 
 def _fallback_synthesis(original_query: str, analyses: dict[str, Any]) -> str:

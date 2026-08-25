@@ -14,7 +14,8 @@ Helpers tested individually:
   - render_pages: missing tool, render error, non-JSON content,
     malformed JSON, happy path with valid data URLs list
   - _synthesize_markdown: empty analyses -> boilerplate, happy path LLM
-    synthesis, LLM failure -> deterministic fallback, fallback formatting
+    synthesis, LLM failure -> deterministic fallback, fallback formatting,
+    and blog/web fallback when no arxiv papers are analyzable
   - academic_research end-to-end: respects max_papers cap, dedup via arxiv_id,
     recursion falls below max_depth, citation-graph edges recorded,
     pdf_vision toggle off skips rendering, classifier-provided search_hint
@@ -39,6 +40,7 @@ from deep_research.nodes.paper_analysis import (
 )
 from deep_research.paths import academic
 from deep_research.paths.academic import (
+    _fallback_blog_synthesis,
     _fallback_synthesis,
     _gather_seeds,
     _synthesize_markdown,
@@ -455,6 +457,79 @@ class TestSynthesizeMarkdown:
         out = await _synthesize_markdown("query", analyses, client, "m")
         assert "Academic Research Report" in out
 
+    @pytest.mark.asyncio
+    async def test_empty_analyses_with_blogs_synthesizes_report(self) -> None:
+        # Academic mode is not limited to arxiv: when no arxiv papers are
+        # analyzed but blog/web content was found, a report is still generated
+        # from the blogs.
+        blog_cit = Citation(
+            url="https://blog.example/post",
+            title="Blog Post",
+            snippet="snippet",
+            source_type="blog",
+            confidence_score=0.7,
+        )
+
+        async def _fetch_page(**kw: Any) -> ToolResult:
+            return ToolResult(content="article body text", citations=[])
+
+        reg = _registry({"fetch_page": _fetch_page})
+        client = _FakeAsyncOpenAI("# Blog Synthesis\n\nReport body.")
+        out = await _synthesize_markdown(
+            "query", {}, client, "m", blog_citations=[blog_cit], tools=reg
+        )
+        assert out == "# Blog Synthesis\n\nReport body."
+
+    @pytest.mark.asyncio
+    async def test_empty_analyses_with_blogs_llm_failure_returns_fallback(self) -> None:
+        blog_cit = Citation(
+            url="https://blog.example/post",
+            title="Blog Post",
+            snippet="snippet",
+            source_type="blog",
+            confidence_score=0.7,
+        )
+        client = _raising_client(RuntimeError("LLM down"))
+        out = await _synthesize_markdown(
+            "query", {}, client, "m", blog_citations=[blog_cit]
+        )
+        assert "Web/blog sources found" in out
+        assert "Blog Post" in out
+        assert "No peer-reviewed arxiv" in out
+
+    @pytest.mark.asyncio
+    async def test_empty_analyses_with_blogs_no_fetch_tool_uses_snippets(self) -> None:
+        blog_cit = Citation(
+            url="https://blog.example/post",
+            title="Blog Post",
+            snippet="snippet",
+            source_type="blog",
+            confidence_score=0.7,
+        )
+        # No fetch_page registered: the fallback still runs off snippets.
+        client = _FakeAsyncOpenAI("# Blog Synthesis\n")
+        out = await _synthesize_markdown(
+            "query", {}, client, "m", blog_citations=[blog_cit]
+        )
+        assert out == "# Blog Synthesis"
+
+    @pytest.mark.asyncio
+    async def test_no_extractable_text_with_blogs_falls_back(self) -> None:
+        # All arxiv analyses lack extractable text (None), but blogs exist:
+        # synthesize from the blogs rather than emit the no-text boilerplate.
+        blog_cit = Citation(
+            url="https://blog.example/post",
+            title="Blog Post",
+            snippet="snippet",
+            source_type="blog",
+            confidence_score=0.7,
+        )
+        client = _FakeAsyncOpenAI("# Blog Synthesis\n")
+        out = await _synthesize_markdown(
+            "query", {"2401.1": None}, client, "m", blog_citations=[blog_cit]
+        )
+        assert out == "# Blog Synthesis"
+
 
 class TestFallbackSynthesis:
     def test_renders_each_paper_section(self) -> None:
@@ -475,6 +550,33 @@ class TestFallbackSynthesis:
         assert "Mock methodology" in out
         # Limitations
         assert "Mock limitation" in out
+
+    def test_renders_each_blog_source(self) -> None:
+        blog_cits = [
+            Citation(
+                url="https://blog.example/a",
+                title="Post A",
+                snippet="snippet A",
+                source_type="blog",
+                confidence_score=0.7,
+            ),
+            Citation(
+                url="https://blog.example/b",
+                title="Post B",
+                snippet="snippet B",
+                source_type="blog",
+                confidence_score=0.6,
+            ),
+        ]
+        out = _fallback_blog_synthesis("my query", blog_cits)
+        assert "my query" in out
+        assert "Web/blog sources found" in out
+        assert "No peer-reviewed arxiv" in out
+        assert "Post A" in out
+        assert "Post B" in out
+        assert "snippet A" in out
+        assert "snippet B" in out
+        assert "https://blog.example/a" in out
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +665,49 @@ class TestAcademicResearchE2E:
         report = await academic_research(classified, "nothing", _fake_router(client), reg, cfg)
         assert report.path == "academic"
         assert "No arxiv papers" in report.markdown
+        assert report.citation_graph is not None
+        assert len(report.citation_graph.nodes) == 0
+        assert report.iterations == 0
+
+    @pytest.mark.asyncio
+    async def test_no_arxiv_seeds_but_blogs_generate_report(self, monkeypatch) -> None:
+        """Academic mode is not limited to arxiv: when arxiv returns no seeds
+        but blog/web content was found, the report is synthesized from blogs."""
+        cfg = _cfg()
+        classified = _classified(search_hint="nothing")
+
+        async def _empty_search(**_: Any) -> ToolResult:
+            return ToolResult(content="", citations=[])
+
+        blog_cit = Citation(
+            url="https://blog.example/post",
+            title="Blog Post",
+            snippet="snippet",
+            source_type="blog",
+            confidence_score=0.7,
+        )
+
+        async def _blog_search(**kw: Any) -> ToolResult:
+            return ToolResult(content="", citations=[blog_cit])
+
+        async def _fetch_page(**kw: Any) -> ToolResult:
+            return ToolResult(content="article body", citations=[])
+
+        reg = _registry(
+            {
+                "arxiv_search": _empty_search,
+                "blog_search": _blog_search,
+                "fetch_page": _fetch_page,
+            }
+        )
+        client = _FakeAsyncOpenAI("# Blog Synthesis\n\nReport body.")
+        _patch_analyze(monkeypatch, {})
+
+        report = await academic_research(classified, "nothing", _fake_router(client), reg, cfg)
+        assert report.path == "academic"
+        assert report.markdown == "# Blog Synthesis\n\nReport body."
+        # Blog citation flows into the bibliography even though no arxiv papers
+        assert any(c.url == "https://blog.example/post" for c in report.citations)
         assert report.citation_graph is not None
         assert len(report.citation_graph.nodes) == 0
         assert report.iterations == 0
