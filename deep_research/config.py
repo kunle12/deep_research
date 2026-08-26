@@ -259,6 +259,11 @@ class ArxivConfig(BaseModel):
     pdf_cache_dir: str = "./.cache/arxiv_pdfs"
     concurrency: int = 2  # global semaphore around arxiv calls (3s rate limit)
     request_delay_s: float = 3.0
+    # Transient transport/rate-limit failures (HTTP 429, 5xx) are retried with
+    # exponential backoff so a temporary rate limit is not silently misread as
+    # "no matching papers". Retries apply on top of request_delay_s spacing.
+    retry_attempts: int = 3
+    retry_backoff_s: float = 2.0
 
 
 class RedditConfig(BaseModel):

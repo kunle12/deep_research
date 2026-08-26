@@ -127,7 +127,13 @@ def _result_to_citation(result: Any) -> Citation:
 
 
 def _sync_search(query: str, max_results: int) -> list[Citation]:
-    """Synchronous arxiv search via the `arxiv` library."""
+    """Synchronous arxiv search via the `arxiv` library (single attempt).
+
+    Returns an empty list only when the search genuinely yields no matches.
+    Transient transport / rate-limit errors (HTTP 429, 5xx) RAISE so the
+    caller can distinguish a real outage from an empty result set instead of
+    silently misreading a rate limit as "no papers found".
+    """
     import arxiv
 
     client = arxiv.Client()
@@ -137,19 +143,17 @@ def _sync_search(query: str, max_results: int) -> list[Citation]:
         sort_by=arxiv.SortCriterion.Relevance,
     )
     out: list[Citation] = []
-    try:
-        for result in client.results(search):
-            out.append(_result_to_citation(result))
-    except Exception as e:
-        # The arxiv lib raises on transport errors / empty queries.
-        # We log here and surface an empty list; the caller's ToolResult will
-        # carry whatever we got.
-        logger.warning("arxiv_search query=%r failed: %s: %s", query, type(e).__name__, e)
+    for result in client.results(search):
+        out.append(_result_to_citation(result))
     return out
 
 
 def _sync_resolve(arxiv_id: str) -> Citation | None:
-    """Synchronous arxiv resolve via the `arxiv` library."""
+    """Synchronous arxiv resolve via the `arxiv` library (single attempt).
+
+    Returns None only when the id is genuinely not found (StopIteration).
+    Transport errors raise so callers can distinguish failure from not-found.
+    """
     import arxiv
 
     client = arxiv.Client()
@@ -159,10 +163,80 @@ def _sync_resolve(arxiv_id: str) -> Citation | None:
     except StopIteration:
         logger.info("arxiv_resolve id=%r -> no results", arxiv_id)
         return None
-    except Exception as e:
-        logger.warning("arxiv_resolve id=%r failed: %s: %s", arxiv_id, type(e).__name__, e)
-        return None
     return _result_to_citation(result)
+
+
+# Cap on the per-attempt wait so a misbehaving Retry-After header (or a very
+# long backoff schedule) cannot stall a researcher for minutes.
+_MAX_BACKOFF_S = 30.0
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    """Detect an arxiv HTTP 429 rate-limit error.
+
+    The `arxiv` PyPI lib surfaces transport failures as `urllib.error.HTTPError`
+    (has `.code`), while httpx-based callers carry a `response` with a
+    `status_code`. Both are checked so 429 is always recognized.
+    """
+    if getattr(e, "code", None) == 429:
+        return True
+    resp = getattr(e, "response", None)
+    return resp is not None and getattr(resp, "status_code", None) == 429
+
+
+def _retry_after(e: Exception) -> float | None:
+    """Return the server-requested Retry-After seconds for a 429, if present."""
+    headers = getattr(e, "headers", None)
+    if headers is None:
+        return None
+    ra = headers.get("Retry-After") or headers.get("retry-after")
+    if not ra:
+        return None
+    try:
+        return max(0.0, float(ra))
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_sync(fn: Any, attempts: int, backoff_s: float) -> Any:
+    """Wrap a sync arxiv-library callable with retry + exponential backoff.
+
+    Retries transient failures so a temporary HTTP 429 / 5xx is not swallowed
+    as an empty result. HTTP 429 (rate limit) is special-cased: the wait honors
+    the server's Retry-After header when present, otherwise uses a longer,
+    capped exponential backoff — arxiv throttling can outlast the generic
+    2**attempt schedule. Raises the last error if every attempt fails.
+    """
+    import time
+
+    def run(*args: Any) -> Any:
+        last: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return fn(*args)
+            except Exception as e:
+                last = e
+                is_429 = _is_rate_limit(e)
+                logger.warning(
+                    "arxiv %s attempt %d/%d failed: %s: %s%s",
+                    getattr(fn, "__name__", "call"),
+                    attempt + 1,
+                    attempts,
+                    type(e).__name__,
+                    e,
+                    " (rate limited)" if is_429 else "",
+                )
+                if attempt + 1 < attempts:
+                    if is_429:
+                        wait = _retry_after(e) or (backoff_s * (2**attempt))
+                        wait = min(wait, _MAX_BACKOFF_S)
+                    else:
+                        wait = backoff_s * (2**attempt)
+                    time.sleep(wait)
+        assert last is not None
+        raise last
+
+    return run
 
 
 async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
@@ -207,7 +281,11 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
 
     async def _search(query: str, max_results: int = 10, **_: Any) -> ToolResult:
         max_results = min(max_results, cfg.max_results_per_query)
-        citations = await _rate_limited(_sync_search, query, max_results)
+        citations = await _rate_limited(
+            _retry_sync(_sync_search, cfg.retry_attempts, cfg.retry_backoff_s),
+            query,
+            max_results,
+        )
         if not citations:
             return ToolResult(
                 content=f"No arxiv search results for query: {query!r}",
@@ -224,7 +302,10 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         arxiv_id = arxiv_id.strip()
         if not arxiv_id:
             return ToolResult(content="", error="arxiv_resolve requires non-empty arxiv_id")
-        cit = await _rate_limited(_sync_resolve, arxiv_id)
+        cit = await _rate_limited(
+            _retry_sync(_sync_resolve, cfg.retry_attempts, cfg.retry_backoff_s),
+            arxiv_id,
+        )
         if cit is None:
             return ToolResult(
                 content=f"No arxiv result for id {arxiv_id!r}",

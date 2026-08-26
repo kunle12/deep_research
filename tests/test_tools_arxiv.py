@@ -129,6 +129,51 @@ async def test_arxiv_search_caps_max_results(monkeypatch) -> None:
     assert captured["max_results"] == 3  # capped
 
 
+@pytest.mark.asyncio
+async def test_arxiv_search_retries_transient_failure(monkeypatch) -> None:
+    """A transient rate-limit (HTTP 429) is retried with backoff instead of
+    being swallowed as 'no arxiv search results'."""
+    cfg = AgentTopConfig()
+    cfg.arxiv.request_delay_s = 0.0
+    cfg.arxiv.retry_attempts = 3
+    cfg.arxiv.retry_backoff_s = 0.0  # keep the test fast
+
+    calls: list[int] = []
+
+    def _flaky_sync_search(query: str, max_results: int) -> list[Citation]:
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("HTTP 429 rate limit exceeded")
+        return _citations_from([_FakeResult("2401.1", "Recovered", "S", [])])
+
+    monkeypatch.setattr(arxiv_tool, "_sync_search", _flaky_sync_search)
+    reg = await build_tool_registry(cfg)
+    res = await reg.call("arxiv_search", {"query": "q", "max_results": 5})
+    assert res.error is None
+    assert len(res.citations) == 1
+    assert calls == [1, 1, 1]  # retried until success
+
+
+@pytest.mark.asyncio
+async def test_arxiv_search_persistent_failure_surfaces_error(monkeypatch) -> None:
+    """When every retry fails, the tool returns an error instead of a fake
+    'No arxiv search results' empty result."""
+    cfg = AgentTopConfig()
+    cfg.arxiv.request_delay_s = 0.0
+    cfg.arxiv.retry_attempts = 3
+    cfg.arxiv.retry_backoff_s = 0.0
+
+    def _always_fail(query: str, max_results: int) -> list[Citation]:
+        raise RuntimeError("HTTP 429 rate limit exceeded")
+
+    monkeypatch.setattr(arxiv_tool, "_sync_search", _always_fail)
+    reg = await build_tool_registry(cfg)
+    res = await reg.call("arxiv_search", {"query": "q", "max_results": 5})
+    assert res.error is not None
+    assert "429" in res.error
+    assert res.citations == []
+
+
 # ---------------------------------------------------------------------------
 # resolve tool
 # ---------------------------------------------------------------------------

@@ -88,6 +88,8 @@ arxiv:
   pdf_cache_dir: "./.cache/arxiv_pdfs"
   concurrency: 2                  # global semaphore around arxiv (3s rate limit)
   request_delay_s: 3.0
+  retry_attempts: 3               # retry transient HTTP 429/5xx with backoff (never misread as "no papers")
+  retry_backoff_s: 2.0            # base seconds for exponential backoff between retries
 
 reddit:
   enabled: false                  # requires `uv sync --extra reddit` + API credentials
