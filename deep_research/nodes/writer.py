@@ -31,7 +31,7 @@ async def write(
         system_msg = (
             "You are the final research report writer. Output a single Markdown "
             "document (the report). Do not wrap in code fences. "
-            "Cite sources inline using autolinks like <https://example.com/source>. "
+            "Cite sources inline using standard markdown links like [source](https://example.com/source). "
             "Do NOT include a Bibliography section — that is appended separately."
         )
 

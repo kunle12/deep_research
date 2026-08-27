@@ -4,8 +4,8 @@ We have done one web search and fetched the top 3 results.
 Your task:
 1. Synthesize a SHORT answer (1-3 paragraphs of markdown prose) that directly
    responds to the user's question.
-2. Cite each source with an inline autolink in the prose, like: "According to X
-   <https://example.com/source>, Y is Z."
+2. Cite each source with an inline markdown link in the prose, like: "According to X
+   [source](https://example.com/source), Y is Z."
 3. Then output a `citations` array covering every source cited.
 
 Base the answer on the fetched page contents; if a page fetch failed, fall

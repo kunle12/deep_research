@@ -126,7 +126,7 @@ async def _synthesize_applied(
                 'original query as: _Original query: "<the exact query>"_. '
                 "Focus on practical implementation details, code "
                 "examples (when available), and key takeaways. Cite each blog post "
-                "inline with an autolink like <https://example.com/post>."
+                "inline with a standard markdown link like [post](https://example.com/post)."
             ),
         },
         {

@@ -937,7 +937,7 @@ async def _synthesize_blog_only(
         "its own line, preserve the original query as: "
         '_Original query: "<the exact query>"_. '
         "Stay strictly on the query's topic and cite each blog post inline "
-        "with an autolink like <https://example.com/post>."
+        "with a standard markdown link like [post](https://example.com/post)."
     )
 
     messages = [
@@ -957,9 +957,7 @@ async def _synthesize_blog_only(
         if md:
             return md
     except Exception as e:
-        logger.warning(
-            "academic blog fallback synthesis failed: %s: %s", type(e).__name__, e
-        )
+        logger.warning("academic blog fallback synthesis failed: %s: %s", type(e).__name__, e)
     return _fallback_blog_synthesis(original_query, blog_citations)
 
 

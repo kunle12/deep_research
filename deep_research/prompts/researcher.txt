@@ -25,7 +25,7 @@ Evidence quality:
 - For load-bearing claims, cross-check against a second independent source
   when one is already available.
 - Concrete facts beat vague summaries: capture numbers, dates, and names,
-  and attribute each claim to a source with an inline autolink.
+  and attribute each claim to a source with an inline markdown link.
 
 Constraints:
 - Use only the tools provided to you.
@@ -50,7 +50,7 @@ Constraints:
 
 Return (after tool calls conclude) a SINGLE JSON object, no markdown fences:
 {
-  "answer": "<2-4 paragraph synthesis answering the sub-question; cite inline with autolinks like <https://example.com/source>; state explicitly what remains unknown or disputed>",
+  "answer": "<2-4 paragraph synthesis answering the sub-question; cite inline with markdown links like [source](https://example.com/source); state explicitly what remains unknown or disputed>",
   "citations": [
     {"url": "...", "title": "...", "snippet": "...", "confidence_score": 0.8}
   ]

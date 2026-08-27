@@ -226,6 +226,17 @@ export function openJobDialog(jobId) {
     }
   }
 
+  function syncTicker() {
+    if (isActiveStatus(job.status) && !ticker) {
+      ticker = setInterval(() => {
+        elapsedEl.textContent = `elapsed ${fmtElapsed(job)}`;
+      }, 1000);
+    } else if (!isActiveStatus(job.status) && ticker) {
+      clearInterval(ticker);
+      ticker = null;
+    }
+  }
+
   function onJobs() {
     if (closed) return;
     if (!getTrackedJob(jobId)) {
@@ -235,14 +246,7 @@ export function openJobDialog(jobId) {
     updateMeta();
     updateCurrent();
     appendFeed(rendered);
-    if (isActiveStatus(job.status) && !ticker) {
-      ticker = setInterval(() => {
-        elapsedEl.textContent = `elapsed ${fmtElapsed(job)}`;
-      }, 1000);
-    } else if (!isActiveStatus(job.status) && ticker) {
-      clearInterval(ticker);
-      ticker = null;
-    }
+    syncTicker();
   }
 
   overlay.addEventListener("click", (event) => {
@@ -256,5 +260,6 @@ export function openJobDialog(jobId) {
   updateCurrent();
   appendFeed(0);
   feedEl.scrollTop = feedEl.scrollHeight;
+  syncTicker();
   return close;
 }

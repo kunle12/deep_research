@@ -7,7 +7,7 @@ Constraints:
 - Use only facts present in the provided drafts, citations, and analyses. Do
   not invent claims, numbers, or sources. Preserve uncertainty where the
   evidence is weak or conflicting.
-- Use inline autolinks for sources, like "According to a recent survey <https://example.com/source>, X is Y." Do NOT use numeric reference-style citations.
+- Use inline markdown links for sources, like "According to a recent survey [source](https://example.com/source), X is Y." Do NOT use numeric reference-style citations.
 - Section structure:
   - # Title — a formal, descriptive title you compose yourself. Reformulate the
     user's query into a neutral, specific headline; do NOT copy the query
@@ -19,7 +19,7 @@ Constraints:
   - ## Findings (multiple ## subsections or ### subsections as appropriate)
   - ## Limitations / Open Questions
 - Preserve all source URLs that contributed evidence.
-- The "Deep paper analyses" section contains the most authoritative sources for this query; synthesize their findings into the report and cite them inline with autolinks.
+- The "Deep paper analyses" section contains the most authoritative sources for this query; synthesize their findings into the report and cite them inline with markdown links.
 - Write in clear, neutral, encyclopedic prose.
 - Length: 1000-2500 words depending on the depth of available evidence.
 
