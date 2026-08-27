@@ -223,7 +223,15 @@ async def _searxng_search(
 ) -> list[Citation]:
     """Call SearXNG's JSON API. Used as fallback when Tavily fails."""
     params = {"q": query, "format": "json"}
-    headers = {"User-Agent": user_agent, "Accept": "application/json"}
+    # Local SearXNG instances often run the botdetection limiter, which 429s
+    # requests that look like bots: a `python-httpx` UA or a missing
+    # `Accept-Language` header are both flagged. Send a real browser UA and an
+    # Accept-Language so the request is treated as a normal client.
+    headers = {
+        "User-Agent": user_agent,
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept": "application/json",
+    }
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(searxng_url, params=params, headers=headers)
         resp.raise_for_status()

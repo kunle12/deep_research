@@ -224,6 +224,7 @@ async def _searxng_search(
     max_results: int,
     year_from: int | None,
     year_to: int | None,
+    user_agent: str,
 ) -> list[Citation]:
     params: dict[str, Any] = {
         "q": query,
@@ -234,11 +235,16 @@ async def _searxng_search(
         # SearXNG `time_range` is a string ({day,week,month,year}); no precise
         # year-window support. Map our window to the longest range that fits.
         params["time_range"] = "year"  # best-effort; SearXNG ignores year_from/to
-    resp = await client.get(
-        url,
-        params=params,
-        headers={"User-Agent": "DeepResearchBot/0.1 (+scholar search)"},
-    )
+    # Local SearXNG instances often run the botdetection limiter, which 429s
+    # requests that look like bots: a `python-httpx` UA or a missing
+    # `Accept-Language` header are both flagged. Send a real browser UA and an
+    # Accept-Language so the request is treated as a normal client.
+    headers = {
+        "User-Agent": user_agent,
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept": "application/json",
+    }
+    resp = await client.get(url, params=params, headers=headers)
     if resp.status_code >= 400:
         raise httpx.HTTPStatusError(
             f"searxng scholar HTTP {resp.status_code}", request=resp.request, response=resp
@@ -370,6 +376,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     max_results,
                     cfg.year_from,
                     cfg.year_to,
+                    config.fetch_page.user_agent,
                 )
 
         # Pick ordered backends

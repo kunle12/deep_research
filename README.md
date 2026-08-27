@@ -611,6 +611,19 @@ Verify: `pdftoppm -v`
 Install Node.js LTS: `brew install node` or https://nodejs.org/.
 Or disable browser: `browser.enabled: false` in config.yaml.
 
+### browser tool fails (`Chromium distribution 'chrome' is not found`)
+
+Recent `@playwright/mcp` versions default to the system `chrome` channel
+(`/opt/google/chrome/chrome` on Linux) unless a browser is specified, so a
+machine without Google Chrome installed fails to launch. The project's config
+uses the bundled Playwright chromium instead:
+
+- Install the bundled browser once:
+  `npx -y @playwright/mcp@latest install-browser`
+- Ensure `config.yaml` has `--browser chromium` in `browser.mcp_args`
+  (see `config.example.yaml`). If you'd rather use Google Chrome, install it
+  at `/opt/google/chrome/chrome` and drop the `--browser chromium` flag.
+
 ### LLM connection errors
 
 - Check `llm.base_url` is correct and the server is running

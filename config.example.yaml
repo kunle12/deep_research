@@ -77,7 +77,7 @@ search:
 browser:
   enabled: true
   mcp_command: "npx"
-  mcp_args: ["-y", "@playwright/mcp@latest", "--headless"]
+  mcp_args: ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chromium"]
   transport: "stdio"
   mcp_url: null                   # only when transport == "http"
 
