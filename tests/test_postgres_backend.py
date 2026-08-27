@@ -343,6 +343,34 @@ async def test_get_analyses_for_artifact(backend, mock_conn):
 
 
 @pytest.mark.asyncio
+async def test_get_analyses_for_artifacts(backend, mock_conn):
+    row = (
+        "ana1",
+        "art1",
+        "run001",
+        "analyze_paper",
+        "summary",
+        '["finding1"]',
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "2024-01-01T00:00:00Z",
+    )
+    mock_conn.fetch = AsyncMock(return_value=[row])
+    by_art = await backend.get_analyses_for_artifacts(["art1", "art2"])
+    assert len(by_art["art1"]) == 1
+    assert by_art.get("art2", []) == []
+
+    # empty batch short-circuits without a query
+    mock_conn.fetch = AsyncMock()
+    assert await backend.get_analyses_for_artifacts([]) == {}
+    assert not mock_conn.fetch.called
+
+
+@pytest.mark.asyncio
 async def test_insert_citation_edge(backend, mock_conn):
     edge = CitationEdgeRow(
         source_artifact_id="src1",
@@ -383,6 +411,10 @@ async def test_tag_ops(backend, mock_conn):
     await backend.rename_tag("old", "new")
     assert mock_conn.execute.called
 
+    # count_tags
+    mock_conn.fetchrow = AsyncMock(return_value=(2,))
+    assert await backend.count_tags() == 2
+
 
 @pytest.mark.asyncio
 async def test_glossary_ops(backend, mock_conn):
@@ -421,6 +453,30 @@ async def test_glossary_ops(backend, mock_conn):
     entries = await backend.list_glossary_entries()
     assert len(entries) == 1
     assert entries[0].term == "RLHF"
+
+    # filtered list (by run_id)
+    mock_conn.fetch = AsyncMock(
+        return_value=[
+            (
+                1,
+                "RLHF",
+                "rlhf",
+                "acronym",
+                "def",
+                None,
+                "expansion",
+                None,
+                None,
+                0.9,
+                "run1",
+                "art1",
+                "2024-01-01T00:00:00Z",
+            ),
+        ]
+    )
+    filtered = await backend.list_glossary_entries(run_id="run1")
+    assert len(filtered) == 1
+    assert filtered[0].first_seen_run_id == "run1"
 
     # get_glossary_entry
     mock_conn.fetchrow = AsyncMock(

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -13,6 +15,26 @@ from pydantic import BaseModel, Field
 from deep_research.webui.jobs import _TERMINAL_EVENTS, ResearchJob
 
 router = APIRouter(prefix="/api/research", tags=["research"])
+
+
+def _reject_private_url(url: str) -> bool:
+    """True when *url* targets a loopback / private / link-local host.
+
+    The server fetches (attach mode) or POSTs (webhook) to these URLs on the
+    client's behalf, so pointing them at internal hosts is an SSRF vector.
+    Literal IPs and localhost are rejected; hostnames that resolve to private
+    ranges aren't checked here (would need a DNS lookup).
+    """
+    host = urlparse(url).hostname
+    if not host:
+        return False
+    if host.lower() in ("localhost", "::1"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
 class ResearchStartRequest(BaseModel):
@@ -78,14 +100,23 @@ async def start_research(body: ResearchStartRequest, request: Request):
     if not query:
         raise HTTPException(status_code=422, detail="query must not be blank")
 
-    # Webhook must be an http(s) URL (scheme-only check; no host filtering).
-    if body.webhook_url and not body.webhook_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=422, detail="webhook_url must be an http(s) URL")
+    # Webhook must be an http(s) URL to a public host (SSRF guard).
+    if body.webhook_url:
+        if not body.webhook_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="webhook_url must be an http(s) URL")
+        if _reject_private_url(body.webhook_url):
+            raise HTTPException(
+                status_code=422, detail="webhook_url must not target a private/loopback host"
+            )
 
     # Attach mode: query must be a URL and the target report must exist.
     if body.attach_to_run_id:
         if not query.startswith(("http://", "https://")):
             raise HTTPException(status_code=422, detail="attach query must be an http(s) URL")
+        if _reject_private_url(query):
+            raise HTTPException(
+                status_code=422, detail="attach query must not target a private/loopback host"
+            )
         from deep_research.webui.deps import get_storage
 
         backend = get_storage(request)
@@ -196,7 +227,10 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
                     yield ": keepalive\n\n"
                     continue
                 yield _sse(event)
-                if event.get("type") in _TERMINAL_EVENTS:
+                # A terminal event (done/error/cancelled) or a pause closes the
+                # stream; a paused job emits only status events, so without this
+                # the connection would stay open with keepalives indefinitely.
+                if event.get("type") in _TERMINAL_EVENTS or event.get("status") == "paused":
                     break
         finally:
             manager.unsubscribe(job_id, queue)

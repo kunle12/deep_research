@@ -731,27 +731,43 @@ class SqliteStorageBackend:
     async def get_analyses_for_artifact(self, artifact_id: str) -> list[AnalysisRow]:
         await self._ensure_conn()
         rows = await self._fetchall("SELECT * FROM analyses WHERE artifact_id = ?", (artifact_id,))
-        results: list[AnalysisRow] = []
+        return [self._row_to_analysis(r) for r in rows]
+
+    @_serialized
+    async def get_analyses_for_artifacts(
+        self, artifact_ids: list[str]
+    ) -> dict[str, list[AnalysisRow]]:
+        """Batch analysis fetch, keyed by artifact_id (missing ids omitted)."""
+        if not artifact_ids:
+            return {}
+        await self._ensure_conn()
+        placeholders = ",".join("?" * len(artifact_ids))
+        rows = await self._fetchall(
+            f"SELECT * FROM analyses WHERE artifact_id IN ({placeholders}) ORDER BY analyzed_at",
+            tuple(artifact_ids),
+        )
+        results: dict[str, list[AnalysisRow]] = {}
         for r in rows:
-            results.append(
-                AnalysisRow(
-                    analysis_id=r[0],
-                    artifact_id=r[1],
-                    run_id=r[2],
-                    analyzer=r[3],
-                    summary=r[4],
-                    key_findings=r[5],
-                    methodology=r[6],
-                    limitations=r[7],
-                    gaps=r[8],
-                    follow_ups=r[9],
-                    key_references=r[10],
-                    relevance_to_query=r[11],
-                    relevance_score=r[13],
-                    analyzed_at=r[12],
-                )
-            )
+            results.setdefault(r[1], []).append(self._row_to_analysis(r))
         return results
+
+    def _row_to_analysis(self, row: tuple) -> AnalysisRow:
+        return AnalysisRow(
+            analysis_id=row[0],
+            artifact_id=row[1],
+            run_id=row[2],
+            analyzer=row[3],
+            summary=row[4],
+            key_findings=row[5],
+            methodology=row[6],
+            limitations=row[7],
+            gaps=row[8],
+            follow_ups=row[9],
+            key_references=row[10],
+            relevance_to_query=row[11],
+            relevance_score=row[13],
+            analyzed_at=row[12],
+        )
 
     # -- Citation edge ops --
 
@@ -849,6 +865,13 @@ class SqliteStorageBackend:
             (limit,),
         )
         return [(r[0], int(r[1])) for r in rows]
+
+    @_serialized
+    async def count_tags(self) -> int:
+        """Number of distinct tags."""
+        await self._ensure_conn()
+        row = await self._fetchone("SELECT count(DISTINCT tag) FROM tags")
+        return int(row[0]) if row else 0
 
     @_serialized
     async def delete_tag(self, tag: str, artifact_id: str) -> None:
@@ -949,29 +972,33 @@ class SqliteStorageBackend:
         )
 
     @_serialized
-    async def list_glossary_entries(self) -> list[GlossaryEntry]:
+    async def list_glossary_entries(self, run_id: str | None = None) -> list[GlossaryEntry]:
         await self._ensure_conn()
-        rows = await self._fetchall("SELECT * FROM glossary ORDER BY term_canonical")
-        results: list[GlossaryEntry] = []
-        for r in rows:
-            results.append(
-                GlossaryEntry(
-                    term_id=r[0],
-                    term=r[1],
-                    term_canonical=r[2],
-                    kind=r[3],
-                    short_def=r[4],
-                    long_def=r[5],
-                    acronym_expansion=r[6],
-                    related_terms=r[7],
-                    domain_tags=r[8],
-                    confidence=r[9],
-                    first_seen_run_id=r[10],
-                    first_seen_artifact_id=r[11],
-                    last_updated=r[12],
-                )
+        if run_id:
+            rows = await self._fetchall(
+                "SELECT * FROM glossary WHERE first_seen_run_id = ? ORDER BY term_canonical",
+                (run_id,),
             )
-        return results
+        else:
+            rows = await self._fetchall("SELECT * FROM glossary ORDER BY term_canonical")
+        return [self._row_to_glossary(r) for r in rows]
+
+    def _row_to_glossary(self, row: tuple) -> GlossaryEntry:
+        return GlossaryEntry(
+            term_id=row[0],
+            term=row[1],
+            term_canonical=row[2],
+            kind=row[3],
+            short_def=row[4],
+            long_def=row[5],
+            acronym_expansion=row[6],
+            related_terms=row[7],
+            domain_tags=row[8],
+            confidence=row[9],
+            first_seen_run_id=row[10],
+            first_seen_artifact_id=row[11],
+            last_updated=row[12],
+        )
 
     # -- Refresh foundation --
 

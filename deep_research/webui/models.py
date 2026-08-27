@@ -14,6 +14,7 @@ class ReportListItem(BaseModel):
     started_at: str
     completed_at: str | None = None
     query: str
+    title: str = ""
     path: str
     iterations: int | None = None
     tags: list[str] = Field(default_factory=list)
@@ -52,7 +53,6 @@ class ReportDetail(BaseModel):
 
 
 class TagUpdateResponse(BaseModel):
-    ok: bool = True
     tags: list[str] = Field(default_factory=list)
 
 
@@ -163,12 +163,10 @@ class StatsResponse(BaseModel):
 
 
 class DeleteReportResponse(BaseModel):
-    ok: bool = True
     removed_files: list[str] = Field(default_factory=list)
 
 
 class DeleteArtifactResponse(BaseModel):
-    ok: bool = True
     removed_files: list[str] = Field(default_factory=list)
 
 
@@ -179,11 +177,11 @@ class RenameReportRequest(BaseModel):
 class DeleteReportReferenceRequest(BaseModel):
     """Identify a single reference/citation to remove from a report.
 
-    The citation is matched by its URL (required) and, when present, its
-    arXiv id. All citations matching the URL are removed.
+    The citation is matched by its URL and/or its arXiv id. At least one of
+    `url` / `arxiv_id` must be provided (enforced by the handler).
     """
 
-    url: str = Field(min_length=3, max_length=2000)
+    url: str | None = Field(default=None, min_length=3, max_length=2000)
     arxiv_id: str | None = Field(default=None, max_length=64)
 
 

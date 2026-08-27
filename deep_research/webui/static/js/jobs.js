@@ -12,6 +12,35 @@ const TERMINAL = new Set(["done", "error", "cancelled"]);
 const ACTIVE = new Set(["running", "cancelling"]);
 const STORE_KEY = "dr.dismissedJobs";
 
+/** Human label for each job status (shared by taskbar + detail dialog). */
+export const STATUS_LABEL = {
+  running: "Researching",
+  cancelling: "Cancelling",
+  paused: "Paused",
+  done: "Complete",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  lost: "Lost",
+};
+
+/** One-line status copy for terminal states, shared across renderers. */
+export function jobStatusText(job) {
+  switch (job.status) {
+    case "done":
+      return job.archived
+        ? "Report saved to the library."
+        : "Report finished, but not archived (is pdl.enabled set?).";
+    case "failed":
+      return job.error || "Unknown error";
+    case "cancelled":
+      return "The job was cancelled.";
+    case "lost":
+      return "Connection lost — the job is no longer available (server restarted?).";
+    default:
+      return "";
+  }
+}
+
 /** @type {Map<string, object>} job_id -> job record */
 const jobs = new Map();
 /** @type {Map<string, EventSource>} job_id -> open stream */
@@ -177,6 +206,9 @@ function attachStream(jobId) {
     // retrying a dead URL forever.
     getJob(jobId)
       .then((status) => {
+        // A terminal event may have already closed the stream while getJob was
+        // in flight — don't re-apply a redundant transition.
+        if (!streams.has(jobId)) return;
         if (!TERMINAL.has(status.status === "failed" ? "error" : status.status)) return;
         applyEvent(job, {
           type: status.status === "done" ? "done" : status.status === "failed" ? "error" : "cancelled",

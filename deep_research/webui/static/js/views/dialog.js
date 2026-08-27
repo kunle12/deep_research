@@ -6,14 +6,16 @@
  */
 
 import { el } from "../dom.js";
+import { openModal } from "../modal.js";
 
-let current = null; // close() of the open dialog, if any
+let current = null; // { close, settle } of the open dialog, if any
 
 export function confirmDialog({ title, message, confirmText = "Confirm", cancelText = "Cancel", danger = false }) {
   return new Promise((resolve) => {
-    if (current) current.close();
-    const opener = document.activeElement;
-    const overlay = el("div", { class: "modal-overlay confirm-overlay" });
+    // Supersede the previous dialog by *settling* it (not just closing) so its
+    // awaiting caller unblocks instead of hanging forever.
+    if (current) current.settle(false);
+
     const actions = el("div", { class: "modal-actions" });
     const dialog = el(
       "div",
@@ -28,8 +30,6 @@ export function confirmDialog({ title, message, confirmText = "Confirm", cancelT
       el("p", { id: "confirm-message", class: "confirm-message", text: message }),
       actions,
     );
-    overlay.append(dialog);
-    document.body.append(overlay);
 
     let settled = false;
     function settle(value) {
@@ -38,6 +38,20 @@ export function confirmDialog({ title, message, confirmText = "Confirm", cancelT
       close();
       resolve(value);
     }
+
+    const { overlay, close } = openModal({
+      onEscape: () => settle(false),
+      onOverlay: () => settle(false),
+      // Navigation (closeAllModals) closes via the helper without a settle —
+      // resolve false so the awaiting caller never hangs.
+      onClose: () => {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      },
+    });
+    overlay.append(dialog);
 
     actions.append(
       el("button", {
@@ -54,22 +68,6 @@ export function confirmDialog({ title, message, confirmText = "Confirm", cancelT
       }),
     );
 
-    function onKey(event) {
-      if (event.key === "Escape") settle(false);
-    }
-
-    function close() {
-      document.removeEventListener("keydown", onKey);
-      overlay.remove();
-      if (opener && opener.isConnected && opener.focus) opener.focus();
-      if (current && current.close === close) current = null;
-    }
-
-    overlay.addEventListener("click", (event) => {
-      if (event.target === overlay) settle(false);
-    });
-    document.addEventListener("keydown", onKey);
-
-    current = { close };
+    current = { close, settle };
   });
 }

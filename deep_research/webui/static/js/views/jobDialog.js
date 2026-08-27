@@ -16,20 +16,13 @@ import {
   fmtElapsed,
   getTrackedJob,
   isActiveStatus,
+  jobStatusText,
   pauseTrackedJob,
   resumeTrackedJob,
+  STATUS_LABEL,
 } from "../jobs.js";
 import { feedLine } from "./feed.js";
-
-const STATUS_LABEL = {
-  running: "Researching",
-  cancelling: "Cancelling…",
-  paused: "Paused",
-  done: "Complete",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  lost: "Lost",
-};
+import { openModal } from "../modal.js";
 
 let current = null; // close() of the open dialog, if any
 
@@ -38,7 +31,6 @@ export function openJobDialog(jobId) {
   if (!job) return;
   if (current) current.close();
 
-  const opener = document.activeElement;
   const overlay = el("div", { class: "modal-overlay jobdialog-overlay" });
   const badgeEl = el("span", { class: "badge" });
   const elapsedEl = el("span", { class: "jobdialog-elapsed" });
@@ -58,7 +50,8 @@ export function openJobDialog(jobId) {
     actionsEl,
   );
   overlay.append(dialog);
-  document.body.append(overlay);
+
+  const modal = openModal({ onClose: cleanup });
 
   let closed = false;
   let rendered = 0;
@@ -66,19 +59,16 @@ export function openJobDialog(jobId) {
   let lastStatus = null;
   let lastCurrentSig = null;
 
-  function close() {
+  function cleanup() {
     if (closed) return;
     closed = true;
     if (ticker) clearInterval(ticker);
-    document.removeEventListener("keydown", onKey);
     document.removeEventListener("dr:jobs", onJobs);
-    overlay.remove();
-    if (opener && opener.isConnected && opener.focus) opener.focus();
     if (current && current.close === close) current = null;
   }
 
-  function onKey(event) {
-    if (event.key === "Escape") close();
+  function close() {
+    modal.close(); // runs cleanup via onClose
   }
 
   function nearBottom() {
@@ -198,9 +188,9 @@ export function openJobDialog(jobId) {
         }),
       );
     } else if (job.status === "failed") {
-      currentEl.append(el("span", { class: "feed-error", text: job.error || "Unknown error" }));
+      currentEl.append(el("span", { class: "feed-error", text: jobStatusText(job) }));
     } else if (job.status === "cancelled") {
-      currentEl.append(el("span", { text: "The job was cancelled." }));
+      currentEl.append(el("span", { text: jobStatusText(job) }));
     } else if (job.status === "paused") {
       currentEl.append(
         el(
@@ -210,9 +200,7 @@ export function openJobDialog(jobId) {
         ),
       );
     } else if (job.status === "lost") {
-      currentEl.append(
-        el("span", { text: "Connection lost — the job is no longer available (server restarted?)." }),
-      );
+      currentEl.append(el("span", { text: jobStatusText(job) }));
     } else {
       const label = job.step || job.phase;
       currentEl.append(
@@ -249,10 +237,6 @@ export function openJobDialog(jobId) {
     syncTicker();
   }
 
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) close();
-  });
-  document.addEventListener("keydown", onKey);
   document.addEventListener("dr:jobs", onJobs);
 
   current = { close };

@@ -154,13 +154,14 @@ export function renderList(root, searchInput) {
       el("span", { text: plural(item.citation_count, "citation") }),
       item.has_pdf ? el("span", { class: "pdf-mark", text: "PDF" }) : null,
     );
+    const title = item.title || item.query || item.run_id;
     return el(
       "article",
       {
         class: "card",
         tabindex: "0",
         role: "button",
-        "aria-label": `Open report: ${item.query}`,
+        "aria-label": `Open report: ${title}`,
         onclick: () => {
           window.location.hash = `#/report/${encodeURIComponent(item.run_id)}`;
         },
@@ -174,7 +175,7 @@ export function renderList(root, searchInput) {
       el(
         "div",
         { class: "card-title-row" },
-        el("h3", { class: "card-title", text: item.query || item.run_id }),
+        el("h3", { class: "card-title", text: title }),
         badge,
       ),
       meta,
@@ -304,9 +305,13 @@ export function renderList(root, searchInput) {
       );
     } else if (!state.loading && state.total) {
       // The requested page is out of range (e.g. filters changed elsewhere);
-      // clamp back to the last valid page.
-      state.page = Math.max(1, Math.ceil(state.total / state.pageSize));
-      load();
+      // clamp back to the last valid page — but only when it actually differs,
+      // otherwise this branch would re-trigger load() forever.
+      const clamped = Math.max(1, Math.ceil(state.total / state.pageSize));
+      if (clamped !== state.page) {
+        state.page = clamped;
+        load();
+      }
       return;
     }
     if (state.q || state.tag || state.path) {

@@ -8,12 +8,14 @@
 import { el } from "../dom.js";
 import { startResearch } from "../api.js";
 import { hasActiveJob, hasPausedJob, trackJob } from "../jobs.js";
+import { openModal } from "../modal.js";
 
 const PATHS = ["quick", "deep", "academic", "url_source"];
 
+let current = null; // close() of the open research modal, if any
+
 export function openResearchModal() {
-  const overlay = el("div", { class: "modal-overlay" });
-  const opener = document.activeElement;
+  if (current) current.close(); // never stack two research modals
   const dialog = el(
     "div",
     { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "research-title" },
@@ -60,27 +62,29 @@ export function openResearchModal() {
     form,
     statusEl,
   );
-  overlay.append(dialog);
-  document.body.append(overlay);
+
+  const modal = openModal({
+    onEscape: () => {
+      if (!starting) close();
+    },
+    onOverlay: () => {
+      if (!starting) close();
+    },
+    onClose: () => {
+      document.removeEventListener("dr:jobs", onJobs);
+      if (current && current.close === close) current = null;
+    },
+  });
+  modal.overlay.append(dialog);
 
   let starting = false;
-  let closed = false;
 
   function refreshStart() {
     startBtn.disabled = busy || starting || !query.value.trim();
   }
 
   function close() {
-    if (closed) return;
-    closed = true;
-    document.removeEventListener("keydown", onKey);
-    document.removeEventListener("dr:jobs", onJobs);
-    overlay.remove();
-    if (opener && opener.isConnected && opener.focus) opener.focus();
-  }
-
-  function onKey(event) {
-    if (event.key === "Escape" && !starting) close();
+    modal.close(); // runs onClose via the helper
   }
 
   function onJobs() {
@@ -96,7 +100,6 @@ export function openResearchModal() {
     }
     refreshStart();
   }
-  document.addEventListener("keydown", onKey);
   document.addEventListener("dr:jobs", onJobs);
 
   async function start() {
@@ -128,10 +131,8 @@ export function openResearchModal() {
   });
   query.addEventListener("input", refreshStart);
   closeBtn.addEventListener("click", close);
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay && !starting) close();
-  });
 
+  current = { close };
   refreshStart();
   query.focus();
   return close;

@@ -210,6 +210,100 @@ async def test_analysis_crud(backend):
 
 
 @pytest.mark.asyncio
+async def test_batch_analyses_and_count_tags(backend):
+    art1 = ArtifactRow(
+        artifact_id="art1",
+        kind="pdf",
+        source_url="https://arxiv.org/pdf/2401.12345",
+        source_type="arxiv",
+        bytes_path="artifacts/pdf/art1.pdf",
+        bytes_size=1024,
+        first_seen_at="2024-01-01T00:00:00Z",
+        last_touched_at="2024-01-01T00:00:00Z",
+    )
+    art2 = ArtifactRow(
+        artifact_id="art2",
+        kind="pdf",
+        source_url="https://arxiv.org/pdf/2401.67890",
+        source_type="arxiv",
+        bytes_path="artifacts/pdf/art2.pdf",
+        bytes_size=1024,
+        first_seen_at="2024-01-01T00:00:00Z",
+        last_touched_at="2024-01-01T00:00:00Z",
+    )
+    await backend.upsert_artifact(art1)
+    await backend.upsert_artifact(art2)
+    report = ReportRow(
+        run_id="run001",
+        started_at="2024-01-01T00:00:00Z",
+        original_query="test",
+        path_taken="quick",
+        markdown="# test",
+    )
+    await backend.insert_report(report)
+
+    for aid, summary, score in [
+        ("art1", "s1", 0.7),
+        ("art1", "s2", 0.9),
+        ("art2", "s3", 0.5),
+    ]:
+        await backend.insert_analysis(
+            AnalysisRow(
+                analysis_id=f"ana_{aid}_{summary}",
+                artifact_id=aid,
+                run_id="run001",
+                analyzer="x",
+                summary=summary,
+                relevance_score=score,
+            )
+        )
+
+    by_art = await backend.get_analyses_for_artifacts(["art1", "art2"])
+    assert len(by_art["art1"]) == 2
+    assert len(by_art["art2"]) == 1
+    assert by_art.get("nonexistent", []) == []
+
+    await backend.upsert_tag(TagRow(tag="ml", artifact_id="art1", applied_in_run="run001"))
+    await backend.upsert_tag(TagRow(tag="survey", artifact_id="art2", applied_in_run="run001"))
+    assert await backend.count_tags() == 2
+
+
+@pytest.mark.asyncio
+async def test_glossary_entries_filtered_by_run(backend):
+    now = "2024-01-01T00:00:00Z"
+    await backend.insert_report(ReportRow(run_id="r1", started_at=now, markdown="# one"))
+    await backend.insert_report(ReportRow(run_id="r2", started_at=now, markdown="# two"))
+    await backend.upsert_artifact(
+        ArtifactRow(
+            artifact_id="a1", kind="report", bytes_path="reports/x.md",
+            first_seen_at=now, last_touched_at=now,
+        )
+    )
+    await backend.upsert_artifact(
+        ArtifactRow(
+            artifact_id="a2", kind="report", bytes_path="reports/y.md",
+            first_seen_at=now, last_touched_at=now,
+        )
+    )
+    await backend.upsert_glossary_entry(
+        GlossaryEntry(
+            term="One", term_canonical="one", kind="concept",
+            first_seen_run_id="r1", first_seen_artifact_id="a1", last_updated=now,
+        )
+    )
+    await backend.upsert_glossary_entry(
+        GlossaryEntry(
+            term="Two", term_canonical="two", kind="concept",
+            first_seen_run_id="r2", first_seen_artifact_id="a2", last_updated=now,
+        )
+    )
+
+    assert len(await backend.list_glossary_entries(run_id="r1")) == 1
+    assert len(await backend.list_glossary_entries(run_id="r2")) == 1
+    assert len(await backend.list_glossary_entries()) == 2
+
+
+@pytest.mark.asyncio
 async def test_citation_edge(backend):
     art = ArtifactRow(
         artifact_id="src1",

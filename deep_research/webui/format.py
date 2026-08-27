@@ -31,8 +31,8 @@ def citation_count(citations_json: str | None) -> int:
     return len(parse_citations(citations_json))
 
 
-def _clean_inline(text: str) -> str:
-    """Strip markdown link/emphasis syntax for a plain-text snippet."""
+def clean_inline(text: str) -> str:
+    """Strip markdown link/emphasis syntax for a plain-text snippet or title."""
     text = _LINK_RE.sub(lambda m: m.group(1) or m.group(2), text)
     text = _INLINE_SYNTAX_RE.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
@@ -62,7 +62,7 @@ def make_snippet(markdown: str, limit: int = 280) -> str:
             continue
         if line.startswith("![") or line.startswith("<"):
             continue
-        cleaned = _clean_inline(line)
+        cleaned = clean_inline(line)
         if len(cleaned) < 40:
             continue
         return _truncate(cleaned, limit)

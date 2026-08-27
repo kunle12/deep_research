@@ -7,6 +7,7 @@ import { openResearchModal } from "./views/research.js";
 import { initTaskbar } from "./views/taskbar.js";
 import { restoreJobs } from "./jobs.js";
 import { getStats } from "./api.js";
+import { closeAllModals } from "./modal.js";
 
 const app = document.getElementById("app");
 const searchInput = document.getElementById("global-search");
@@ -29,6 +30,9 @@ function render() {
     currentCleanup();
     currentCleanup = null;
   }
+  // Navigate away from any open modal (confirm/job-dialog/research) so the new
+  // route never renders underneath a stale overlay.
+  closeAllModals();
   clear(app);
   const route = routeFromHash();
   currentRoute = route;
@@ -126,10 +130,16 @@ function initStatsRefresh() {
   };
   document.addEventListener("dr:jobs", (event) => {
     const list = (event.detail && event.detail.jobs) || [];
+    const ids = new Set(list.map((j) => j.job_id));
+    for (const id of [...prev.keys()]) if (!ids.has(id)) prev.delete(id);
     let changed = false;
     for (const job of list) {
       const old = prev.get(job.job_id);
-      if (old && old !== job.status && TERMINAL.has(job.status)) changed = true;
+      // Refresh on first sight of a terminal job too, not just transitions, so
+      // a job that appears already finished still updates the header counts.
+      if (TERMINAL.has(job.status) && (old === undefined || old !== job.status)) {
+        changed = true;
+      }
       prev.set(job.job_id, job.status);
     }
     if (changed) refresh();

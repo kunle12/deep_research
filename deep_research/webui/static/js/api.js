@@ -21,10 +21,10 @@ export async function request(path, { params = {}, method = "GET", body, headers
     }
     throw new Error(`${res.status}: ${detail}`);
   }
-  return res.json();
+  // 204 / empty bodies carry no JSON; return null so callers don't get a
+  // confusing SyntaxError from res.json().
+  return res.status === 204 ? null : res.json();
 }
-
-export const getJSON = request;
 
 export function listReports(params) {
   return request("/api/reports", { params });

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import re
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +31,7 @@ from deep_research.state import Citation
 from deep_research.tools import arxiv as arxiv_tool
 from deep_research.util import strip_arxiv_version
 from deep_research.webui.deps import get_config, get_root_dir, get_storage
-from deep_research.webui.format import citation_count, make_snippet, parse_citations
+from deep_research.webui.format import citation_count, clean_inline, make_snippet, parse_citations
 from deep_research.webui.models import (
     AnalysisInfo,
     ArtifactDetail,
@@ -58,6 +59,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["library"])
 
+# First heading of any level (matches the web UI's title extraction).
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$")
+
+# arXiv id like 2401.12345 or 2401.12345v2 (scholar: ids are rejected later).
+_ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
+
 
 class TagBody(BaseModel):
     tag: str = Field(min_length=1, max_length=64)
@@ -73,8 +80,47 @@ class ArxivPdfResponse(BaseModel):
     error: str | None = None
 
 
-async def _report_items(backend: StorageBackend, reports) -> list[ReportListItem]:
-    """Enrich report rows with tags, snippets, and PDF availability."""
+def _report_title(markdown: str) -> str:
+    """Extract the report's display title from the markdown's first heading.
+
+    Mirrors the web UI's title extraction (first heading of any level, inline
+    formatting stripped), so list cards match what the detail view shows.
+    """
+    for line in (markdown or "").splitlines():
+        m = _HEADING_RE.match(line.strip())
+        if m:
+            return clean_inline(m.group(1))
+    return ""
+
+
+def _safe_resolve(root: Path, bytes_path: str | None) -> Path | None:
+    """Resolve *bytes_path* under *root* and return the file path only when it
+    is inside *root* and exists on disk (path-traversal + staleness guard)."""
+    if not bytes_path:
+        return None
+    root_resolved = root.resolve()
+    file_path = (root_resolved / bytes_path).resolve()
+    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+        return None
+    return file_path
+
+
+def _artifact_has_pdf(root: Path, artifact: ArtifactRow | None) -> bool:
+    """True when *artifact* is a PDF whose bytes are actually on disk (so a
+    list/detail `has_pdf` flag never advertises a file that would 404)."""
+    if artifact is None or artifact.kind != "pdf":
+        return False
+    return _safe_resolve(root, artifact.bytes_path) is not None
+
+
+def _safe_filename(name: str) -> str:
+    """Sanitize a user-influenced value for a quoted Content-Disposition
+    filename, so CR/LF or `"` can't break out of the header (response split)."""
+    return re.sub(r'[\r\n"\\]', "_", name or "")
+
+
+async def _report_items(backend: StorageBackend, root: Path, reports) -> list[ReportListItem]:
+    """Enrich report rows with tags, title, snippets, and PDF availability."""
     art_ids = [r.artifact_id for r in reports if r.artifact_id]
     tags_map = await backend.get_tags_for_artifacts(art_ids)
     artifacts_map = await backend.get_artifacts(art_ids)
@@ -87,13 +133,14 @@ async def _report_items(backend: StorageBackend, reports) -> list[ReportListItem
                 started_at=r.started_at,
                 completed_at=r.completed_at,
                 query=r.original_query,
+                title=_report_title(r.markdown) or r.original_query,
                 path=r.path_taken,
                 iterations=r.iterations,
                 tags=sorted(t.tag for t in tags_map.get(r.artifact_id, [])),
                 snippet=make_snippet(r.markdown),
                 citation_count=citation_count(r.citations_json),
                 markdown_length=len(r.markdown),
-                has_pdf=bool(art and art.kind == "pdf" and art.bytes_path),
+                has_pdf=_artifact_has_pdf(root, art),
             )
         )
     return items
@@ -128,8 +175,8 @@ def _glossary_info(e: GlossaryEntry) -> GlossaryInfo:
 
 async def _report_glossary(backend: StorageBackend, run_id: str) -> list[GlossaryInfo]:
     """Glossary entries attributed to a report (terms first seen in its run)."""
-    entries = await backend.list_glossary_entries()
-    return [_glossary_info(e) for e in entries if e.first_seen_run_id == run_id]
+    entries = await backend.list_glossary_entries(run_id=run_id)
+    return [_glossary_info(e) for e in entries]
 
 
 def _render_citations_bib(citations: list[Citation]) -> str:
@@ -195,11 +242,6 @@ def _edge_info(e: CitationEdgeRow) -> CitationEdgeInfo:
     )
 
 
-def _strip_arxiv_version(arxiv_id: str) -> str:
-    """Normalize 2401.12345v2 -> 2401.12345 for artifact lookups."""
-    return strip_arxiv_version(arxiv_id)
-
-
 async def _citation_artifact(
     backend: StorageBackend,
     citation: dict[str, Any],
@@ -214,7 +256,7 @@ async def _citation_artifact(
     aid = citation.get("arxiv_id")
     artifact: ArtifactRow | None = None
     if isinstance(aid, str) and aid and not aid.startswith("scholar:"):
-        artifact = await backend.find_artifact_by_arxiv_id(_strip_arxiv_version(aid))
+        artifact = await backend.find_artifact_by_arxiv_id(strip_arxiv_version(aid))
     if artifact is None:
         url = citation.get("url")
         if isinstance(url, str) and url.startswith(("http://", "https://")):
@@ -224,44 +266,9 @@ async def _citation_artifact(
 
 def _artifact_file_route(root: Path, artifact: ArtifactRow, route: str) -> str | None:
     """Return the API route for *artifact*'s file if it exists on disk, else None."""
-    root_resolved = root.resolve()
-    file_path = (root_resolved / artifact.bytes_path).resolve()
-    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+    if _safe_resolve(root, artifact.bytes_path) is None:
         return None
     return route
-
-
-async def _citation_local_pdf_url(
-    backend: StorageBackend,
-    root: Path,
-    citation: dict[str, Any],
-) -> str | None:
-    """Return a URL for the locally archived PDF of this citation, if any.
-
-    Papers archived by the academic path are stored as `kind="pdf"` artifacts
-    keyed by arxiv_id (and source_url), so references can open the library's
-    own copy instead of the upstream page.
-    """
-    artifact = await _citation_artifact(backend, citation)
-    if artifact is None or artifact.kind != "pdf" or not artifact.bytes_path:
-        return None
-    return _artifact_file_route(root, artifact, f"/api/artifacts/{artifact.artifact_id}/pdf")
-
-
-async def _citation_local_image_url(
-    backend: StorageBackend,
-    root: Path,
-    citation: dict[str, Any],
-) -> str | None:
-    """Return a URL for the locally archived screenshot of this citation, if any.
-
-    HTML/blog sources whose PDF render failed are archived as `kind="image"`
-    screenshots, so references can open the library's own copy.
-    """
-    artifact = await _citation_artifact(backend, citation)
-    if artifact is None or artifact.kind != "image" or not artifact.bytes_path:
-        return None
-    return _artifact_file_route(root, artifact, f"/api/artifacts/{artifact.artifact_id}/image")
 
 
 async def _enrich_citations(
@@ -271,18 +278,20 @@ async def _enrich_citations(
 ) -> list[dict[str, Any]]:
     """Attach `local_pdf_url` / `local_image_url` (and `local_artifact_id` /
     `local_artifact_kind` for the Remove-from-library action) to citations that
-    have an archived PDF or screenshot copy."""
+    have an archived PDF or screenshot copy. Each citation's artifact is looked
+    up once (not re-fetched per URL kind)."""
     citations = parse_citations(citations_json)
     for c in citations:
         artifact = await _citation_artifact(backend, c)
-        local_pdf = await _citation_local_pdf_url(backend, root, c)
-        if local_pdf:
-            c["local_pdf_url"] = local_pdf
-        else:
-            local_image = await _citation_local_image_url(backend, root, c)
-            if local_image:
-                c["local_image_url"] = local_image
-        if artifact is not None:
+        if artifact is not None and artifact.bytes_path:
+            if artifact.kind == "pdf":
+                c["local_pdf_url"] = _artifact_file_route(
+                    root, artifact, f"/api/artifacts/{artifact.artifact_id}/pdf"
+                )
+            elif artifact.kind == "image":
+                c["local_image_url"] = _artifact_file_route(
+                    root, artifact, f"/api/artifacts/{artifact.artifact_id}/image"
+                )
             c["local_artifact_id"] = artifact.artifact_id
             c["local_artifact_kind"] = artifact.kind
     return citations
@@ -331,7 +340,7 @@ def _replace_bibliography_section(markdown: str, citations: list[dict[str, Any]]
         return markdown
     end = len(lines)
     for j in range(idx + 1, len(lines)):
-        if re.match(r"^#{1,6}\s", lines[j]):
+        if _HEADING_RE.match(lines[j].strip()):
             end = j
             break
     bib = render_bibliography_markdown(_citations_objects(citations))
@@ -339,20 +348,22 @@ def _replace_bibliography_section(markdown: str, citations: list[dict[str, Any]]
     return "\n".join(lines[:idx] + new_block + lines[end:])
 
 
-async def _artifact_cited_by_other_report(
-    backend: StorageBackend, run_id: str, artifact: Any
-) -> bool:
-    """True when any report other than *run_id* still cites *artifact* (via its
-    `citations_json`), so the shared copy must not be deleted."""
+async def _other_cited_artifact_ids(
+    backend: StorageBackend, run_id: str
+) -> set[str]:
+    """Set of artifact_ids cited by reports other than *run_id* (shared copies
+    that must survive when a reference is removed). Computed once per request
+    so the delete loop never re-scans the report table per citation."""
+    cited: set[str] = set()
     reports = await backend.list_reports(limit=100000)
     for r in reports:
         if r.run_id == run_id:
             continue
         for c in parse_citations(r.citations_json):
             other = await _citation_artifact(backend, c)
-            if other is not None and other.artifact_id == artifact.artifact_id:
-                return True
-    return False
+            if other is not None:
+                cited.add(other.artifact_id)
+    return cited
 
 
 @router.get("/health")
@@ -376,13 +387,14 @@ async def list_reports(
     else:
         reports = await backend.list_reports(limit=limit, offset=offset, tag=tag, path=path)
         total = await backend.count_reports(tag=tag, path=path)
-    items = await _report_items(backend, reports)
+    items = await _report_items(backend, get_root_dir(request), reports)
     return ReportListResponse(total=total, limit=limit, offset=offset, items=items)
 
 
 @router.get("/reports/{run_id}", response_model=ReportDetail)
 async def get_report_detail(run_id: str, request: Request) -> ReportDetail:
     backend = get_storage(request)
+    root = get_root_dir(request)
     report = await backend.get_report(run_id)
     if report is None:
         raise HTTPException(status_code=404, detail="report not found")
@@ -392,7 +404,7 @@ async def get_report_detail(run_id: str, request: Request) -> ReportDetail:
         artifact = await backend.get_artifact(report.artifact_id)
         tag_rows = await backend.get_tags_for_artifact(report.artifact_id)
         tags = sorted(t.tag for t in tag_rows)
-    has_pdf = bool(artifact and artifact.kind == "pdf" and artifact.bytes_path)
+    has_pdf = _artifact_has_pdf(root, artifact)
     return ReportDetail(
         run_id=report.run_id,
         started_at=report.started_at,
@@ -402,7 +414,7 @@ async def get_report_detail(run_id: str, request: Request) -> ReportDetail:
         classifier_rationale=report.classifier_rationale,
         iterations=report.iterations,
         markdown=report.markdown,
-        citations=await _enrich_citations(backend, get_root_dir(request), report.citations_json),
+        citations=await _enrich_citations(backend, root, report.citations_json),
         tags=tags,
         artifact_id=report.artifact_id,
         has_pdf=has_pdf,
@@ -424,7 +436,7 @@ async def get_report_markdown(run_id: str, request: Request) -> PlainTextRespons
     return PlainTextResponse(
         report.markdown,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'inline; filename="{run_id}.md"'},
+        headers={"Content-Disposition": f'inline; filename="{_safe_filename(run_id)}.md"'},
     )
 
 
@@ -462,7 +474,7 @@ async def get_report_glossary_markdown(run_id: str, request: Request) -> PlainTe
     return PlainTextResponse(
         md,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{run_id}-glossary.md"'},
+        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(run_id)}-glossary.md"'},
     )
 
 
@@ -480,7 +492,7 @@ async def get_report_bibliography(run_id: str, request: Request) -> PlainTextRes
     return PlainTextResponse(
         bib_md,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{run_id}-bibliography.md"'},
+        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(run_id)}-bibliography.md"'},
     )
 
 
@@ -496,8 +508,16 @@ async def get_report_bibliography_bib(run_id: str, request: Request) -> PlainTex
     return PlainTextResponse(
         bib,
         media_type="application/x-bibtex; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{run_id}.bib"'},
+        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(run_id)}.bib"'},
     )
+
+
+def _serve_artifact_pdf(root: Path, artifact: ArtifactRow, filename: str) -> FileResponse:
+    """Serve an archived PDF artifact's bytes as a FileResponse."""
+    file_path = _safe_resolve(root, artifact.bytes_path)
+    if file_path is None:
+        raise HTTPException(status_code=404, detail="archived PDF file missing")
+    return FileResponse(file_path, media_type="application/pdf", filename=filename)
 
 
 @router.get("/reports/{run_id}/pdf")
@@ -508,13 +528,9 @@ async def get_report_pdf(run_id: str, request: Request) -> FileResponse:
     if report is None:
         raise HTTPException(status_code=404, detail="report not found")
     artifact = await backend.get_artifact(report.artifact_id) if report.artifact_id else None
-    if artifact is None or artifact.kind != "pdf" or not artifact.bytes_path:
+    if artifact is None or artifact.kind != "pdf":
         raise HTTPException(status_code=404, detail="no archived PDF for this report")
-    root_resolved = root.resolve()
-    file_path = (root_resolved / artifact.bytes_path).resolve()
-    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="archived PDF file missing")
-    return FileResponse(file_path, media_type="application/pdf", filename=f"{run_id}.pdf")
+    return _serve_artifact_pdf(root, artifact, f"{_safe_filename(run_id)}.pdf")
 
 
 @router.get("/artifacts/{artifact_id}/pdf")
@@ -523,15 +539,9 @@ async def get_artifact_pdf(artifact_id: str, request: Request) -> FileResponse:
     backend = get_storage(request)
     root = get_root_dir(request)
     artifact = await backend.get_artifact(artifact_id)
-    if artifact is None or artifact.kind != "pdf" or not artifact.bytes_path:
+    if artifact is None or artifact.kind != "pdf":
         raise HTTPException(status_code=404, detail="no archived PDF for this artifact")
-    root_resolved = root.resolve()
-    file_path = (root_resolved / artifact.bytes_path).resolve()
-    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="archived PDF file missing")
-    return FileResponse(
-        file_path, media_type="application/pdf", filename=f"{artifact.artifact_id}.pdf"
-    )
+    return _serve_artifact_pdf(root, artifact, f"{artifact.artifact_id}.pdf")
 
 
 @router.get("/artifacts/{artifact_id}/image")
@@ -540,16 +550,16 @@ async def get_artifact_image(artifact_id: str, request: Request) -> FileResponse
     backend = get_storage(request)
     root = get_root_dir(request)
     artifact = await backend.get_artifact(artifact_id)
-    if artifact is None or artifact.kind != "image" or not artifact.bytes_path:
+    if artifact is None or artifact.kind != "image":
         raise HTTPException(status_code=404, detail="no archived image for this artifact")
-    root_resolved = root.resolve()
-    file_path = (root_resolved / artifact.bytes_path).resolve()
-    if not file_path.is_relative_to(root_resolved) or not file_path.is_file():
+    file_path = _safe_resolve(root, artifact.bytes_path)
+    if file_path is None:
         raise HTTPException(status_code=404, detail="archived image file missing")
+    media_type = mimetypes.guess_type(file_path.name)[0] or "image/png"
     return FileResponse(
         file_path,
-        media_type="image/png",
-        filename=f"{artifact.artifact_id}.png",
+        media_type=media_type,
+        filename=f"{artifact.artifact_id}{file_path.suffix or '.png'}",
     )
 
 
@@ -561,7 +571,7 @@ async def archive_cited_arxiv_pdf(body: ArxivPdfBody, request: Request) -> Arxiv
     cfg: AgentTopConfig = get_config(request)
     aid = body.arxiv_id.strip()
     base = strip_arxiv_version(aid)
-    if not base or base.startswith("scholar:"):
+    if not base or base.startswith("scholar:") or not _ARXIV_ID_RE.fullmatch(base):
         raise HTTPException(status_code=422, detail="invalid arxiv id")
 
     existing = await backend.find_artifact_by_arxiv_id(base)
@@ -576,6 +586,9 @@ async def archive_cited_arxiv_pdf(body: ArxivPdfBody, request: Request) -> Arxiv
         await arxiv_tool.register(reg, cfg)
         writer = LibraryWriter(backend, str(root))
         artifact_id = await archive_cited_pdf(aid, title=None, tools=reg, writer=writer)
+    except Exception as exc:
+        logger.warning("arxiv pdf download failed for %s: %s", aid, exc)
+        return ArxivPdfResponse(error=f"download failed: {exc}")
     finally:
         await reg.close()
 
@@ -695,6 +708,13 @@ async def delete_report_reference(
     if not removed:
         raise HTTPException(status_code=404, detail="reference not found in report")
 
+    # Compute shared-copy ownership up front: if this fails, nothing has been
+    # mutated yet. The per-citation cleanup loop then never re-scans the whole
+    # report table for each removed reference.
+    referencing = await backend.list_reports(limit=100000)
+    owner_ids = {r.artifact_id for r in referencing}
+    other_cited = await _other_cited_artifact_ids(backend, run_id)
+
     new_citations_json = json.dumps(kept)
     new_markdown = _replace_bibliography_section(report.markdown or "", kept)
     await backend.update_report_content(
@@ -706,11 +726,10 @@ async def delete_report_reference(
         if artifact is None:
             continue
         # Never delete a report's own output artifact out from under it.
-        referencing = await backend.list_reports(limit=100000)
-        if any(r.artifact_id == artifact.artifact_id for r in referencing):
+        if artifact.artifact_id in owner_ids:
             continue
         # Keep shared copies still cited by other reports.
-        if await _artifact_cited_by_other_report(backend, run_id, artifact):
+        if artifact.artifact_id in other_cited:
             continue
         remove_artifact_files(root, artifact)
         await backend.delete_artifact(artifact.artifact_id)
@@ -780,7 +799,7 @@ def _replace_report_title(markdown: str, new_title: str) -> str:
         return markdown
     lines = markdown.splitlines()
     for i, line in enumerate(lines):
-        if re.match(r"^#{1,6}\s+", line):
+        if _HEADING_RE.match(line):
             lines[i] = f"# {new_title}"
             return "\n".join(lines)
     return markdown
@@ -822,6 +841,9 @@ async def merge_report(
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning("merge failed for %s: %s", run_id, e)
+        raise HTTPException(status_code=500, detail=f"merge failed: {e}")
     new_report = await backend.get_report(new_run_id)
     return MergeReportsResponse(
         run_id=new_run_id,
@@ -852,9 +874,10 @@ async def list_artifacts(
     total = await backend.count_artifacts(q=q, kind=kind)
     art_ids = [a.artifact_id for a in items]
     tags_map = await backend.get_tags_for_artifacts(art_ids) if art_ids else {}
+    analyses_map = await backend.get_analyses_for_artifacts(art_ids) if art_ids else {}
     out: list[ArtifactListItem] = []
     for a in items:
-        analyses = await backend.get_analyses_for_artifact(a.artifact_id)
+        analyses = analyses_map.get(a.artifact_id, [])
         rel = max(
             (x.relevance_score for x in analyses if x.relevance_score is not None),
             default=None,
@@ -917,7 +940,7 @@ async def search(
 ) -> SearchResponse:
     backend = get_storage(request)
     reports = await backend.search_reports(q, limit=limit, offset=0)
-    items = await _report_items(backend, reports)
+    items = await _report_items(backend, get_root_dir(request), reports)
     hits = await backend.full_text_search(q, kind="any", limit=limit)
     return SearchResponse(
         q=q,
@@ -941,5 +964,5 @@ async def stats(request: Request) -> StatsResponse:
     return StatsResponse(
         reports=await backend.count_reports(),
         artifacts=await backend.count_artifacts(),
-        tags=len(await backend.list_tags(limit=100000)),
+        tags=await backend.count_tags(),
     )

@@ -194,7 +194,9 @@ def test_list_reports(client):
     newest, older = body["items"]
     assert newest["run_id"] == "run_b"
     assert newest["path"] == "quick"
+    assert newest["title"] == "Report B"
     assert older["run_id"] == "run_a"
+    assert older["title"] == "Report A"
     assert older["tags"] == ["ml", "survey"]
     assert older["citation_count"] == 1
     assert older["has_pdf"] is True
@@ -373,7 +375,6 @@ def test_delete_report_requires_confirmation(client):
     r = client.delete("/api/reports/run_a", params={"confirm": "true"})
     assert r.status_code == 200
     body = r.json()
-    assert body["ok"] is True
     assert any(path.endswith("run_a.md") for path in body["removed_files"])
     assert client.get("/api/reports/run_a").status_code == 404
 
@@ -491,7 +492,6 @@ def test_delete_artifact_removes_file_and_rows(client):
     r = client.delete("/api/artifacts/art_b", params={"confirm": "true"})
     assert r.status_code == 200
     body = r.json()
-    assert body["ok"] is True
     assert any(p.endswith("art_b.pdf") for p in body["removed_files"])
     # Artifact + its analysis + FTS row are gone.
     assert client.get("/api/artifacts/art_b").status_code == 404

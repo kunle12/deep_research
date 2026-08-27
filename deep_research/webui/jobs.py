@@ -34,6 +34,8 @@ _MAX_JOBS = 50
 _QUEUE_MAX = 500
 _TERMINAL_EVENTS = {"done", "error", "cancelled"}
 _WEBHOOK_TIMEOUT_S = 10.0
+_WEBHOOK_REPORT_MAX = 200_000
+_CHECKPOINT_MAX_BYTES = 4 * 1024 * 1024
 
 # Fire-and-forget webhook tasks: keep a strong ref (the event loop only keeps
 # running tasks alive while they're awaited) so a delivery can't be GC'd
@@ -62,7 +64,7 @@ class ResearchJob:
     path_override: str | None = None
     attach_to: str | None = None
     webhook_url: str | None = None
-    status: str = "running"  # running | done | failed | cancelled
+    status: str = "running"  # running | cancelling | done | failed | cancelled | paused
     phase: str = ""
     step: str = ""
     detail: str = ""
@@ -208,6 +210,13 @@ class ResearchJobManager:
         if job.run_id:
             self._discard_checkpoint(job.run_id)
         job.task.cancel()
+        task = job.task
+        job.task = None
+        # Wait for the task to actually unwind so the concurrency slot
+        # (`_running`) is released before a caller starts another job, and so
+        # the job reaches the terminal `cancelled` state before we report it.
+        with suppress(asyncio.CancelledError):
+            await task
         return True
 
     async def pause(self, job_id: str) -> bool:
@@ -297,6 +306,9 @@ class ResearchJobManager:
             return restored
         for f in self._checkpoint_dir.iterdir():
             if not f.is_file() or not f.name.endswith(".json"):
+                continue
+            # Guard against huge/corrupt checkpoints before loading them whole.
+            if f.stat().st_size > _CHECKPOINT_MAX_BYTES:
                 continue
             try:
                 raw = json.loads(f.read_text())
@@ -508,7 +520,8 @@ class ResearchJobManager:
             "event": event,
             "job_id": job.job_id,
             "research_id": job.run_id or "",
-            "report": report.markdown if report else "",
+            # Cap the report body so a huge report can't balloon the webhook POST.
+            "report": (report.markdown or "")[:_WEBHOOK_REPORT_MAX] if report else "",
             "artifacts": 0,
             "references": len(report.citations) if report else 0,
             "error": error or "",

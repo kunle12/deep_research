@@ -124,6 +124,10 @@ class StorageBackend(Protocol):
         """All distinct tags with counts, ordered by count DESC then tag."""
         ...
 
+    async def count_tags(self) -> int:
+        """Number of distinct tags."""
+        ...
+
     async def get_artifacts(self, artifact_ids: list[str]) -> dict[str, ArtifactRow]:
         """Batch artifact fetch, keyed by artifact_id."""
         ...
@@ -134,6 +138,12 @@ class StorageBackend(Protocol):
     async def get_analysis(self, analysis_id: str) -> AnalysisRow | None: ...
 
     async def get_analyses_for_artifact(self, artifact_id: str) -> list[AnalysisRow]: ...
+
+    async def get_analyses_for_artifacts(
+        self, artifact_ids: list[str]
+    ) -> dict[str, list[AnalysisRow]]:
+        """Batch analysis fetch, keyed by artifact_id (missing ids omitted)."""
+        ...
 
     # -- Citation edge ops --
     async def insert_citation_edge(self, edge: CitationEdgeRow) -> None: ...
@@ -156,7 +166,11 @@ class StorageBackend(Protocol):
 
     async def get_glossary_entry(self, term_canonical: str) -> GlossaryEntry | None: ...
 
-    async def list_glossary_entries(self) -> list[GlossaryEntry]: ...
+    async def list_glossary_entries(
+        self, run_id: str | None = None
+    ) -> list[GlossaryEntry]:
+        """All glossary entries, optionally filtered to one run."""
+        ...
 
     # -- Refresh foundation --
     async def insert_artifact_version(

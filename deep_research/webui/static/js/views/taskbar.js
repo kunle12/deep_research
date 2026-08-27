@@ -16,19 +16,11 @@ import {
   fmtElapsed,
   getTrackedJob,
   isActiveStatus,
+  jobStatusText,
   visibleJobs,
+  STATUS_LABEL,
 } from "../jobs.js";
 import { openJobDialog } from "./jobDialog.js";
-
-const STATUS_LABEL = {
-  running: "Researching",
-  cancelling: "Cancelling",
-  paused: "Paused",
-  done: "Complete",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  lost: "Lost",
-};
 
 const STATUS_ICON = {
   paused: "❚❚",
@@ -52,13 +44,10 @@ export function initTaskbar() {
 
 function subText(job) {
   if (job.status === "done") {
-    return job.archived
-      ? "Report saved to the library — click for details"
-      : "Report finished (not archived) — click for details";
+    return (job.archived ? "Report saved to the library" : "Report finished, but not archived (is pdl.enabled set?)") + " — click for details";
   }
-  if (job.status === "failed") return job.error || "Unknown error";
-  if (job.status === "cancelled") return "The job was cancelled";
-  if (job.status === "lost") return "Connection lost — the job is no longer available";
+  const terminal = jobStatusText(job);
+  if (terminal) return terminal;
   const label = job.step || job.phase;
   if (!label) return "Starting…";
   return job.detail ? `${label} — ${job.detail}` : label;
@@ -179,6 +168,7 @@ function render() {
   if (!list.length) {
     bar.hidden = true;
     document.body.classList.remove("taskbar-open");
+    document.body.style.removeProperty("--taskbar-pad");
     clear(bar);
     rows.clear();
     stopTicker();

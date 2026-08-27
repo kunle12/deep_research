@@ -1,10 +1,10 @@
 /* Dependency-free, safe markdown renderer.
  *
  * parse(source) / parseInline(text) produce a pure AST — no DOM, no globals —
- * so the parser can be unit-tested under Node.
- * renderMarkdown(source) turns the AST into DOM nodes. Text is only ever
- * inserted via textContent / createTextNode; raw markdown is never fed to
- * innerHTML, and links are restricted to safe protocols.
+ * so the parser can be unit-tested under Node. renderBlocks(blocks) turns the
+ * AST into DOM nodes. Text is only ever inserted via textContent /
+ * createTextNode; raw markdown is never fed to innerHTML, and links are
+ * restricted to safe protocols.
  */
 
 import { el } from "./dom.js";
@@ -538,8 +538,4 @@ function renderBlock(block) {
 
 export function renderBlocks(blocks) {
   return blocks.map(renderBlock).filter(Boolean);
-}
-
-export function renderMarkdown(source) {
-  return renderBlocks(parse(source));
 }

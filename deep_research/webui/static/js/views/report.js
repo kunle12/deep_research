@@ -43,8 +43,10 @@ export function renderReport(root, runId) {
   const content = el("div", { class: "report-loading", text: "Loading report…" });
   root.append(content);
 
+  let disposed = false;
   getReport(runId)
     .then((report) => {
+      if (disposed) return; // navigated away while loading — ignore stale response
       clear(content);
       // Drop the loading-state class so its `text-align: center` no longer
       // leaks into the rendered report (bibliography/glossary/panels).
@@ -53,6 +55,7 @@ export function renderReport(root, runId) {
     })
 
     .catch((err) => {
+      if (disposed) return;
       clear(content);
       content.append(
         el(
@@ -65,6 +68,7 @@ export function renderReport(root, runId) {
     });
 
   return () => {
+    disposed = true;
     window.removeEventListener("scroll", onScroll);
     bar.remove();
     if (_activeQueryCleanup) _activeQueryCleanup();
@@ -111,11 +115,11 @@ function buildReport(report) {
         onclick: () => openAddSource(report),
       }),
       report.has_pdf
-        ? el("a", { class: "btn", href: report.pdf_url, target: "_blank", rel: "noopener", text: "Open PDF" })
+        ? el("a", { class: "btn", href: safeUrl(report.pdf_url), target: "_blank", rel: "noopener", text: "Open PDF" })
         : null,
       el("a", {
         class: "btn",
-        href: report.markdown_url,
+        href: safeUrl(report.markdown_url),
         download: `${report.run_id}.md`,
         text: "Download .md",
       }),
@@ -174,14 +178,14 @@ function buildReport(report) {
         { class: "panel-export" },
         el("a", {
           class: "btn",
-          href: report.bibliography_bib_url,
+          href: safeUrl(report.bibliography_bib_url),
           download: `${report.run_id}.bib`,
           text: "Download .bib",
           title: "Download the report references as BibTeX",
         }),
         el("a", {
           class: "btn",
-          href: report.bibliography_url,
+          href: safeUrl(report.bibliography_url),
           download: `${report.run_id}-bibliography.md`,
           text: "Download .md",
           title: "Download the report bibliography as Markdown",
@@ -313,7 +317,7 @@ function glossaryPanel(report) {
       { class: "panel-export" },
       el("a", {
         class: "btn",
-        href: report.glossary_url,
+        href: safeUrl(report.glossary_url),
         download: `${report.run_id}-glossary.md`,
         text: "Download glossary (.md)",
       }),
@@ -720,8 +724,8 @@ function mergePanel(report) {
       const ok = await confirmDialog({
         title: "Merge reports",
         message: delCheck.checked
-          ? `Merge this report with ${selected.length} other report${selected.length > 1 ? "s" : ""} into one? The source reports will be deleted after their results are merged.`
-          : `Merge this report with ${selected.length} other report${selected.length > 1 ? "s" : ""} into one unified report? The originals will be kept and tagged "merged".`,
+          ? `Merge this report with ${plural(selected.length, "other report")} into one? The source reports will be deleted after their results are merged.`
+          : `Merge this report with ${plural(selected.length, "other report")} into one unified report? The originals will be kept and tagged "merged".`,
         confirmText: "Merge",
         danger: delCheck.checked,
       });
