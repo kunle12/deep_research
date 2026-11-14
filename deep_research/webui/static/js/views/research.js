@@ -10,7 +10,7 @@ import { startResearch } from "../api.js";
 import { hasActiveJob, hasPausedJob, trackJob } from "../jobs.js";
 import { openModal } from "../modal.js";
 
-const PATHS = ["quick", "deep", "academic", "url_source"];
+const PATHS = ["quick", "deep", "academic", "url_source", "applied"];
 
 let current = null; // close() of the open research modal, if any
 

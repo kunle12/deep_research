@@ -151,6 +151,7 @@ async def _fetch_pdf_source(
     run_id: str = "",
     pdf_cache_dir: str | None = None,
     archive_fallback: bool = True,
+    size_limit_mb: float | None = None,
 ) -> tuple[str, list[Citation], list[str]]:
     """Download a PDF from a direct URL and extract text via the pdf tool.
 
@@ -159,7 +160,10 @@ async def _fetch_pdf_source(
     VLM-ready JPEG data URLs for the first `max_pages` pages.
     """
     download_result, archive_url = await _download_pdf_to_cache(
-        url, pdf_cache_dir, archive_fallback=archive_fallback
+        url,
+        pdf_cache_dir,
+        archive_fallback=archive_fallback,
+        size_limit_mb=size_limit_mb,
     )
     if isinstance(download_result, str):
         # Download failed — pdf_path is an error message
@@ -217,6 +221,7 @@ async def _download_pdf_to_cache(
     url: str,
     cache_dir: str | None = None,
     archive_fallback: bool = True,
+    size_limit_mb: float | None = None,
 ) -> tuple[str | Path, str | None]:
     """Download a PDF from URL to a tmp cache.
 
@@ -243,11 +248,17 @@ async def _download_pdf_to_cache(
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as c:
             resp = await c.get(url)
             resp.raise_for_status()
+        if size_limit_mb and len(resp.content) > size_limit_mb * 1024 * 1024:
+            return (
+                f"(PDF exceeds configured size limit: {len(resp.content)} bytes > "
+                f"{size_limit_mb:.1f} MB)",
+                None,
+            )
         await asyncio.to_thread(tmp_pdf.write_bytes, resp.content)
         return tmp_pdf, None
     except httpx.HTTPStatusError as e:
         if archive_fallback and not _is_archive_url(url):
-            archive_url = await _download_archived_pdf(url, tmp_pdf)
+            archive_url = await _download_archived_pdf(url, tmp_pdf, size_limit_mb)
             if archive_url is not None:
                 return tmp_pdf, archive_url
         status = e.response.status_code
@@ -263,12 +274,14 @@ async def _download_pdf_to_cache(
         return f"(failed to download PDF: {type(e).__name__}: {e})", None
 
 
-async def _download_archived_pdf(url: str, tmp_pdf: Path) -> str | None:
+async def _download_archived_pdf(
+    url: str, tmp_pdf: Path, size_limit_mb: float | None = None
+) -> str | None:
     """Fetch *url*'s latest Wayback snapshot as a PDF.
 
     Saves the bytes to *tmp_pdf* and returns the concrete snapshot URL when
     the capture is a real PDF; returns None otherwise (no capture, HTML
-    snapshot, or archive.org itself failing).
+    snapshot, oversized capture, or archive.org itself failing).
     """
     import httpx
 
@@ -278,6 +291,8 @@ async def _download_archived_pdf(url: str, tmp_pdf: Path) -> str | None:
             wr = await c.get(wayback_url)
             wr.raise_for_status()
             if not wr.content.startswith(b"%PDF-"):
+                return None
+            if size_limit_mb and len(wr.content) > size_limit_mb * 1024 * 1024:
                 return None
             await asyncio.to_thread(tmp_pdf.write_bytes, wr.content)
             return str(wr.url)
@@ -302,9 +317,12 @@ async def _fetch_html_source(
         return ("(fetch_page tool not registered)", [], "")
     res = await tools.call("fetch_page", {"url": url})
 
-    # Archive HTML in library if writer is configured
+    # Archive the ORIGINAL HTML (not extracted text) in the library if a
+    # writer is configured. Wayback/Firecrawl rescues only have text.
     if isinstance(writer, LibraryWriter) and res.content and run_id:
-        await archive_html_source(url, res.content, tools=tools, config=config, writer=writer)
+        await archive_html_source(
+            url, res.raw_html or res.content, tools=tools, config=config, writer=writer
+        )
 
     return (res.content, list(res.citations), res.error or "")
 
@@ -385,6 +403,16 @@ async def fetch_source(
     archived artifact_id resolved from the library when a writer is active.
     """
     url_type = await classify_url(url, head_probe_timeout_s=config.url_source.head_probe_timeout_s)
+    if url_type.value not in config.url_source.allowed_url_types:
+        return FetchedSource(
+            url=url,
+            url_type=url_type,
+            arxiv_id=None,
+            content_text="",
+            citations=[],
+            fetch_error=f"URL type {url_type.value!r} is not enabled in url_source.allowed_url_types",
+            page_image_data_urls=[],
+        )
     arxiv_id = extract_arxiv_id(url) if url_type == UrlType.arxiv else None
     render_pdf = config.pdf_vision.enabled
     max_pdf_pages = 25
@@ -413,6 +441,7 @@ async def fetch_source(
             run_id=run_id,
             pdf_cache_dir=config.arxiv.pdf_cache_dir,
             archive_fallback=config.fetch_page.archive_org_fallback,
+            size_limit_mb=config.url_source.fetch_pdf_size_limit_mb,
         )
     elif url_type == UrlType.html:
         content_text, citations, fetch_error = await _fetch_html_source(
@@ -538,8 +567,26 @@ async def url_source(
     reporter: ProgressReporter = ensure_reporter(progress)
     reporter.phase("url.classify", url[:80])
     url_type = await classify_url(url, head_probe_timeout_s=config.url_source.head_probe_timeout_s)
+    if url_type.value not in {"arxiv", "pdf", "html"}:
+        return Report(
+            markdown=f"# Error\n\nUnsupported URL type for `{url}` ({url_type.value}).",
+            path="unclear",
+            classifier_rationale=f"URL unclassifiable: {url_type.value}",
+            created_at=datetime.now(UTC),
+            query=query,
+        )
+    if url_type.value not in config.url_source.allowed_url_types:
+        return Report(
+            markdown=f"# Error\n\nURL type `{url_type.value}` is not enabled in config.",
+            path="unclear",
+            classifier_rationale=f"URL type not allowed: {url_type.value}",
+            created_at=datetime.now(UTC),
+            query=query,
+        )
     arxiv_id = extract_arxiv_id(url) if url_type == UrlType.arxiv else None
-    wants_follow_up = query_asks_for_follow_up(query, config.url_source.follow_up_trigger_phrases)
+    wants_follow_up = config.url_source.auto_follow_up or query_asks_for_follow_up(
+        query, config.url_source.follow_up_trigger_phrases
+    )
     reporter.step(
         "url.classify",
         f"type={url_type.value} arxiv_id={arxiv_id or '-'} followup={wants_follow_up}",
@@ -574,6 +621,7 @@ async def url_source(
             run_id=run_id,
             pdf_cache_dir=config.arxiv.pdf_cache_dir,
             archive_fallback=config.fetch_page.archive_org_fallback,
+            size_limit_mb=config.url_source.fetch_pdf_size_limit_mb,
         )
     elif url_type == UrlType.html:
         reporter.phase("url.fetch", f"html: {url[:80]}")

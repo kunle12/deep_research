@@ -51,7 +51,7 @@ All responses are JSON unless noted. Destructive endpoints are gated on
 | Field | Type | Notes |
 |-------|------|-------|
 | `query` | `str` | Required, 1–1000 chars. |
-| `path_override` | `str?` | `"quick"` \| `"deep"` \| `"academic"` \| `"url_source"`. |
+| `path_override` | `str?` | `"quick"` \| `"deep"` \| `"academic"` \| `"url_source"` \| `"applied"`. |
 | `attach_to_run_id` | `str?` | Attach mode: `query` must be an `http(s)` URL and the target report must exist. |
 | `webhook_url` | `str?` | Optional http(s) URL POSTed when the job completes or fails (see Webhook). |
 
@@ -176,7 +176,7 @@ calls.
 | Field | Type | Notes |
 |-------|------|-------|
 | `query` | `str` | Required. |
-| `path_override` | `str?` | `"quick"` \| `"deep"` \| `"academic"` \| `"url_source"`. |
+| `path_override` | `str?` | `"quick"` \| `"deep"` \| `"academic"` \| `"url_source"` \| `"applied"`. |
 | `config_path` | `str` | Default `"config.yaml"`; must resolve inside the working directory. |
 
 Response `ResearchResponse`: `{markdown, path, citations: [], iterations}`.

@@ -20,6 +20,7 @@ Constraints:
   - ## Limitations / Open Questions
 - Preserve all source URLs that contributed evidence.
 - The "Deep paper analyses" section contains the most authoritative sources for this query; synthesize their findings into the report and cite them inline with markdown links.
+- The "Evidence table" section lists atomic claims with supporting quotes/source URLs and stance. Use it to ground factual statements, preserve precise numbers, and surface contradictions under "Limitations / Open Questions" rather than silently choosing one side.
 - Write in clear, neutral, encyclopedic prose.
 - Length: 1000-2500 words depending on the depth of available evidence.
 

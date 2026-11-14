@@ -33,8 +33,10 @@ agent:
   max_iterations: 4               # critic-loop depth cap (3 = default; 4-5 = deeper gap-following)
   max_subquestions: 8             # planner breadth cap (6 = default; 8-10 = wider coverage)
   max_citations_per_researcher: 10  # cap on citations a single researcher may return (keeps bibliographies clean)
+  evidence_pass: true               # dedicated pre-writer claim/evidence extraction pass
+  evidence_max_items: 60            # cap on extracted claims in the evidence table
   max_concurrent_tools: 8        # asyncio.Semaphore bound on parallel tool dispatch
-  researcher_timeout_s: 5400      # per-researcher wall-clock cap (PDF fetch + LLM turns)
+  researcher_timeout_s: 6000      # per-researcher wall-clock cap (16 turns x 240s LLM timeout + tool I/O)
   researcher_max_turns: 16        # per-researcher tool-loop turn budget (must fit researcher_timeout_s: turns x llm.timeout_s + tool I/O)
   tool_timeout_s: 300.0           # hard per-tool-call timeout; 0 disables (not recommended)
   max_subquestion_retries: 3      # max researcher failures per sub-q before forced coverage

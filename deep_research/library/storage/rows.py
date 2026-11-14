@@ -5,6 +5,7 @@ Each dataclass corresponds to one table in the SQLite schema (P10.5a).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 
@@ -110,6 +111,60 @@ class GlossaryEntry:
     last_updated: str = ""
 
 
+def _json_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return [raw] if isinstance(raw, str) and raw.strip() else []
+    if isinstance(data, list):
+        return [str(x) for x in data if str(x).strip()]
+    return []
+
+
+def merge_glossary_entries(existing: GlossaryEntry, incoming: GlossaryEntry) -> GlossaryEntry:
+    """Merge a new glossary extraction into an existing entry.
+
+    A later extraction must not silently degrade a good earlier definition.
+    Keep the higher-confidence definition fields, fill missing fields from the
+    other side, and union related terms / domain tags. Provenance
+    (``first_seen_*``) always comes from the original row.
+    """
+    incoming_conf = incoming.confidence or 0.0
+    existing_conf = existing.confidence or 0.0
+    incoming_wins = incoming_conf >= existing_conf
+
+    def _pick(new: str | None, old: str | None) -> str | None:
+        if incoming_wins:
+            return new or old
+        return old or new
+
+    related = sorted(
+        set(_json_list(existing.related_terms)) | set(_json_list(incoming.related_terms))
+    )
+    domains = sorted(
+        set(_json_list(existing.domain_tags)) | set(_json_list(incoming.domain_tags))
+    )
+
+    return GlossaryEntry(
+        term_id=existing.term_id,
+        term=_pick(incoming.term or None, existing.term or None) or existing.term or incoming.term,
+        term_canonical=existing.term_canonical or incoming.term_canonical,
+        kind=_pick(incoming.kind or None, existing.kind or None) or "concept",
+        short_def=_pick(incoming.short_def, existing.short_def),
+        long_def=_pick(incoming.long_def, existing.long_def),
+        acronym_expansion=_pick(incoming.acronym_expansion, existing.acronym_expansion),
+        related_terms=json.dumps(related, ensure_ascii=False) if related else None,
+        domain_tags=json.dumps(domains, ensure_ascii=False) if domains else None,
+        confidence=max(incoming_conf, existing_conf) or None,
+        first_seen_run_id=existing.first_seen_run_id or incoming.first_seen_run_id,
+        first_seen_artifact_id=existing.first_seen_artifact_id
+        or incoming.first_seen_artifact_id,
+        last_updated=incoming.last_updated or existing.last_updated,
+    )
+
+
 @dataclass
 class RefreshJobRow:
     """Row from `refresh_jobs` table."""
@@ -136,3 +191,5 @@ class SearchHit:
     extracted_text: str
     score: float = 0.0
     relevance_score: float | None = None  # stored analysis relevance, if any
+    url: str = ""  # artifact source URL, when known
+    source_type: str = ""  # arxiv | blog | html | pdf | research_report

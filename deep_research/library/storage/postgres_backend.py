@@ -17,6 +17,7 @@ from deep_research.library.storage.rows import (
     ReportRow,
     SearchHit,
     TagRow,
+    merge_glossary_entries,
 )
 from deep_research.library.storage.sqlite_backend import SqliteStorageBackend
 
@@ -735,6 +736,30 @@ class PostgresStorageBackend:
 
     async def upsert_glossary_entry(self, entry: GlossaryEntry) -> None:
         await self._ensure_conn()
+        existing_row = await self._fetchone(
+            "SELECT term_id, term, term_canonical, kind, short_def, long_def, "
+            "acronym_expansion, related_terms, domain_tags, confidence, "
+            "first_seen_run_id, first_seen_artifact_id, last_updated "
+            "FROM glossary WHERE term_canonical = $1",
+            entry.term_canonical,
+        )
+        if existing_row is not None:
+            existing = GlossaryEntry(
+                term_id=existing_row[0],
+                term=existing_row[1],
+                term_canonical=existing_row[2],
+                kind=existing_row[3],
+                short_def=existing_row[4],
+                long_def=existing_row[5],
+                acronym_expansion=existing_row[6],
+                related_terms=existing_row[7],
+                domain_tags=existing_row[8],
+                confidence=existing_row[9],
+                first_seen_run_id=existing_row[10],
+                first_seen_artifact_id=existing_row[11],
+                last_updated=existing_row[12],
+            )
+            entry = merge_glossary_entries(existing, entry)
         sql = """
             INSERT INTO glossary (
                 term, term_canonical, kind, short_def, long_def,
@@ -974,34 +999,42 @@ class PostgresStorageBackend:
 
     async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
-        # plainto_tsquery parses boolean operators (& | !) and can raise a
-        # tsquery syntax error on arbitrary user input — sanitize the query
-        # the same way the SQLite backend does before passing it through.
-        safe_query = SqliteStorageBackend._sanitize_fts_query(query)
+        # OR the query terms and rank by ts_rank so natural-language questions
+        # match prior analyses on their key concepts instead of requiring every
+        # word to appear in one stored summary.
+        # to_tsquery uses the `|` operator; the SQLite helper produces `OR`.
+        safe_query = SqliteStorageBackend._fts_or_query(query).replace(" OR ", " | ")
+        rank_expr = (
+            "ts_rank(to_tsvector('english', "
+            "coalesce(an.summary, '') || ' ' || coalesce(an.key_findings, '')), "
+            "to_tsquery('english', $1))"
+        )
         if kind == "any":
-            sql = """
+            sql = f"""
                 SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
-                       an.relevance_score
+                       an.relevance_score, a.source_url, a.source_type
                 FROM analyses an
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
                 WHERE (
-                    to_tsvector('english', coalesce(an.summary, '')) @@ plainto_tsquery('english', $1)
-                    OR to_tsvector('english', coalesce(an.key_findings, '')) @@ plainto_tsquery('english', $1)
+                    to_tsvector('english', coalesce(an.summary, '')) @@ to_tsquery('english', $1)
+                    OR to_tsvector('english', coalesce(an.key_findings, '')) @@ to_tsquery('english', $1)
                 )
+                ORDER BY {rank_expr} DESC
                 LIMIT $2
             """
             rows = await self._fetchall(sql, safe_query, limit)
         else:
             sql = """
                 SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
-                       an.relevance_score
+                       an.relevance_score, a.source_url, a.source_type
                 FROM analyses an
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
                 WHERE a.kind = $1
                   AND (
-                    to_tsvector('english', coalesce(an.summary, '')) @@ plainto_tsquery('english', $2)
-                    OR to_tsvector('english', coalesce(an.key_findings, '')) @@ plainto_tsquery('english', $2)
+                    to_tsvector('english', coalesce(an.summary, '')) @@ to_tsquery('english', $2)
+                    OR to_tsvector('english', coalesce(an.key_findings, '')) @@ to_tsquery('english', $2)
                   )
+                ORDER BY ts_rank(to_tsvector('english', coalesce(an.summary, '') || ' ' || coalesce(an.key_findings, '')), to_tsquery('english', $2)) DESC
                 LIMIT $3
             """
             rows = await self._fetchall(sql, kind, safe_query, limit)
@@ -1016,19 +1049,23 @@ class PostgresStorageBackend:
                     extracted_text=r[4] or "",
                     score=1.0,
                     relevance_score=r[5],
+                    url=r[6] or "",
+                    source_type=r[7] or "",
                 )
             )
         return results
 
     async def glossary_search(self, query: str, limit: int) -> list[GlossaryEntry]:
         await self._ensure_conn()
+        safe_query = SqliteStorageBackend._fts_or_query(query).replace(" OR ", " | ")
         sql = """
             SELECT * FROM glossary
-            WHERE to_tsvector('english', coalesce(term, '') || ' ' || coalesce(short_def, ''))
-                  @@ plainto_tsquery('english', $1)
+            WHERE to_tsvector('english', coalesce(term, '') || ' ' || coalesce(short_def, '') || ' ' || coalesce(long_def, ''))
+                  @@ to_tsquery('english', $1)
+            ORDER BY ts_rank(to_tsvector('english', coalesce(term, '') || ' ' || coalesce(short_def, '') || ' ' || coalesce(long_def, '')), to_tsquery('english', $1)) DESC
             LIMIT $2
         """
-        rows = await self._fetchall(sql, query, limit)
+        rows = await self._fetchall(sql, safe_query, limit)
         results: list[GlossaryEntry] = []
         for r in rows:
             results.append(

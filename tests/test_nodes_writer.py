@@ -21,7 +21,14 @@ from deep_research.nodes.writer import (
     _render_sections_for_prompt,
     write,
 )
-from deep_research.state import Citation, PaperAnalysis, ResearchPlan, ResearchState, SubQuestion
+from deep_research.state import (
+    Citation,
+    EvidenceItem,
+    PaperAnalysis,
+    ResearchPlan,
+    ResearchState,
+    SubQuestion,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -114,6 +121,35 @@ class TestRenderSectionsForPrompt:
         out = _render_sections_for_prompt(state)
         assert "IMPORTANT SUMMARY" in out
         assert out.startswith("## Deep paper analyses")
+
+    def test_all_sub_question_headings_survive_large_plan(self) -> None:
+        """Token budgeting must clip draft bodies, never drop whole questions."""
+        subs = [SubQuestion(id=f"sq{i}", question=f"Question {i}") for i in range(8)]
+        state = ResearchState(query="q", plan=ResearchPlan(sub_questions=subs))
+        for i in range(8):
+            state.absorb_section(f"sq{i}", [], "D" * 5000)
+        out = _render_sections_for_prompt(state)
+        for i in range(8):
+            assert f"## Question {i}" in out
+        assert "truncated to fit the writer context budget" in out
+
+    def test_renders_evidence_table_and_contradictions(self) -> None:
+        state = _state(drafts={"sq1": "draft body"})
+        state.evidence = [
+            EvidenceItem(
+                claim="RLHF improves safety",
+                evidence="safety improves",
+                source_url="https://a",
+                stance="supports",
+                confidence=0.9,
+            )
+        ]
+        state.contradictions = ["A says improves; B says reduces"]
+        out = _render_sections_for_prompt(state)
+        assert "## Evidence table" in out
+        assert "RLHF improves safety" in out
+        assert "https://a" in out
+        assert "Contradictions / conflicts" in out
 
     def test_renders_deep_paper_analyses_section(self) -> None:
         state = _state(drafts={"sq1": "draft body"})

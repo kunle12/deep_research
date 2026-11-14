@@ -115,11 +115,19 @@ class TestRenderSectionsForPrompt:
         out = _render_sections_for_prompt(state)
         assert "(no draft produced)" in out
 
-    def test_draft_truncated_to_2000_chars(self) -> None:
+    def test_draft_is_clipped_to_budget(self) -> None:
         state = _state(drafts={"sq1": "A" * 5000})
         out = _render_sections_for_prompt(state)
-        # The draft is truncated to 2000 chars
-        assert len([ln for ln in out.splitlines() if "AAAA" in ln]) > 0
+        assert "truncated to fit the critic context budget" in out
+
+    def test_all_sub_question_headings_survive_large_plan(self) -> None:
+        subs = [SubQuestion(id=f"sq{i}", question=f"Question {i}") for i in range(10)]
+        state = ResearchState(query="q", plan=ResearchPlan(sub_questions=subs))
+        for i in range(10):
+            state.absorb_section(f"sq{i}", [], "D" * 5000)
+        out = _render_sections_for_prompt(state)
+        for i in range(10):
+            assert f"### Sub-question: Question {i}" in out
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +211,7 @@ class TestReviewHappyPath:
         out = await review(state, client, "m")
         # Only the dict gap should be kept
         assert len(out.gaps) == 1
-        assert out.gaps[0].id == "g2"
+        assert out.gaps[0].id == "critic_gap_2"
         assert out.gaps[0].question == "Valid gap"
 
 

@@ -22,6 +22,7 @@ from deep_research.library.storage.rows import (
     ReportRow,
     SearchHit,
     TagRow,
+    merge_glossary_entries,
 )
 
 logger = logging.getLogger(__name__)
@@ -896,6 +897,33 @@ class SqliteStorageBackend:
     async def _upsert_glossary_entry(self, entry: GlossaryEntry) -> None:
         """Private per-entry upsert (no op lock) — callers must already hold it."""
         await self._ensure_conn()
+        # Merge with any existing row before writing: a later extraction must
+        # not silently degrade a good earlier definition, and related
+        # terms/tags should accumulate across runs.
+        existing_row = await self._fetchone(
+            "SELECT term_id, term, term_canonical, kind, short_def, long_def, "
+            "acronym_expansion, related_terms, domain_tags, confidence, "
+            "first_seen_run_id, first_seen_artifact_id, last_updated "
+            "FROM glossary WHERE term_canonical = ?",
+            (entry.term_canonical,),
+        )
+        if existing_row is not None:
+            existing = GlossaryEntry(
+                term_id=existing_row[0],
+                term=existing_row[1],
+                term_canonical=existing_row[2],
+                kind=existing_row[3],
+                short_def=existing_row[4],
+                long_def=existing_row[5],
+                acronym_expansion=existing_row[6],
+                related_terms=existing_row[7],
+                domain_tags=existing_row[8],
+                confidence=existing_row[9],
+                first_seen_run_id=existing_row[10],
+                first_seen_artifact_id=existing_row[11],
+                last_updated=existing_row[12],
+            )
+            entry = merge_glossary_entries(existing, entry)
         # ON CONFLICT DO UPDATE (not INSERT OR REPLACE): preserves term_id so
         # the content-backed glossary_fts rowid linkage stays valid, and keeps
         # first_seen_* provenance from the original insertion.
@@ -1188,29 +1216,97 @@ class SqliteStorageBackend:
         tokens = [t for t in tokens if t]
         return " ".join(tokens) if tokens else raw
 
+    _FTS_STOPWORDS = frozenset(
+        {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "what",
+            "how",
+            "why",
+            "when",
+            "where",
+            "who",
+            "which",
+            "that",
+            "this",
+            "it",
+            "its",
+            "of",
+            "on",
+            "in",
+            "to",
+            "for",
+            "and",
+            "or",
+            "with",
+            "does",
+            "do",
+            "can",
+            "should",
+            "about",
+            "into",
+            "from",
+            "by",
+            "as",
+            "at",
+            "be",
+        }
+    )
+
+    @staticmethod
+    def _fts_or_query(raw: str) -> str:
+        """Build an OR query so natural-language questions match prior work.
+
+        The old implicit-AND query required every word of a sub-question to
+        appear in one stored analysis, which almost never happens. OR + BM25
+        ranking returns the best partial matches instead. Stop words are
+        dropped so a question like "What is the impact of RLHF on safety?"
+        matches on `impact`, `rlhf`, and `safety` rather than `what`/`the`.
+        """
+        import re
+
+        cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", raw)
+        tokens = [
+            t
+            for t in cleaned.split()
+            if len(t) > 1 and t.lower() not in SqliteStorageBackend._FTS_STOPWORDS
+        ]
+        if not tokens:
+            # Fall back to the legacy sanitizer so a single short token still
+            # works (e.g. searching for "AI").
+            return SqliteStorageBackend._sanitize_fts_query(raw)
+        return " OR ".join(tokens)
+
     @_serialized
     async def full_text_search(self, query: str, *, kind: str, limit: int) -> list[SearchHit]:
         await self._ensure_conn()
-        safe_query = self._sanitize_fts_query(query)
+        safe_query = self._fts_or_query(query)
         if kind == "any":
             sql = """
                 SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
-                       an.relevance_score
+                       an.relevance_score, a.source_url, a.source_type
                 FROM search_index
                 JOIN analyses an ON an.analysis_id = search_index.analysis_id
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
                 WHERE search_index MATCH ?
+                ORDER BY bm25(search_index)
                 LIMIT ?
             """
             rows = await self._fetchall(sql, (safe_query, limit))
         else:
             sql = """
                 SELECT a.artifact_id, a.title, a.authors, an.summary, an.key_findings,
-                       an.relevance_score
+                       an.relevance_score, a.source_url, a.source_type
                 FROM search_index
                 JOIN analyses an ON an.analysis_id = search_index.analysis_id
                 JOIN artifacts a ON a.artifact_id = an.artifact_id
                 WHERE search_index MATCH ? AND a.kind = ?
+                ORDER BY bm25(search_index)
                 LIMIT ?
             """
             rows = await self._fetchall(sql, (safe_query, kind, limit))
@@ -1225,6 +1321,8 @@ class SqliteStorageBackend:
                     extracted_text=r[4] or "",
                     score=1.0,
                     relevance_score=r[5],
+                    url=r[6] or "",
+                    source_type=r[7] or "",
                 )
             )
         return results
@@ -1232,11 +1330,12 @@ class SqliteStorageBackend:
     @_serialized
     async def glossary_search(self, query: str, limit: int) -> list[GlossaryEntry]:
         await self._ensure_conn()
-        safe_query = self._sanitize_fts_query(query)
+        safe_query = self._fts_or_query(query)
         sql = """
             SELECT g.* FROM glossary_fts
             JOIN glossary g ON g.term_id = glossary_fts.rowid
             WHERE glossary_fts MATCH ?
+            ORDER BY bm25(glossary_fts)
             LIMIT ?
         """
         rows = await self._fetchall(sql, (safe_query, limit))

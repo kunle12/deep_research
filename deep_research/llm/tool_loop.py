@@ -43,16 +43,33 @@ class ToolResult:
         content: str,
         citations: list[Citation] | None = None,
         error: str | None = None,
+        *,
+        raw_html: str | None = None,
+        pdf_path: str | None = None,
     ) -> None:
         self.content = content
         self.citations = citations or []
         self.error = error
+        # Optional provenance carried out-of-band so archival can use the
+        # original bytes (raw HTML / local PDF) instead of extracted text.
+        # These are never serialized into the LLM's tool message.
+        self.raw_html = raw_html
+        self.pdf_path = pdf_path
 
     def to_json(self, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
         # The OpenAI tool-message role expects a string content; we send JSON.
         content = self.content
         if max_chars > 0 and len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n[... truncated, {len(self.content)} chars total]"
+            # Head + tail truncation preserves the opening context and the
+            # conclusions/figures that often sit at the end of a long page.
+            head = max(1, (max_chars * 2) // 3)
+            tail = max(1, max_chars - head)
+            omitted = len(content) - head - tail
+            content = (
+                content[:head]
+                + f"\n\n[... {omitted} chars omitted to fit the tool-result budget ...]\n\n"
+                + content[-tail:]
+            )
         payload: dict[str, Any] = {"content": content}
         if self.error:
             payload["error"] = self.error

@@ -29,7 +29,7 @@ from deep_research.util import strip_arxiv_version
 
 logger = logging.getLogger(__name__)
 
-PathOverride = Literal["quick", "deep", "academic", "url_source"]
+PathOverride = Literal["quick", "deep", "academic", "url_source", "applied"]
 
 
 async def run_research(

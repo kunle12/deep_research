@@ -119,6 +119,24 @@ class Critique(BaseModel):
     papers_to_analyze: list[PaperAnalysisRequest] = Field(default_factory=list)
 
 
+class EvidenceItem(BaseModel):
+    """An atomic claim extracted from the research drafts with provenance.
+
+    The evidence table sits between raw prose drafts and the final writer: it
+    lets the critic/writer reason over claims, quotes, and stance rather than
+    re-reading truncated prose.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim: str
+    evidence: str = ""
+    source_url: str = ""
+    stance: Literal["supports", "contradicts", "unclear"] = "supports"
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    sub_question_id: str = ""
+
+
 class PaperAnalysisRequest(BaseModel):
     """A critic-selected arXiv paper proposed for full PDF deep analysis."""
 
@@ -160,6 +178,10 @@ class ResearchState(BaseModel):
     # Sources skipped during research (bot detection / fetch errors). Surfaced
     # as an "Unavailable Sources" section in the final report.
     blocked_sources: list[BlockedSource] = Field(default_factory=list)
+    # Structured claim/evidence table extracted before the final writer.
+    evidence: list[EvidenceItem] = Field(default_factory=list)
+    # Cross-source contradictions / conflicts surfaced by the evidence pass.
+    contradictions: list[str] = Field(default_factory=list)
 
     def is_covered(self, sub_q: SubQuestion) -> bool:
         """A sub-question is 'covered' if it has a draft (with or without citations)."""
@@ -336,6 +358,9 @@ class Report(BaseModel):
     iterations: int = 0
     # Glossary entries extracted from this report
     glossary_entries: list[GlossaryEntry] = Field(default_factory=list)
+    # Structured claim/evidence table (deep path evidence pass)
+    evidence: list[EvidenceItem] = Field(default_factory=list)
+    contradictions: list[str] = Field(default_factory=list)
     # Sources that could not be retrieved (bot detection / fetch errors);
     # rendered as an "Unavailable Sources" section.
     blocked_sources: list[BlockedSource] = Field(default_factory=list)
@@ -380,6 +405,7 @@ __all__ = [
     "CitationGraph",
     "ClassifiedQuery",
     "Critique",
+    "EvidenceItem",
     "PaperAnalysis",
     "PaperAnalysisRequest",
     "PaperNode",

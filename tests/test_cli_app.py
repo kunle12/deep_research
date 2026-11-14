@@ -105,6 +105,11 @@ class TestPathFlags:
         assert res.exit_code == 0
         assert patch_run_research["path_override"] == "url_source"
 
+    def test_applied_flag_picks_applied_path(self, runner, patch_run_research) -> None:
+        res = runner.invoke(app, ["--applied", "how do I deploy X?"])
+        assert res.exit_code == 0
+        assert patch_run_research["path_override"] == "applied"
+
     def test_two_path_flags_rejected_with_code_2(self, runner, patch_run_research) -> None:
         res = runner.invoke(app, ["--quick", "--deep", "any query"])
         assert res.exit_code == 2

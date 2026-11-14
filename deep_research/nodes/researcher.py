@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from deep_research.citations import extract_urls_from_markdown, normalize_url
@@ -108,6 +109,7 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
         self._writer = writer
         self._config = config
         self._run_id = run_id
+        self._archived_urls: set[str] = set()
 
     def names(self) -> list[str]:
         return [n for n in super().names() if n not in _IMAGE_PRODUCING_TOOLS]
@@ -116,6 +118,14 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
         return [s for s in super().schemas() if s["function"]["name"] not in _IMAGE_PRODUCING_TOOLS]
 
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        if name in _IMAGE_PRODUCING_TOOLS:
+            # Hiding the schema is not enough: a model can still emit the tool
+            # name. Never let a base64 image blob enter a researcher history
+            # (the secondary text endpoint may have no vision support).
+            return ToolResult(
+                content="",
+                error=f"tool {name} is unavailable inside the researcher tool loop",
+            )
         result = await super().call(name, arguments)
         if result.error and result.error.startswith(BLOCKED_PREFIX):
             url = arguments.get("url", "") if isinstance(arguments, dict) else ""
@@ -135,18 +145,35 @@ class _BlockedTrackingScopedRegistry(ScopedToolRegistry):
             and self._run_id
         ):
             url = arguments.get("url", "") if isinstance(arguments, dict) else ""
-            if url:
+            if url and url not in self._archived_urls:
+                self._archived_urls.add(url)
+                title = result.citations[0].title if result.citations else url
                 try:
-                    await asyncio.wait_for(
-                        archive_html_source(
-                            url,
-                            result.content,
-                            tools=self._parent,
-                            config=self._config,
-                            writer=self._writer,
-                        ),
-                        timeout=self._config.pdl.archive_timeout_s,
-                    )
+                    if result.pdf_path and Path(result.pdf_path).exists():
+                        # Archive the ORIGINAL PDF bytes, not extracted text
+                        # rendered as HTML.
+                        await asyncio.wait_for(
+                            self._writer.archive_pdf(
+                                Path(result.pdf_path),
+                                source_url=url,
+                                title=title or None,
+                                source_type="pdf",
+                            ),
+                            timeout=self._config.pdl.archive_timeout_s,
+                        )
+                    else:
+                        # Prefer raw HTML (preserves layout/tables); rescued
+                        # Wayback/Firecrawl pages only have extracted text.
+                        await asyncio.wait_for(
+                            archive_html_source(
+                                url,
+                                result.raw_html or result.content,
+                                tools=self._parent,
+                                config=self._config,
+                                writer=self._writer,
+                            ),
+                            timeout=self._config.pdl.archive_timeout_s,
+                        )
                 except TimeoutError:
                     # Budget exhausted — skip the artifact, keep the tool result.
                     logger.debug("deep-mode fetch_page archive timed out for %s", url)

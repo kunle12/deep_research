@@ -59,6 +59,48 @@ async def test_full_text_search(sqlite_backend):
 
 
 @pytest.mark.asyncio
+async def test_full_text_search_natural_language_question(sqlite_backend):
+    """OR + BM25 retrieval must match natural-language questions, not only
+    exact keyword sets."""
+    now = datetime.now(UTC).isoformat()
+    art = ArtifactRow(
+        artifact_id="fts_nl_art",
+        kind="pdf",
+        source_type="arxiv",
+        title="Safety Paper",
+        source_url="https://arxiv.org/abs/2401.00001",
+        bytes_path="artifacts/pdf/fts_nl_art.pdf",
+        bytes_size=1000,
+        first_seen_at=now,
+        last_touched_at=now,
+    )
+    await sqlite_backend.upsert_artifact(art)
+    from deep_research.library.storage.rows import ReportRow
+
+    await sqlite_backend.insert_report(
+        ReportRow(run_id="run_nl", started_at=now, original_query="rlhf", markdown="# x")
+    )
+    await sqlite_backend.insert_analysis(
+        AnalysisRow(
+            analysis_id="fts_nl_an",
+            artifact_id="fts_nl_art",
+            run_id="run_nl",
+            analyzer="analyze_paper",
+            summary="RLHF improves safety by aligning models with human preferences.",
+            key_findings='["safety improves"]',
+            analyzed_at=now,
+        )
+    )
+
+    hits = await sqlite_backend.full_text_search(
+        "What is the impact of RLHF on safety?", kind="any", limit=10
+    )
+    assert hits, "natural-language query should match on its key concepts"
+    assert hits[0].artifact_id == "fts_nl_art"
+    assert hits[0].url == "https://arxiv.org/abs/2401.00001"
+
+
+@pytest.mark.asyncio
 async def test_glossary_search(sqlite_backend):
     now = datetime.now(UTC).isoformat()
     await sqlite_backend.upsert_glossary_entry(

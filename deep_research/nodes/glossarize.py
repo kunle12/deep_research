@@ -91,10 +91,21 @@ def parse_glossary_from_response(
     except json.JSONDecodeError:
         return []
 
-    if not isinstance(data, dict):
-        return []
-    glossary_data = data.get("glossary")
-    if not glossary_data or not isinstance(glossary_data, list):
+    # Accept both the documented object form ({"glossary": [...]}) and a bare
+    # array. The old parser only accepted the object form, so a model that
+    # followed the "return an array" wording silently produced nothing.
+    if isinstance(data, list):
+        glossary_data = data
+    elif isinstance(data, dict):
+        glossary_data = None
+        for key in ("glossary", "terms", "entries"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                glossary_data = candidate
+                break
+        if glossary_data is None:
+            return []
+    else:
         return []
 
     entries: list[GlossaryEntry] = []
@@ -114,8 +125,8 @@ def parse_glossary_from_response(
         short_def = item.get("short_def", "")
         long_def = item.get("long_def")
         acronym_expansion = item.get("acronym_expansion")
-        related_terms = item.get("related_terms", [])
-        domain_tags = item.get("domain_tags", [])
+        related_terms = _listish(item.get("related_terms", []))
+        domain_tags = _listish(item.get("domain_tags", []))
 
         entries.append(
             GlossaryEntry(
@@ -135,6 +146,20 @@ def parse_glossary_from_response(
         )
 
     return entries
+
+
+def _listish(value: object) -> list[str]:
+    """Coerce a list-or-JSON-string field into a list of strings."""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [value.strip()]
+        if isinstance(parsed, list):
+            return [str(v).strip() for v in parsed if str(v).strip()]
+    return []
 
 
 def _canonicalize(term: str) -> str:

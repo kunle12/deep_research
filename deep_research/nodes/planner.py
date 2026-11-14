@@ -54,7 +54,10 @@ async def plan(
         raw_subs = data.get("sub_questions") if isinstance(data, dict) else []
         sub_qs: list[SubQuestion] = []
         for i, sq in enumerate(raw_subs[:breadth]):
-            sid = str(sq.get("id") or f"sq{i + 1}")
+            # Always renumber: LLM-supplied ids are not guaranteed unique, and
+            # duplicate ids make `is_covered()` treat a new sub-question as
+            # already drafted (or overwrite an existing draft).
+            sid = f"sq{i + 1}"
             hint = str(sq.get("tool_hint") or "general-web")
             if hint not in valid_hints:
                 hint = "general-web"

@@ -151,6 +151,10 @@ _DATE_RX = re.compile(
     re.IGNORECASE,
 )
 
+# Cap the synthesis digest so a 30-paper survey cannot overflow the writer's
+# context window and fall back to the deterministic renderer.
+_MAX_DIGEST_CHARS = 60000
+
 
 def _clean_search_query(query: str) -> str:
     """Strip request boilerplate and date ranges from a natural-language query
@@ -195,11 +199,19 @@ async def academic_research(
         both the markdown bibliography AND the citation-graph structure.
     """
     cfg = config.academic
+    # Classifier depth_hint can narrow (never widen) the configured recursion
+    # cap for this run.
+    effective_max_depth = (
+        min(cfg.max_depth, classified.depth_hint)
+        if classified.depth_hint > 0
+        else cfg.max_depth
+    )
     reporter: ProgressReporter = ensure_reporter(progress)
     graph = CitationGraph()
     analyses: dict[str, Any] = {}  # arxiv_id -> PaperAnalysis
     processed: set[str] = set()  # version-stripped ids we've already analyzed
     excluded: set[str] = set()  # ids gated out as off-topic (kept out of report)
+    excluded_urls: set[str] = set()  # source URLs of gated papers (scholar hits)
     processed_count: int = 0  # atomic counter for max_papers cap
     seeds_citations: list[Citation] = []
 
@@ -278,7 +290,11 @@ async def academic_research(
                 try:
                     await asyncio.wait_for(
                         archive_html_source(
-                            c.url, res.content, tools=tools, config=config, writer=writer
+                            c.url,
+                            res.raw_html or res.content,
+                            tools=tools,
+                            config=config,
+                            writer=writer,
                         ),
                         timeout=config.pdl.archive_timeout_s,
                     )
@@ -419,8 +435,23 @@ async def academic_research(
                     cfg.key_reference_threshold,
                 )
                 excluded.add(base)
+                excluded_urls.add(
+                    node.url
+                    or (
+                        f"https://arxiv.org/abs/{base}"
+                        if not base.startswith("scholar:")
+                        else base
+                    )
+                )
                 graph.analyses[base] = None
                 analyses[base] = None
+                # Remove the node and its inbound edge so an off-topic paper
+                # cannot leak into the rendered citation graph / BibTeX.
+                graph.nodes.pop(node.arxiv_id, None)
+                graph.edges.pop(node.arxiv_id, None)
+                for _parent_id, children in graph.edges.items():
+                    if base in children:
+                        children.remove(base)
                 return
 
             graph.analyses[base] = analysis
@@ -468,8 +499,12 @@ async def academic_research(
                 f"{base} refs={len(analysis.key_references)} depth={depth}",
             )
 
-            # Optionally enqueue children
-            if depth < cfg.max_depth and processed_count < cfg.max_papers:
+            # Optionally enqueue children (flat mode analyzes seeds only).
+            if (
+                cfg.mode == "recursive"
+                and depth < effective_max_depth
+                and processed_count < cfg.max_papers
+            ):
                 child_ids = extract_key_reference_arxiv_ids(analysis)[
                     : cfg.max_key_references_to_recurse
                 ]
@@ -599,9 +634,15 @@ async def academic_research(
                     confidence_score=0.5,
                 )
             )
-    # Dedup by url + keep highest confidence (avoid double seeds)
+    # Dedup by url + keep highest confidence (avoid double seeds). Also drop
+    # seed citations for papers excluded by the per-paper relevance gate.
     seen: dict[str, Citation] = {}
     for c in citations + seeds_citations + blog_citations:
+        if c.url in excluded_urls:
+            continue
+        aid = _strip_version(c.arxiv_id) if c.arxiv_id else ""
+        if aid and aid in excluded:
+            continue
         existing = seen.get(c.url)
         if existing is None or existing.confidence_score < c.confidence_score:
             seen[c.url] = c
@@ -613,7 +654,7 @@ async def academic_research(
         markdown=final_md,
         citations=citations,
         path="academic",
-        citation_graph=graph,
+        citation_graph=graph if cfg.output_citation_graph else None,
         classifier_rationale=classified.rationale,
         iterations=len(processed),
         created_at=datetime.now(UTC),
@@ -816,18 +857,30 @@ async def _synthesize_markdown(
     # Build a condensed digest of each analysis for the prompt.
     # Skip entries where analysis is None (paper had no extractable text).
     digest_lines: list[str] = []
+    digest_chars = 0
     paper_no = 0
     for aid, a in analyses.items():
         if a is None:
             continue
         paper_no += 1
-        digest_lines.append(
-            f"### Paper {paper_no}: arxiv:{aid} — {a.title} (relevance {a.relevance_score:.2f})\n"
-            f"Summary: {a.summary}\n"
-            f"Key findings: {'; '.join(a.key_findings) if a.key_findings else 'N/A'}\n"
-            f"Methodology: {a.methodology or 'N/A'}\n"
-            f"Limitations: {'; '.join(a.limitations) if a.limitations else 'N/A'}\n"
+        findings = "; ".join(str(f)[:200] for f in a.key_findings[:8])
+        limitations = "; ".join(str(x)[:200] for x in a.limitations[:5])
+        block = (
+            f"### Paper {paper_no}: arxiv:{aid} — {a.title} "
+            f"(relevance {a.relevance_score:.2f})\n"
+            f"Summary: {(a.summary or '')[:900]}\n"
+            f"Key findings: {findings or 'N/A'}\n"
+            f"Methodology: {(a.methodology or 'N/A')[:400]}\n"
+            f"Limitations: {limitations or 'N/A'}\n"
         )
+        if digest_chars + len(block) > _MAX_DIGEST_CHARS:
+            digest_lines.append(
+                f"[... {len(analyses) - paper_no + 1} paper digest(s) omitted "
+                f"for the synthesis context budget]"
+            )
+            break
+        digest_lines.append(block)
+        digest_chars += len(block) + 2
     digest = "\n\n".join(digest_lines)
     if not digest.strip():
         # Every arxiv paper lacked extractable text. Same blog/web fallback as

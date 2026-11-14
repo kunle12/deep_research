@@ -19,6 +19,7 @@ from deep_research.state import (
     Citation,
     ClassifiedQuery,
     Critique,
+    EvidenceItem,
     PaperAnalysis,
     PaperAnalysisRequest,
     QueryPlan,
@@ -114,6 +115,39 @@ class TestDeepHappyPath:
             assert any(c.url == "https://a" for c in report.citations)
 
     @pytest.mark.asyncio
+    async def test_evidence_pass_populates_report(self, cfg: AgentTopConfig) -> None:
+        plan_result = _plan([_sub_q(id="sq1", question="Q?")])
+        evidence = [
+            EvidenceItem(
+                claim="X is Y",
+                evidence="quote",
+                source_url="https://a",
+                confidence=0.8,
+            )
+        ]
+        with (
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch(
+                "deep_research.paths.deep.researcher_run",
+                return_value=("X is Y.", [_citation("https://a", title="A", score=0.9)]),
+            ),
+            patch(
+                "deep_research.paths.deep.critic_review",
+                return_value=Critique(sufficient=True, rationale="covered", gaps=[]),
+            ),
+            patch(
+                "deep_research.paths.deep.extract_evidence",
+                return_value=(evidence, ["A vs B"]),
+            ),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            report = await deep_research(_classified("Q"), "Q", client, reg, cfg)
+            assert report.evidence == evidence
+            assert report.contradictions == ["A vs B"]
+
+    @pytest.mark.asyncio
     async def test_citations_sorted_by_confidence_desc(self, cfg: AgentTopConfig) -> None:
         plan_result = _plan([_sub_q(id="sq1", question="Q?")])
         with (
@@ -168,7 +202,7 @@ class TestCriticIteration:
                 return (f"ans for {sq.question}", [])
             return (f"ans2 for {sq.question}", [])
 
-        async def _critic(state, client, model):
+        async def _critic(state, client, model, **_kwargs):
             call_count["critic"] += 1
             if call_count["critic"] == 1:
                 return Critique(sufficient=False, rationale="missing Q2", gaps=[gap_q])
@@ -196,7 +230,7 @@ class TestCriticIteration:
 
         call_count = {"critic": 0}
 
-        async def _critic(state, client, model):
+        async def _critic(state, client, model, **_kwargs):
             call_count["critic"] += 1
             if call_count["critic"] == 1:
                 # Gap has same question text as existing sub-question
@@ -215,6 +249,41 @@ class TestCriticIteration:
             reg = _registry_with_search()
             report = await deep_research(_classified("Q"), "Q", client, reg, cfg)
             assert report.path == "deep"
+
+    @pytest.mark.asyncio
+    async def test_gap_id_collision_does_not_mark_gap_covered(self, cfg: AgentTopConfig) -> None:
+        """A critic gap reusing an existing id must be renumbered and researched."""
+        cfg.agent.max_iterations = 2
+        sq1 = _sub_q(id="sq1", question="Q1?")
+        plan_result = _plan([sq1])
+
+        call_count = {"researcher": 0, "critic": 0}
+
+        async def _researcher(sq, client, model, tools, **kwargs):
+            call_count["researcher"] += 1
+            return (f"ans for {sq.question}", [])
+
+        async def _critic(state, client, model, **_kwargs):
+            call_count["critic"] += 1
+            if call_count["critic"] == 1:
+                # Deliberately reuse sq1 — the deep loop must guard this.
+                return Critique(
+                    sufficient=False,
+                    rationale="new gap",
+                    gaps=[_sub_q(id="sq1", question="Q2?")],
+                )
+            return Critique(sufficient=True, rationale="covered", gaps=[])
+
+        with (
+            patch("deep_research.paths.deep.planner_plan", return_value=plan_result),
+            patch("deep_research.paths.deep.researcher_run", side_effect=_researcher),
+            patch("deep_research.paths.deep.critic_review", side_effect=_critic),
+            patch("deep_research.paths.deep.writer_write", return_value="# Report"),
+        ):
+            client = MagicMock()
+            reg = _registry_with_search()
+            await deep_research(_classified("Q"), "Q", client, reg, cfg)
+            assert call_count["researcher"] == 2
 
     @pytest.mark.asyncio
     async def test_no_gaps_breaks_early(self, cfg: AgentTopConfig) -> None:
@@ -307,7 +376,7 @@ class TestDeepResilience:
             call_count["researcher"] += 1
             raise RuntimeError("simulated persistent failure")
 
-        async def _critic_not_sufficient(state, client, model):
+        async def _critic_not_sufficient(state, client, model, **_kwargs):
             return Critique(sufficient=False, rationale="need more", gaps=[])
 
         with (
@@ -349,7 +418,7 @@ class TestDeepResilience:
                 raise RuntimeError("sq1 fails")
             return (f"answer for {sq.question}", [_citation("https://ok", title="OK", score=0.7)])
 
-        async def _critic_sufficient(state, client, model):
+        async def _critic_sufficient(state, client, model, **_kwargs):
             return Critique(sufficient=True, rationale="covered", gaps=[])
 
         with (

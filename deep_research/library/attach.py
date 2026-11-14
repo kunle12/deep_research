@@ -38,6 +38,16 @@ from deep_research.tools import build_tool_registry
 logger = logging.getLogger(__name__)
 
 
+def _same_report_day(iso_a: str, iso_b: str) -> bool:
+    """Whether two ISO timestamps fall in the same reports/{Y}/{M}/{D} dir."""
+    try:
+        a = datetime.fromisoformat(iso_a)
+        b = datetime.fromisoformat(iso_b)
+    except (TypeError, ValueError):
+        return False
+    return (a.year, a.month, a.day) == (b.year, b.month, b.day)
+
+
 def _insert_section(markdown: str, section: str) -> str:
     """Insert *section* before the Bibliography heading when present, else append.
 
@@ -246,18 +256,17 @@ async def attach_source(
     #    original_query — started_at is insert-only so it survives).
     old_artifact_id = report.artifact_id
     old_date = report.completed_at or report.started_at
-    # Remove the OLD on-disk report files BEFORE re-archiving: archive_report
-    # writes the new {run_id}.md/.pdf under TODAY's date dir, and when the
-    # report was completed today, old_date == today, so a post-archive removal
-    # would delete the brand-new files (leaving the artifact pointing at a
-    # missing file). Removing first always leaves the new files intact.
-    remove_report_files(writer.root_dir, run_id, old_date)
     config_snapshot = None
     if report.config_snapshot:
         try:
             config_snapshot = json.loads(report.config_snapshot)
         except json.JSONDecodeError:
             config_snapshot = None
+    # Archive FIRST. If the re-archive fails, the original files are still on
+    # disk and the report row is unchanged. Only remove the old files after a
+    # successful archive, and never when the old and new day-directories are
+    # the same (archive_report writes today's {run_id}.md/.pdf; removing that
+    # directory afterwards would delete the brand-new files).
     new_artifact_id = await writer.archive_report(
         Report(
             markdown=new_markdown,
@@ -275,6 +284,8 @@ async def attach_source(
         run_id,
         config_snapshot=config_snapshot,
     )
+    if new_artifact_id and not _same_report_day(old_date, datetime.now(UTC).isoformat()):
+        remove_report_files(writer.root_dir, run_id, old_date)
 
     # 4. Migrate tags from the old report artifact to the new one (tags hang
     #    off reports.artifact_id; re-archive created a new content sha), then

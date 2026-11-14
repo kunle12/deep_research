@@ -12,6 +12,7 @@ from typing import Any
 from deep_research.llm.router import LLMClientLike
 from deep_research.nodes.paper_analysis import format_deep_analysis_context
 from deep_research.state import (
+    Citation,
     Critique,
     PaperAnalysisRequest,
     ResearchState,
@@ -30,11 +31,40 @@ logger = logging.getLogger(__name__)
 # Bound the candidate table so a huge citation list cannot blow the prompt.
 _MAX_CANDIDATES = 40
 
+# Critic prompt budgets. Every sub-question heading and its citation list is
+# always kept; only draft bodies are clipped when the plan is very large. The
+# old fixed 2k-per-draft cap hid most of the evidence from the critic.
+_MAX_SECTIONS_CHARS = 24000
+_MAX_DRAFT_CHARS = 4000
+_MIN_DRAFT_CHARS = 300
+_TRUNCATION_NOTE = "\n\n[... truncated to fit the critic context budget]"
 
-async def review(state: ResearchState, client: LLMClientLike, model: str) -> Critique:
+
+def _clip(text: str, limit: int) -> str:
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + _TRUNCATION_NOTE
+
+
+def _sections_budget(max_context_tokens: int | None) -> int:
+    if not max_context_tokens or max_context_tokens <= 0:
+        return _MAX_SECTIONS_CHARS
+    estimated = int(max_context_tokens * 4 * 0.35)
+    return max(4000, min(_MAX_SECTIONS_CHARS, estimated))
+
+
+async def review(
+    state: ResearchState,
+    client: LLMClientLike,
+    model: str,
+    max_context_tokens: int | None = None,
+    iteration: int | None = None,
+) -> Critique:
     """Make the critic LLM call. Returns a Critique (sufficient | gaps[])."""
     # Render the current state for the prompt
-    sections_blob = _render_sections_for_prompt(state)
+    sections_blob = _render_sections_for_prompt(
+        state, max_chars=_sections_budget(max_context_tokens)
+    )
     candidates = _render_paper_candidates(state)
     prompt_template = load_prompt_template("critic")
     prompt = (
@@ -69,11 +99,15 @@ async def review(state: ResearchState, client: LLMClientLike, model: str) -> Cri
         data = json.loads(raw)
         raw_gaps = data.get("gaps") if isinstance(data, dict) else []
         gaps: list[SubQuestion] = []
+        prefix = f"critic_gap_{iteration + 1}_" if iteration is not None else "critic_gap_"
         for i, g in enumerate(raw_gaps):
             if not isinstance(g, dict):
                 logger.warning("critic gap %d is not a dict: %r — skipping", i, type(g).__name__)
                 continue
-            sid = str(g.get("id") or f"critic_gap_{i + 1}")
+            # Deterministic, iteration-scoped ids. LLM-supplied ids can collide
+            # with an existing sub-question id (making the gap appear covered)
+            # or with a gap from a previous critic round.
+            sid = f"{prefix}{i + 1}"
             hint = str(g.get("tool_hint") or "general-web")
             if hint not in VALID_TOOL_HINTS:
                 hint = "general-web"
@@ -104,11 +138,14 @@ async def review(state: ResearchState, client: LLMClientLike, model: str) -> Cri
                 gaps=[],
                 rationale=f"critic LLM call failed ({type(e).__name__}); treating as sufficient",
             )
+        fallback_id = (
+            f"critic_fallback_gap_{iteration + 1}" if iteration is not None else "critic_fallback_gap"
+        )
         return Critique(
             sufficient=False,
             gaps=[
                 SubQuestion(
-                    id="critic_fallback_gap",
+                    id=fallback_id,
                     question=f"Re-analyze the research; critic LLM failed ({type(e).__name__})",
                     tool_hint="general-web",
                     rationale="critic failure forced a synthetic gap",
@@ -118,16 +155,45 @@ async def review(state: ResearchState, client: LLMClientLike, model: str) -> Cri
         )
 
 
-def _render_sections_for_prompt(state: ResearchState) -> str:
-    lines: list[str] = []
+def _render_sections_for_prompt(
+    state: ResearchState,
+    max_chars: int = _MAX_SECTIONS_CHARS,
+) -> str:
+    """Render every sub-question for the critic with a shared draft budget.
+
+    Headings, tool hints, and citation lists are always preserved. Only draft
+    bodies are clipped, and the clip is applied uniformly across drafts so one
+    huge draft cannot consume the whole prompt.
+    """
+    blocks: list[tuple[SubQuestion, str, list[Citation]]] = []
     for sq in state.plan.sub_questions:
-        draft = state.drafts.get(sq.id)
+        draft = state.drafts.get(sq.id) or ""
         cites = state.sections.get(sq.id, [])
+        blocks.append((sq, draft, cites))
+
+    digest = format_deep_analysis_context(state.deep_analyses)
+    digest_text = ("\n" + digest + "\n") if digest else ""
+
+    # Reserve headings + citation lines + digest, then split the remainder
+    # evenly across draft bodies.
+    fixed_chars = len(digest_text)
+    for sq, _draft, cites in blocks:
+        fixed_chars += len(f"### Sub-question: {sq.question}") + 80
+        fixed_chars += len(f"_tool_hint: {sq.tool_hint}; rationale: {sq.rationale}_") + 1
+        for c in cites:
+            fixed_chars += len(f"- [{c.title or c.url}]({c.url})") + 1
+    available = max_chars - fixed_chars - 200
+    per_draft = _MAX_DRAFT_CHARS
+    if blocks:
+        per_draft = max(_MIN_DRAFT_CHARS, min(_MAX_DRAFT_CHARS, available // len(blocks)))
+
+    lines: list[str] = []
+    for sq, draft, cites in blocks:
         lines.append(f"### Sub-question: {sq.question}")
         lines.append(f"_tool_hint: {sq.tool_hint}; rationale: {sq.rationale}_")
         if draft:
             lines.append("\nDraft answer:\n")
-            lines.append(draft[:2000])
+            lines.append(_clip(draft, per_draft))
         else:
             lines.append("\n(no draft produced)")
         if cites:
@@ -136,11 +202,9 @@ def _render_sections_for_prompt(state: ResearchState) -> str:
                 lines.append(f"- [{c.title or c.url}]({c.url})")
         lines.append("")
 
-    # Phase 2: deep paper analyses digest — the critic uses these to propose
-    # follow-up gaps and nominate key references for the next analysis round.
-    digest = format_deep_analysis_context(state.deep_analyses)
-    if digest:
-        lines.append("\n" + digest + "\n")
+    if digest_text:
+        lines.append(digest_text)
+
     return "\n".join(lines)
 
 

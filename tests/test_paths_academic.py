@@ -881,6 +881,31 @@ class TestAcademicResearchE2E:
         assert calls["n"] == 2
 
     @pytest.mark.asyncio
+    async def test_per_paper_relevance_gate_removes_graph_node(self, monkeypatch) -> None:
+        """An off-topic analyzed paper must not leak into the graph or citations."""
+        cfg = _cfg(max_depth=0, max_papers=10, seed_count=2, concurrency=1)
+        cfg.academic.key_reference_threshold = 0.7
+        classified = _classified(search_hint="rlhf")
+        seeds = ["2401.1", "2401.2"]
+        off_topic = PaperAnalysis(
+            title="Off Topic",
+            summary="adversarial attacks in a different field",
+            relevance_score=0.2,
+        )
+        analyses = {"2401.1": off_topic, "2401.2": _analysis("2401.2")}
+        _patch_analyze(monkeypatch, analyses)
+        reg = _tools_for(monkeypatch, seeds)
+        client = _FakeAsyncOpenAI("# Synthesis OK\n")
+        report = await academic_research(
+            classified, "rlhf", _fake_router(client), reg, cfg
+        )
+        assert report.citation_graph is not None
+        assert "2401.1" not in report.citation_graph.nodes
+        assert "2401.1" not in report.citation_graph.edges
+        urls = [c.url for c in report.citations]
+        assert "https://arxiv.org/abs/2401.1" not in urls
+
+    @pytest.mark.asyncio
     async def test_seed_relevance_gate_drops_off_topic_seeds(self, monkeypatch) -> None:
         """An off-topic seed is dropped by the batch pre-gate before any PDF
         download / analysis, so it never consumes a max_papers slot."""

@@ -39,7 +39,7 @@ def _reject_private_url(url: str) -> bool:
 
 class ResearchStartRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
-    path_override: Literal["quick", "deep", "academic", "url_source"] | None = None
+    path_override: Literal["quick", "deep", "academic", "url_source", "applied"] | None = None
     attach_to_run_id: str | None = Field(default=None, max_length=64)
     webhook_url: str | None = Field(default=None, max_length=2048)
 

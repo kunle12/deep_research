@@ -26,6 +26,7 @@ from deep_research.library.writer import LibraryWriter, NullLibraryWriter
 from deep_research.llm.router import LLMRouter
 from deep_research.llm.tool_loop import ToolRegistry
 from deep_research.nodes.critic import review as critic_review
+from deep_research.nodes.evidence import extract_evidence
 from deep_research.nodes.paper_analysis import (
     format_deep_analysis_context,
     run_paper_analysis_pass,
@@ -62,7 +63,9 @@ async def deep_research(
 
     reporter: ProgressReporter = ensure_reporter(progress)
     breadth = (
-        classified.breadth_hint if classified.breadth_hint > 0 else config.agent.max_subquestions
+        min(classified.breadth_hint, config.agent.max_subquestions)
+        if classified.breadth_hint > 0
+        else config.agent.max_subquestions
     )
     iterations_cap = config.agent.max_iterations
 
@@ -213,7 +216,13 @@ async def deep_research(
         # Critic
         reporter.phase("deep.critic", f"iter {iteration + 1}")
         critic = router.resolve(LLMRole.CRITIC)
-        critique = await critic_review(state, critic.client, critic.model)
+        critique = await critic_review(
+            state,
+            critic.client,
+            critic.model,
+            max_context_tokens=critic.max_context_tokens,
+            iteration=iteration,
+        )
         logger.info(
             "critic iter=%d sufficient=%s gaps=%d refinements=%d papers_to_analyze=%d",
             iteration,
@@ -268,13 +277,22 @@ async def deep_research(
         if critique.gaps:
             reporter.step("deep.critic", f"gaps={len(critique.gaps)} → enqueuing")
 
-            # Append gaps as new sub-questions (with dedup by question text)
-            existing_qs = {sq.question for sq in state.plan.sub_questions}
+            # Append gaps as new sub-questions (with normalized dedup by
+            # question text and a unique-id guard).
+            existing_qs = {sq.question.strip().lower() for sq in state.plan.sub_questions}
+            existing_ids = {sq.id for sq in state.plan.sub_questions}
             for gap in critique.gaps:
-                if gap.question and gap.question not in existing_qs:
-                    state.plan.sub_questions.append(gap)
-                    existing_qs.add(gap.question)
-                    logger.info("added gap sub-question: %s", gap.question[:80])
+                key = gap.question.strip().lower()
+                if not key or key in existing_qs:
+                    continue
+                if gap.id in existing_ids:
+                    gap = gap.model_copy(
+                        update={"id": f"critic_gap_extra_{len(state.plan.sub_questions) + 1}"}
+                    )
+                state.plan.sub_questions.append(gap)
+                existing_qs.add(key)
+                existing_ids.add(gap.id)
+                logger.info("added gap sub-question: %s", gap.question[:80])
 
         # Persist progress AFTER all state mutations for this iteration (flush
         # + gap enqueue) so a resumed run sees a coherent plan. Saving before
@@ -284,11 +302,38 @@ async def deep_research(
         if run_id:
             save_checkpoint(state, run_id)
 
+    # 2.5. Dedicated evidence extraction pass: turn drafts into an atomic
+    # claim/quote/stance table before the writer. Non-fatal enrichment.
+    if config.agent.evidence_pass and state.drafts:
+        reporter.phase("deep.evidence", f"{len(state.drafts)} draft(s)")
+        evidence_llm = router.resolve(LLMRole.ANALYSIS)
+        try:
+            evidence, contradictions = await extract_evidence(
+                state,
+                evidence_llm.client,
+                evidence_llm.model,
+                max_context_tokens=evidence_llm.max_context_tokens,
+                max_items=config.agent.evidence_max_items,
+            )
+            state.evidence = evidence
+            state.contradictions = contradictions
+            reporter.step(
+                "deep.evidence",
+                f"{len(evidence)} claims, {len(contradictions)} contradictions",
+            )
+        except Exception as e:
+            logger.warning("evidence extraction failed: %s: %s", type(e).__name__, e)
+
     # 3. Synthesize final report
     reporter.phase("deep.writer", f"synthesizing {len(state.citations)} citations")
     writer_llm = router.resolve(LLMRole.WRITER)
     final_md = await writer_write(
-        state, writer_llm.client, writer_llm.model, writer=writer, run_id=run_id
+        state,
+        writer_llm.client,
+        writer_llm.model,
+        writer=writer,
+        run_id=run_id,
+        max_context_tokens=writer_llm.max_context_tokens,
     )
 
     # 4. Project all assembled citations into a sorted list (by confidence
@@ -316,6 +361,8 @@ async def deep_research(
         markdown=final_md,
         citations=all_citations,
         blocked_sources=state.blocked_sources,
+        evidence=state.evidence,
+        contradictions=state.contradictions,
         path="deep",
         classifier_rationale=classified.rationale,
         iterations=state.iteration + 1 if state.plan.sub_questions else 0,

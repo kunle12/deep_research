@@ -25,9 +25,10 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "merge_reports.txt"
 _TITLE_PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "merge_title.txt"
-# Per-source markdown cap so two large reports fit comfortably in a 131k
-# context window even with the prompt + citations appended.
+# Per-source and total markdown caps so many large reports cannot blow the
+# merge LLM's context window.
 _MAX_SOURCE_CHARS = 50000
+_MAX_TOTAL_SOURCE_CHARS = 200000
 
 
 def _auto_name(reports) -> str:
@@ -39,15 +40,25 @@ def _auto_name(reports) -> str:
 
 
 def _render_reports_blob(reports) -> str:
-    """Render source reports for the merge LLM prompt (capped per source)."""
+    """Render source reports for the merge LLM prompt (capped per source + total)."""
     sections: list[str] = []
+    used = 0
     for i, r in enumerate(reports, start=1):
         md = (r.markdown or "").strip()
         if not md:
             md = "(empty report)"
-        sections.append(
-            f"=== REPORT {i} (run {r.run_id}, query: {r.original_query}) ===\n{md[:_MAX_SOURCE_CHARS]}"
-        )
+        header = f"=== REPORT {i} (run {r.run_id}, query: {r.original_query}) ===\n"
+        remaining = _MAX_TOTAL_SOURCE_CHARS - used
+        if remaining <= 0:
+            sections.append(f"[... {len(reports) - i + 1} report(s) omitted for context budget]")
+            break
+        body_limit = min(_MAX_SOURCE_CHARS, remaining - len(header))
+        body = md[: max(0, body_limit)]
+        block = header + body
+        if len(md) > len(body):
+            block += "\n[... truncated]"
+        sections.append(block)
+        used += len(block) + 2
     return "\n\n".join(sections)
 
 

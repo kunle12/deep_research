@@ -2,8 +2,7 @@
 
 Each job runs `run_research` as an asyncio task and broadcasts phase/step
 events to SSE subscribers. Jobs live only in memory: a server restart drops
-in-flight jobs (acceptable for a single-user local app — documented in the
-P12.5 section of docs/PLAN.md).
+in-flight jobs (acceptable for a single-user local app — see docs/AGENTS.md).
 """
 
 from __future__ import annotations

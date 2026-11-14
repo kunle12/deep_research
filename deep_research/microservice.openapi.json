@@ -28,7 +28,8 @@
                   "quick",
                   "deep",
                   "academic",
-                  "url_source"
+                  "url_source",
+                  "applied"
                 ],
                 "type": "string"
               },

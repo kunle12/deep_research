@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -53,6 +54,41 @@ async def test_upsert_overwrites(sqlite_backend):
     fetched = await sqlite_backend.get_glossary_entry("ai")
     assert fetched is not None
     assert fetched.short_def == "Updated def"
+
+
+@pytest.mark.asyncio
+async def test_upsert_merges_fields_and_unions_tags(sqlite_backend):
+    now = datetime.now(UTC).isoformat()
+    await sqlite_backend.upsert_glossary_entry(
+        GlossaryEntry(
+            term="RLHF",
+            term_canonical="rlhf",
+            kind="acronym",
+            short_def="Good original definition",
+            related_terms='["ppo"]',
+            domain_tags='["nlp"]',
+            confidence=0.9,
+            last_updated=now,
+        )
+    )
+    await sqlite_backend.upsert_glossary_entry(
+        GlossaryEntry(
+            term="RLHF",
+            term_canonical="rlhf",
+            kind="acronym",
+            short_def="Worse later definition",
+            related_terms='["dpo"]',
+            domain_tags='["rl"]',
+            confidence=0.2,
+            last_updated=now,
+        )
+    )
+    fetched = await sqlite_backend.get_glossary_entry("rlhf")
+    assert fetched is not None
+    assert fetched.short_def == "Good original definition"
+    assert fetched.confidence == 0.9
+    assert set(json.loads(fetched.related_terms)) == {"ppo", "dpo"}
+    assert set(json.loads(fetched.domain_tags)) == {"nlp", "rl"}
 
 
 @pytest.mark.asyncio

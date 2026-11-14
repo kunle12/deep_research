@@ -2,8 +2,6 @@
 
 An async-first Python agent that performs **web, deep, academic, and single-source URL** research with the assistance of an LLM. Give it a question — it searches, reads, analyzes, and writes a structured report. Multi-modal LLM support enables vision-based comprehension of PDF figures.
 
-![Person Digital Library Web UI](docs/PersonaDigitalLibrary.png)
-
 ```bash
 # Quick start — the agent auto-routes based on your query
 uv run deep-research "What is the capital of France?"
@@ -19,7 +17,8 @@ Deep Research turns an open-ended question into a finished, well-sourced report.
 
 - **Classifies your query** and picks the research strategy best suited to it.
 - **Plans** multi-faceted questions into sub-questions it can research in parallel.
-- **Searches and reads** the web — pages, papers, PDFs, blogs, and discussion — dispatching everything concurrently.
+- **Searches and reads** the web — pages, papers, PDFs, blogs, and discussion — dispatching everything concurrently. Search can issue multiple query variants and dedupes/ranks the union.
+- **Extracts evidence** into a structured claim/quote/stance table before writing, so the final report is grounded and contradictions are visible.
 - **Critiques its own work**, chasing references and drilling into gaps it finds.
 - **Writes a structured report** with citations and, for literature reviews, a BibTeX reference graph.
 - **Archives everything** into a personal, searchable research library you can browse from a web UI.
@@ -278,6 +277,7 @@ uv run deep-research --quick "who invented the wheel?"
 uv run deep-research --deep "compare transformer architectures" --max-iterations 5
 uv run deep-research --academic "RLHF safety" --max-depth 3 --max-papers 30 --dump-graph refs.bib
 uv run deep-research --url-source "https://example.com/foo.pdf" "verify its claims"
+uv run deep-research --applied "how do I deploy a vLLM server with tensor parallelism?"
 ```
 
 ### Checkpoint resume
@@ -538,6 +538,7 @@ the largest effect:
 | `agent.max_iterations` | 3 | 4–5 | More critic gap-following rounds |
 | `agent.max_citations_per_researcher` | 10 | 10 | Caps sources a single researcher may return; keeps the bibliography relevant |
 | `agent.deep_analysis_max_papers` | 3 | 3–5 | Critic-selected full PDF analyses per deep run (0 disables) |
+| `agent.evidence_pass` | on | on | Dedicated pre-writer claim/quote/stance extraction; improves grounding and contradiction handling (one extra LLM call) |
 | `academic.seed_relevance_gate` | on | on | Batch LLM pre-filter of seed candidates; off-topic seeds never consume `max_papers` slots or library storage |
 | `agent.deep_analysis_relevance_threshold` | 0.5 | 0.5 | Deep-path papers scored below this are not archived to the library |
 | `url_source.attach_relevance_threshold` | 0.4 | 0.4 | `add-source` refuses sources scored below this against the research (override with `--force`) |
@@ -553,7 +554,9 @@ keeps off-topic keyword-overlap papers out of the synthesis and citation graph.
   linearly per dimension.
 - Keep the turn/timeout math consistent: `researcher_max_turns ×
   llm.timeout_s` must stay comfortably below `researcher_timeout_s`
-  (16 × 240s = 3840s, leaving headroom for tool I/O inside 5400s).
+  (with the shipped config: 16 × 360s = 5760s, leaving headroom for tool I/O
+  inside the 6000s researcher timeout).
+- `agent.evidence_pass` adds one dedicated LLM call per deep run; disable it to save time/cost when grounding quality matters less.
 - `tavily.search_depth: "advanced"` costs 2 credits per call.
 - Firecrawl search costs 2 credits per 10 results; free keys ship a
   non-renewable 1,000 credits. Set `search.firecrawl.max_calls_per_session`
@@ -576,7 +579,7 @@ By default, every research artifact is archived to `.deep_research_library/`:
 - **Content-addressable dedup**: same PDF fetched twice → stored once
 - **SQLite metadata DB**: reports, analyses, tags, glossary, citation edges, full-text search
 - **Postgres backend**: set `pdl.storage.backend: "postgres"` with `DEEP_RESEARCH_PG_DSN`
-- **Refresh daemon**: `deep-research-scheduler` probes upstream URLs for changes
+- **Refresh scheduler**: `deep-research-scheduler` runs periodically; upstream change probing is still a stub today (artifacts are marked unchanged)
 - **Glossary**: dedicated post-synthesis LLM extraction (JSON-only prompt, `response_format=json_object`), cross-run dedup, FTS5 search. Export via `--glossary-out` on the main CLI or `deep-research-library glossary --out glossary.json`.
 - **Cited-PDF archiving**: with `pdl.archive_cited_arxiv_pdfs: true`, every run downloads and archives the PDFs for citations that carry an arXiv ID, so the web UI's **arXiv** reference button opens the library's local copy (labeled "arXiv PDF") instead of the upstream page. Papers without a local copy get a **Get PDF** button that downloads and archives them on demand.
 - **HTML source archiving**: fetched blogs / web pages are archived as a rendered **PDF** (`pdl.archive_html_as_pdf`, on by default) via weasyprint; if the render is unusable they fall back to a **screenshot image** (`pdl.archive_html_image_fallback`) via the browser tool, and only if neither works is the fetched HTML text stored. `pdf_render_pages`' downscaled page images are never persisted — only the original PDF bytes.
@@ -652,9 +655,9 @@ uv run deep-research --quiet "..." > report.md
 | File | Purpose |
 |---|---|
 | [`config.example.yaml`](config.example.yaml) | All config knobs with defaults |
-| [`docs/PLAN.md`](docs/PLAN.md) | Full design document |
+| [`docs/AGENTS.md`](docs/AGENTS.md) | Architecture and coding conventions |
 | [`docs/SEARXNG_SETUP.md`](docs/SEARXNG_SETUP.md) | Local SearXNG setup (Docker + non-Docker) |
-| [`docs/IMPLEMENTATION_LOG.md`](docs/IMPLEMENTATION_LOG.md) | Progress tracker |
+| [`docs/REST_API.md`](docs/REST_API.md) | REST API reference |
 
 ---
 

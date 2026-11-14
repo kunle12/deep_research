@@ -53,8 +53,25 @@ def test_force_path_enum_values() -> None:
 
     cfg = AgentTopConfig()
     assert cfg.agent.classifier.force_path is None
+    assert AgentTopConfig.model_validate(
+        {"agent": {"classifier": {"force_path": "applied"}}}
+    ).agent.classifier.force_path == "applied"
     with pytest.raises(ValidationError):
         AgentTopConfig.model_validate({"agent": {"classifier": {"force_path": "bogus_path"}}})
+
+
+def test_turn_budget_warning(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        cfg = AgentTopConfig.model_validate(
+            {
+                "llm": {"timeout_s": 360},
+                "agent": {"researcher_max_turns": 16, "researcher_timeout_s": 5400},
+            }
+        )
+    assert cfg.agent.researcher_max_turns == 16
+    assert "exceeds" in caplog.text
 
 
 def test_secondary_llm_absent_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

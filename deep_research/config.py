@@ -6,6 +6,7 @@ Resolved at startup; never mutated. All env-var bindings happen here.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 from enum import Enum
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -125,7 +128,7 @@ class ClassifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    force_path: Literal["quick", "deep", "academic", "url_source"] | None = None
+    force_path: Literal["quick", "deep", "academic", "url_source", "applied"] | None = None
 
 
 class AgentConfig(BaseModel):
@@ -159,6 +162,11 @@ class AgentConfig(BaseModel):
     # model cannot flood the final bibliography. The researcher prompt asks
     # for 3-8 sources per sub-question.
     max_citations_per_researcher: int = 10
+    # Dedicated pre-writer evidence extraction pass: turns drafts into an
+    # atomic claim/quote/stance table for the writer. Disable to save one LLM
+    # call per deep run.
+    evidence_pass: bool = True
+    evidence_max_items: int = 60
     # Deep-mode paper deep-analysis: the critic selects a small set of arxiv
     # papers for full PDF analysis (download -> extract -> render -> analyze).
     # Set deep_analysis_max_papers to 0 to disable the feature entirely.
@@ -534,7 +542,22 @@ class AgentTopConfig(BaseModel):
     pdl: PDLConfig = Field(default_factory=PDLConfig)
 
     @model_validator(mode="after")
-    def _validate_paths(self) -> AgentTopConfig:
+    def _validate_runtime_budgets(self) -> AgentTopConfig:
+        # A researcher's worst-case LLM wall-clock must stay below its outer
+        # timeout, otherwise the turn budget is unreachable and the researcher
+        # is killed mid-work. Warn rather than reject so existing configs with
+        # slightly over-budget values still load.
+        llm_product = self.agent.researcher_max_turns * self.llm.timeout_s
+        if llm_product > self.agent.researcher_timeout_s:
+            logger.warning(
+                "agent.researcher_max_turns (%d) x llm.timeout_s (%d) = %ds exceeds "
+                "agent.researcher_timeout_s (%ds); the outer timeout may fire before "
+                "the turn budget is exhausted",
+                self.agent.researcher_max_turns,
+                self.llm.timeout_s,
+                llm_product,
+                self.agent.researcher_timeout_s,
+            )
         return self
 
     def ensure_dirs(self) -> None:

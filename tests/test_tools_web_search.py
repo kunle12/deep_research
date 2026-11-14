@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import httpx
@@ -53,6 +54,39 @@ async def test_tavily_search_returns_citations() -> None:
     assert res.citations[0].title == "Result A"
     assert res.citations[0].confidence_score == 0.95
     assert res.citations[1].url == "https://example.com/b"
+
+    os.environ.pop("TAVILY_API_KEY", None)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_multi_query_dedupes_and_ranks() -> None:
+    cfg = AgentTopConfig()
+    os.environ["TAVILY_API_KEY"] = "tvly-fake-test-key"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        query = json.loads(request.content)["query"]
+        if query == "alpha":
+            results = [
+                {"url": "https://example.com/a", "title": "A", "content": "a", "score": 0.9},
+                {"url": "https://example.com/b", "title": "B", "content": "b", "score": 0.8},
+            ]
+        else:
+            results = [
+                {"url": "https://example.com/b", "title": "B duplicate", "content": "b2", "score": 0.5},
+                {"url": "https://example.com/c", "title": "C", "content": "c", "score": 0.7},
+            ]
+        return httpx.Response(200, json={"results": results})
+
+    respx.post("https://api.tavily.com/search").mock(side_effect=_handler)
+    reg = await build_tool_registry(cfg)
+    res = await reg.call(
+        "web_search", {"query": "alpha", "queries": ["beta"], "max_results": 5}
+    )
+    assert res.error is None
+    urls = [c.url for c in res.citations]
+    assert urls == ["https://example.com/a", "https://example.com/b", "https://example.com/c"]
+    assert res.citations[1].confidence_score == 0.8  # highest duplicate wins
 
     os.environ.pop("TAVILY_API_KEY", None)
 

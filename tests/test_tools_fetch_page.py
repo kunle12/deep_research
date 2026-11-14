@@ -42,6 +42,10 @@ async def test_fetch_page_extracts_article_text(tmp_path) -> None:
     cit = res.citations[0]
     assert cit.url == "https://example.test/article"
     assert cit.title == "A Test Article"
+    # Raw HTML is carried out-of-band so the library can archive the real page
+    # instead of a text-rendered PDF.
+    assert res.raw_html is not None
+    assert "<html>" in res.raw_html
 
 
 @pytest.mark.asyncio

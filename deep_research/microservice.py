@@ -32,7 +32,7 @@ _REQUEST_TIMEOUT_S = 600  # 10 minutes
 
 class ResearchRequest(BaseModel):
     query: str
-    path_override: Literal["quick", "deep", "academic", "url_source"] | None = None
+    path_override: Literal["quick", "deep", "academic", "url_source", "applied"] | None = None
     config_path: str = "config.yaml"
 
 

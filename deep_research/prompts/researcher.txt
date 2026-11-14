@@ -13,6 +13,11 @@ How to use turns efficiently:
 - Do NOT chain searches unnecessarily. One search (maybe a follow-up) is
   usually enough. If the first search returns good results, fetch and
   synthesize — do not search again "just in case".
+- Prefer a single `web_search` call with 2-3 `queries` variants (synonyms,
+  alternate phrasings, or a more specific/less specific version) instead of
+  several sequential search turns. The tool dedupes and ranks the union.
+- For "recent", "current", or "latest" claims, pass `days` (e.g. 365) or
+  `topic: "news"` when appropriate so stale results do not dominate.
 - If the first search returns poor results, retry ONCE with a reformulated
   query (different keywords, added/removed qualifiers), then commit to the
   best evidence found.

@@ -326,9 +326,18 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
         if not arxiv_id:
             return ToolResult(content="", error="arxiv_download_pdf requires arxiv_id")
         target = _safe_download_path(cache_dir, arxiv_id)
-        if target.exists() and target.stat().st_size > 1024:
-            logger.info("arxiv_download_pdf cache hit: %s -> %s", arxiv_id, target)
-            return ToolResult(content=str(target))
+        if target.exists():
+            size = target.stat().st_size
+            is_pdf = False
+            if size >= 5:
+                try:
+                    with target.open("rb") as fh:
+                        is_pdf = fh.read(5) == b"%PDF-"
+                except OSError:
+                    is_pdf = False
+            if size > 1024 or is_pdf:
+                logger.info("arxiv_download_pdf cache hit: %s -> %s", arxiv_id, target)
+                return ToolResult(content=str(target))
         # Build canonical arxiv PDF URL
         # (current lib exposes result.pdf_url, but for download we can just use
         # the well-known pattern. Use the version-less id to fetch the latest.)

@@ -10,8 +10,11 @@ For each term, provide:
 - acronym_expansion: if kind is "acronym", the full expansion (e.g., "Reinforcement Learning from Human Feedback")
 - related_terms: JSON array of related canonical term strings (optional)
 - domain_tags: JSON array of domain tags like "nlp", "vision", "rl", "systems", "math" (optional)
+- confidence: float 0.0-1.0, how confident you are that the definition is accurate
 
-Return a JSON array of objects. If no terms worth extracting, return an empty array [].
+Return a JSON object with a single key "glossary" whose value is an array of
+objects, e.g. {"glossary": [{"term": "RLHF", "kind": "acronym", ...}]}.
+If no terms are worth extracting, return {"glossary": []}.
 Output ONLY valid JSON — no markdown, no code fences.
 
 Research context:

@@ -5,6 +5,7 @@ PK flags:
   --deep         force deep path
   --academic     force academic path
   --url-source   force url_source mode
+  --applied      force applied/blog-first path
 
 If none of the above is set, the agent auto-routes (URL detection first,
 then classifier LLM call) unless `agent.classifier.enabled: false` in config.
@@ -101,7 +102,9 @@ def _load_config(config_path: Path | None) -> AgentTopConfig:
     return AgentTopConfig()
 
 
-def _resolve_path_override(quick: bool, deep: bool, academic: bool, url_source: bool) -> str | None:
+def _resolve_path_override(
+    quick: bool, deep: bool, academic: bool, url_source: bool, applied: bool = False
+) -> str | None:
     """At most one of the path flags may be passed; return the corresponding value or None."""
     selected = [
         name
@@ -110,12 +113,14 @@ def _resolve_path_override(quick: bool, deep: bool, academic: bool, url_source: 
             (deep, "deep"),
             (academic, "academic"),
             (url_source, "url_source"),
+            (applied, "applied"),
         ]
         if flag
     ]
     if len(selected) > 1:
         err_console.print(
-            f"[red]Ambiguous flags — pick ONE of --quick/--deep/--academic/--url-source[/red]: {selected}"
+            f"[red]Ambiguous flags — pick ONE of "
+            f"--quick/--deep/--academic/--url-source/--applied[/red]: {selected}"
         )
         raise typer.Exit(code=2)
     return selected[0] if selected else None
@@ -136,6 +141,9 @@ def main(
     ),
     url_source: bool = typer.Option(
         False, "--url-source", help="Force URL-source mode (URL must be in query)"
+    ),
+    applied: bool = typer.Option(
+        False, "--applied", help="Force the applied/blog-first path (implementation questions)"
     ),
     out: Path | None = typer.Option(None, "--out", "-o", help="Write final report to this file"),
     fmt: str = typer.Option("markdown", "--format", "-f", help="markdown | json"),
@@ -191,7 +199,7 @@ def main(
         err_console.print(f"[red]Invalid --format {fmt!r}[/red]; must be 'markdown' or 'json'")
         raise typer.Exit(code=2)
 
-    path_override = _resolve_path_override(quick, deep, academic, url_source)
+    path_override = _resolve_path_override(quick, deep, academic, url_source, applied)
     _apply_flag_overrides(
         config,
         max_iterations=max_iterations,

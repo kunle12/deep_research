@@ -17,8 +17,13 @@ import pytest
 
 from deep_research.config import AgentTopConfig
 from deep_research.library.writer import LibraryWriter
-from deep_research.llm.tool_loop import ToolRegistry
-from deep_research.nodes.researcher import _hint_blurb, _parse_final_assistant, research
+from deep_research.llm.tool_loop import ToolRegistry, ToolResult
+from deep_research.nodes.researcher import (
+    _BlockedTrackingScopedRegistry,
+    _hint_blurb,
+    _parse_final_assistant,
+    research,
+)
 from deep_research.state import SubQuestion
 
 # ---------------------------------------------------------------------------
@@ -85,6 +90,33 @@ class TestHintBlurb:
 
     def test_empty_hint_returns_empty(self) -> None:
         assert _hint_blurb("", ["web_search"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# Image-producing tool guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scoped_registry_blocks_hidden_image_tool_by_name() -> None:
+    """Hiding the schema must not allow a model to call the tool anyway."""
+    called = {"value": False}
+    parent = ToolRegistry()
+
+    async def _fake(**_: Any) -> ToolResult:
+        called["value"] = True
+        return ToolResult(content="data:image/jpeg;base64,AAAA")
+
+    parent.register(
+        "pdf_render_pages",
+        _fake,
+        {"description": "render", "parameters": {"type": "object", "properties": {}}},
+    )
+    scoped = _BlockedTrackingScopedRegistry(parent, [])
+    res = await scoped.call("pdf_render_pages", {})
+    assert res.error is not None
+    assert "unavailable" in res.error
+    assert called["value"] is False
 
 
 # ---------------------------------------------------------------------------

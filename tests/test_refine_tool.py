@@ -248,7 +248,7 @@ class TestRefineIntegration:
         async def _researcher(sq, client, model, tools, **kwargs):
             return ("ans", [], [refined_sq])
 
-        async def _critic(state, client, model):
+        async def _critic(state, client, model, **_kwargs):
             questions = {s.question for s in state.plan.sub_questions}
             critic_saw_refinement["value"] = "Deeper Q?" in questions
             return Critique(sufficient=True, rationale="r", gaps=[])

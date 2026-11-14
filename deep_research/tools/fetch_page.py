@@ -346,6 +346,34 @@ async def _fetch(
         return await client.get(url, headers=headers)
 
 
+def _year_from_date(value: str | None) -> int | None:
+    if not value:
+        return None
+    import re
+
+    m = re.search(r"\b(19|20)\d{2}\b", str(value))
+    return int(m.group(0)) if m else None
+
+
+def _extract_metadata(html: str, url: str) -> dict[str, Any]:
+    """Best-effort title/author/year/venue metadata via trafilatura."""
+    if not html:
+        return {}
+    try:
+        doc = trafilatura.extract_metadata(html, default_url=url)
+    except Exception:
+        return {}
+    if doc is None:
+        return {}
+    author = getattr(doc, "author", None)
+    return {
+        "title": getattr(doc, "title", "") or "",
+        "authors": [author] if author else [],
+        "year": _year_from_date(getattr(doc, "date", None)),
+        "venue": getattr(doc, "sitename", "") or "",
+    }
+
+
 def _extract(html: str, url: str) -> str:
     """Run trafilatura extraction (sync — call via asyncio.to_thread)."""
     if not html:
@@ -521,12 +549,16 @@ def _is_pdf(ctype: str, url: str) -> bool:
     return url.lower().split("?", 1)[0].split("#", 1)[0].endswith(".pdf")
 
 
+def _pdf_cache_path(url: str, cache_dir: str) -> Path:
+    """Return the deterministic cache path for a URL's PDF bytes."""
+    digest = hashlib.sha256(url.encode()).hexdigest()[:16]
+    return Path(cache_dir) / "pdfs" / f"{digest}.pdf"
+
+
 def _save_pdf_bytes(url: str, content: bytes, cache_dir: str) -> Path:
     """Persist PDF bytes to <cache_dir>/pdfs/<digest>.pdf; return the path."""
-    pdf_dir = Path(cache_dir) / "pdfs"
-    pdf_dir.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(url.encode()).hexdigest()[:16]
-    pdf_path = pdf_dir / f"{digest}.pdf"
+    pdf_path = _pdf_cache_path(url, cache_dir)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(content)
     return pdf_path
 
@@ -705,8 +737,13 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     confidence_score=0.7,
                     discovered_by=ToolName.fetch_page,
                 )
+                cached_pdf = _pdf_cache_path(url, cfg.cache_dir)
                 if text.strip():
-                    return ToolResult(content=text, citations=[cit])
+                    return ToolResult(
+                        content=text,
+                        citations=[cit],
+                        pdf_path=str(cached_pdf) if cached_pdf.exists() else None,
+                    )
                 return ToolResult(
                     content="",
                     error=(
@@ -776,6 +813,21 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
             ctype = resp.headers.get("content-type", "") or ""
             ctype = ctype.split(";")[0].strip().lower()
 
+            # Bound response size so a huge PDF/HTML cannot exhaust memory.
+            limit_mb = (
+                config.url_source.fetch_pdf_size_limit_mb
+                if _is_pdf(ctype, url)
+                else config.url_source.fetch_html_size_limit_mb
+            )
+            if limit_mb and len(resp.content) > limit_mb * 1024 * 1024:
+                return ToolResult(
+                    content="",
+                    error=(
+                        f"response exceeds configured size limit: "
+                        f"{len(resp.content)} bytes > {limit_mb:.1f} MB"
+                    ),
+                )
+
             if _is_pdf(ctype, url):
                 # Save bytes to disk and dispatch to pdf_extract_text.
                 try:
@@ -832,7 +884,11 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         len(text.strip()),
                         url,
                     )
-                    return ToolResult(content=text, citations=[cit])
+                    return ToolResult(
+                        content=text,
+                        citations=[cit],
+                        pdf_path=str(pdf_path),
+                    )
 
                 # PDF text extraction yielded nothing (or no tool available).
                 # Surface a clear error so callers (academic.py, applied.py)
@@ -863,15 +919,19 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
 
         if text_stripped_len >= min_chars:
             logger.info("fetch_page extracted %d chars from %s", text_stripped_len, url)
+            meta = await asyncio.to_thread(_extract_metadata, html, url)
             cit = Citation(
                 url=url,
-                title=_title_from_html(html) or url,
+                title=meta.get("title") or _title_from_html(html) or url,
                 snippet=text[:200],
                 source_type="html",
                 confidence_score=0.7,
                 discovered_by=ToolName.fetch_page,
+                authors=meta.get("authors") or [],
+                year=meta.get("year"),
+                venue=meta.get("venue") or None,
             )
-            return ToolResult(content=text, citations=[cit])
+            return ToolResult(content=text, citations=[cit], raw_html=html)
 
         # Low-yield extraction. Try browser fallback if available.
         if config.browser.enabled and "browser_navigate" in reg.names():
@@ -895,6 +955,9 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                         return rescued
                 return ToolResult(content="", error=browser_res.error)
             if browser_res.error is None and browser_res.content:
+                # Cache the rendered content so repeated fetches do not spawn
+                # the browser again for the same low-yield URL.
+                await page_cache.aset(url, "html", html, browser_res.content)
                 # Browser render acceptable — surface its content + its citations.
                 browser_cits = list(browser_res.citations)
                 if not browser_cits:
@@ -908,7 +971,11 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                             discovered_by=ToolName.browser,
                         )
                     ]
-                return ToolResult(content=browser_res.content, citations=browser_cits)
+                return ToolResult(
+                    content=browser_res.content,
+                    citations=browser_cits,
+                    raw_html=html,
+                )
             logger.warning(
                 "browser_navigate fallback for %s returned error=%s; falling back to raw HTML",
                 url,
@@ -935,6 +1002,7 @@ async def register(reg: ToolRegistry, config: AgentTopConfig) -> None:
                     discovered_by=ToolName.fetch_page,
                 )
             ],
+            raw_html=html,
         )
 
     reg.register("fetch_page", _call, SCHEMA)

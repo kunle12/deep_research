@@ -37,7 +37,9 @@ changes.
 | `checkpoint.py` | JSON checkpoint save/load for crash recovery of deep research state |
 | `util.py` | Shared tiny helpers: `coerce_float()` (tolerant float parsing for LLM/API output) + `strip_arxiv_version()`. Import these — do NOT copy the body into new modules |
 | `nodes/auto_tag.py` | Post-synthesis LLM call — extracts 3-5 topic tags from query + report |
+| `nodes/evidence.py` | Dedicated pre-writer claim/quote/stance extraction pass (`agent.evidence_pass`) |
 | `prompts/auto_tag.txt` | Prompt template for auto-tag extraction |
+| `prompts/evidence_extract.txt` | Prompt template for evidence extraction |
 | `prompts/glossary_extract.txt` | Prompt template for glossary extraction |
 | `llm/tool_loop.py` | LLM tool-calling loop with `run_with_tools()`; per-call timeout via `ToolRegistry.call`; `ScopedToolRegistry` for per-researcher tool isolation; context management with summarisation at 75% of max context window |
 | `webui/app.py` | P12.5 web UI app factory: `create_app(config_path, *, backend, research_runner)`; lifespan-owned storage, CSP headers, static mount |
@@ -87,8 +89,8 @@ actions: `drill_deeper` (new sub-question), `chase_reference` (follow a URL),
   deep loop only stops when there is no pending refinement work left.
 - **Normalized dedup**: `absorb_refinements` compares `.strip().lower()` question
   text to catch case/whitespace variants.
-- **`research()` returns a 3-tuple**: `(answer_md, citations, refinements)`.
-  `paths/deep.py` accepts both 2-tuples (backward compat) and 3-tuples.
+- **`research()` returns a 4-tuple**: `(answer_md, citations, refinements, blocked_sources)`.
+  `paths/deep.py` accepts 2-, 3-, and 4-tuples for backward compatibility.
 
 ---
 
@@ -132,7 +134,7 @@ merely saw must never reach the bibliography.
 The deep-path critic decides which arXiv papers deserve full PDF analysis;
 analyses enrich the final report (Phase 1) and feed the research loop (Phase 2).
 
-**Flow** (see also the "Deep paper analysis" section in `docs/PLAN.md`):
+**Flow** (see also the "Deep Paper Analysis Pattern" section below):
 
 ```
 researchers -> critic (sufficient? gaps? papers_to_analyze?)
@@ -182,8 +184,10 @@ researchers -> critic (sufficient? gaps? papers_to_analyze?)
 
 **Writer integration** (`nodes/writer.py`):
 - The "Deep paper analyses" section is rendered FIRST in
-  `_render_sections_for_prompt` (before sub-question drafts) so the trailing
-  12k-char truncation cap can never drop it. Keep this ordering.
+  `_render_sections_for_prompt` (before sub-question drafts). The renderer is
+  now token-budgeted: analyses are individually capped, all sub-question
+  headings are always preserved, and only draft bodies are clipped. Do not
+  reintroduce a whole-blob character truncation that can drop questions.
 
 **Phase 2 feedback**:
 - Critic's sections blob includes `format_deep_analysis_context(state.deep_analyses)`.
@@ -193,6 +197,23 @@ researchers -> critic (sufficient? gaps? papers_to_analyze?)
   mutable-default bug).
 
 ---
+
+## Evidence Extraction Pattern (pre-writer structured claims)
+
+`nodes/evidence.py` runs a dedicated JSON-only pass after the deep loop and
+before the writer (`agent.evidence_pass`, default on). It turns drafts +
+citations into `EvidenceItem` rows (claim, quote, source URL, stance,
+confidence) plus a cross-source `contradictions` list.
+
+- Input is the token-budgeted writer digest (`_render_sections_for_prompt` +
+  `_render_citations_for_prompt`), so the pass sees the same evidence the writer
+  does without a second giant prompt.
+- The writer renders an `## Evidence table` section before drafts and uses it to
+  ground numbers/claims and surface conflicts.
+- Non-fatal: any LLM/parse failure returns empty lists; a finished report is
+  never discarded because of this enrichment pass.
+- Keep this pattern separate from the writer prompt — the glossary success shows
+  dedicated structured passes work better than mixing extraction with synthesis.
 
 ## Relevance Gating Pattern (ingest-time topic filtering)
 
@@ -232,7 +253,9 @@ reaches the report, the citation graph, or the personal library. The LLM-scored
 - **recall** (`nodes/recall.py`): FTS hits with a stored `relevance_score` below
   `_MIN_RELEVANCE` (0.3) are dropped so an archived off-topic document cannot
   pollute a later researcher's prior context. `full_text_search` (both backends)
-  must keep returning `an.relevance_score`.
+  must keep returning `an.relevance_score`, `a.source_url`, and `a.source_type`.
+  Retrieval uses OR + BM25/ts_rank so a natural-language sub-question matches
+  prior analyses on its key concepts instead of requiring every word.
 
 ## Artifact Deletion Pattern (PDL cleanup)
 
@@ -275,6 +298,13 @@ Both `web_search.py` and `scholar.py` use the same fallback pattern:
 4. If all backends fail, returns `ToolResult(error=...)`
 
 **Key behaviors:**
+- **Multi-query**: `web_search` accepts optional `queries` variants, runs them
+  through the backend chain, dedupes by normalized URL, ranks by confidence,
+  caps near-duplicate domains, and caches results per run. The researcher
+  prompt prefers one batched multi-query call over sequential search turns.
+- **Filters**: optional `topic` / `days` / `include_domains` /
+  `exclude_domains` are passed to Tavily when provided (other backends ignore
+  them). Use `days`/`topic=news` for recency-sensitive questions.
 - **Empty result falls through**: a backend that returns 0 hits (no error) does
   NOT short-circuit the chain — the loop `continue`s to the next backend.
   Only a non-empty result `break`s out. (scholar.py)
@@ -443,6 +473,14 @@ reset — do not reintroduce module-level counters for this. (The old
   logs a warning and the finished `Report` is still returned — never discard a
   completed report because of an enrichment step
 
+### Glossary extraction
+- Dedicated post-synthesis JSON pass (`nodes/glossarize.py` + `prompts/glossary_extract.txt`).
+- The prompt contract is `{"glossary": [...]}`; the parser also accepts a bare
+  array and `{"terms": [...]}` / `{"entries": [...]}` for robustness.
+- Upserts MERGE with the existing row: keep the higher-confidence definition,
+  fill missing fields, union `related_terms`/`domain_tags`, preserve
+  `first_seen_*` provenance. Never blindly overwrite a good earlier definition.
+
 ### Tag CLI commands
 - `deep-research-library tag <artifact_id> <tag_name>` — add
 - `deep-research-library tag --remove/-r <artifact_id> <tag_name>` — remove
@@ -465,9 +503,8 @@ Tags are batch-fetched via `get_tags_for_artifacts()` to avoid N+1 queries.
 
 ## Web UI Patterns (P12.5)
 
-Design: the "P12.5 — Web UI (design & implementation plan)" section in
-`docs/PLAN.md`; phase tracker: the "P12.5 — Web UI (library browser)" section
-in `docs/IMPLEMENTATION_LOG.md`.
+Design and implementation notes for the Web UI are captured in this section
+and in `docs/REST_API.md`.
 
 ### App factory
 
@@ -550,7 +587,7 @@ the old defaults.
 - **Test file location**: `tests/` for general, `tests/tools/` for tool-specific
 - **Live tests**: skipped unless env var is set (`requires_tavily`, `requires_serper`, etc.)
 - **Coverage gate**: coverage must stay above 80% — enforced by
-  `[tool.coverage.report] fail_under = 80` in `pyproject.toml` (current total: 87%).
+  `[tool.coverage.report] fail_under = 80` in `pyproject.toml` (current total: 83%).
   Run `coverage run -m pytest && coverage report`; `pytest --cov` works too (pytest-cov is a dev dep).
 - **Cross-test isolation**: module-level globals reset via `pytest.fixture(autouse=True)`
   (see `test_tools_web_search.py::_reset_web_search_globals`)
@@ -654,8 +691,9 @@ reuses the url_source pipeline end to end. Entry points: CLI `add-source`, web
    whole run — compute `remaining = cap - len(state.deep_analysis_requested)` or repeated
    critic rounds silently analyze N×cap papers. Also never use a mutable default
    (`dict(state.deep_analyses)`) in a function signature — ruff B006; use `None` + init inside.
-7. **Writer analyses section ordering**: render "Deep paper analyses" BEFORE the drafts — the
-   sections blob is truncated to 12k chars, and appending analyses last means long drafts drop them.
+7. **Writer analyses section ordering**: render "Deep paper analyses" BEFORE the drafts.
+   The renderer uses a token budget with per-draft clipping and preserves every
+   sub-question heading; never reintroduce a whole-blob truncation that drops questions.
 8. **URL matching belongs in `citations.py`**: use `normalize_url`/`extract_urls_from_markdown`/
    `filter_citations_to_referenced`; do not copy URL regexes into new modules.
 9. **Vision context limits ≠ advertised context**: VLM servers (llama.cpp, vLLM)

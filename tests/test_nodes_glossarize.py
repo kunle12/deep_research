@@ -56,6 +56,21 @@ def test_parse_glossary_from_response_valid():
     assert entries[0].first_seen_artifact_id == "art1"
 
 
+def test_parse_glossary_from_response_bare_array():
+    """Accept the bare-array form some models emit despite json_object mode."""
+    response = json.dumps([{"term": "PPO", "kind": "acronym", "short_def": "policy opt"}])
+    entries = parse_glossary_from_response(response, "run1")
+    assert len(entries) == 1
+    assert entries[0].term == "PPO"
+
+
+def test_parse_glossary_from_response_terms_key():
+    response = json.dumps({"terms": [{"term": "PPO", "short_def": "policy opt"}]})
+    entries = parse_glossary_from_response(response, "run1")
+    assert len(entries) == 1
+    assert entries[0].term_canonical == "ppo"
+
+
 def test_parse_glossary_from_response_invalid_json():
     entries = parse_glossary_from_response("not json", "run1")
     assert entries == []

@@ -6,6 +6,7 @@ producing a report focused on practical / implementation details.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -66,19 +67,31 @@ async def applied_research(
     # Step 2: fetch blog content
     reporter.phase("applied.fetch", f"fetching {min(len(citations), 3)} blog posts")
     fetched_texts: dict[str, str] = {}
-    for i, c in enumerate(citations[:3]):
-        if "fetch_page" in tools.names():
-            result = await tools.call("fetch_page", {"url": c.url})
-            if result.error is None:
-                # Key by URL so a failed middle fetch can never misattribute
-                # another post's text to the wrong title (see digest below).
-                fetched_texts[c.url] = result.content[:8000]
-                reporter.step("applied.fetch", f"post {i + 1}: {c.title[:60]}")
-                # Archive HTML in library if writer is configured
-                if isinstance(writer, LibraryWriter) and run_id:
-                    await archive_html_source(
-                        c.url, result.content, tools=tools, config=config, writer=writer
-                    )
+
+    async def _fetch_one(idx: int, c: Citation) -> None:
+        if "fetch_page" not in tools.names():
+            return
+        result = await tools.call("fetch_page", {"url": c.url})
+        if result.error is not None:
+            return
+        # Key by URL so a failed middle fetch can never misattribute another
+        # post's text to the wrong title (see digest below).
+        fetched_texts[c.url] = result.content[:8000]
+        reporter.step("applied.fetch", f"post {idx + 1}: {c.title[:60]}")
+        # Archive the original HTML (not extracted text) if a writer is active.
+        if isinstance(writer, LibraryWriter) and run_id:
+            await archive_html_source(
+                c.url,
+                result.raw_html or result.content,
+                tools=tools,
+                config=config,
+                writer=writer,
+            )
+
+    await asyncio.gather(
+        *[_fetch_one(i, c) for i, c in enumerate(citations[:3])],
+        return_exceptions=True,
+    )
 
     # Step 3: synthesize report
     reporter.phase("applied.synthesize", "writing report")

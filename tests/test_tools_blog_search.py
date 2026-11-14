@@ -99,6 +99,37 @@ async def test_blog_search_direct_fallback(registry, config):
 
 
 @pytest.mark.asyncio
+async def test_blog_search_direct_uses_real_permalinks(registry, config):
+    config.blog_search.primary = "direct"
+    config.search.tavily.api_key_env = ""
+    config.blog_search.known_domains = ["test.example.com"]
+
+    html = (
+        "<html><body>"
+        '<a href="/posts/one">Test query post one</a>'
+        '<a href="/posts/two">Test query post two</a>'
+        '<a href="/privacy">Privacy</a>'
+        "</body></html>"
+    )
+    with patch("deep_research.tools.blog_search.httpx.AsyncClient") as mock_client:
+        instance = mock_client.return_value
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=None)
+        req = httpx.Request("GET", "https://test.example.com/")
+        ok_resp = httpx.Response(200, text=html, request=req)
+        instance.get = AsyncMock(return_value=ok_resp)
+
+        await register(registry, config)
+        res = await registry.call("blog_search", {"query": "test query"})
+
+    assert res.error is None
+    urls = {c.url for c in res.citations}
+    assert "https://test.example.com/posts/one" in urls
+    assert "https://test.example.com/posts/two" in urls
+    assert all("/privacy" not in u for u in urls)
+
+
+@pytest.mark.asyncio
 async def test_blog_search_no_results(registry, config):
     config.blog_search.primary = "tavily"
     config.blog_search.use_domains_fallback = False

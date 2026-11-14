@@ -7,6 +7,7 @@ into the researcher's system prompt so the LLM knows what we already know.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from deep_research.library.storage.base import StorageBackend
@@ -68,13 +69,26 @@ async def recall(
                 "title": hit.title or "",
                 "summary": hit.summary or "",
                 "key_findings": hit.extracted_text or "",
-                "source_type": "",  # not returned by FTS5; caller may enrich
-                "url": "",  # not returned by FTS5; caller may enrich
+                "source_type": hit.source_type or "",
+                "url": hit.url or "",
                 "relevance_score": hit.relevance_score,
             }
         )
 
     return results
+
+
+def _render_findings(raw: str) -> str:
+    """Render stored key_findings (JSON array text) as readable prose."""
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw[:500]
+    if isinstance(data, list):
+        return "; ".join(str(x) for x in data if str(x).strip())[:500]
+    return str(data)[:500]
 
 
 def format_recall_context(entries: list[dict]) -> str:
@@ -91,15 +105,22 @@ def format_recall_context(entries: list[dict]) -> str:
     for i, e in enumerate(entries, start=1):
         title = e.get("title") or "(no title)"
         summary = (e.get("summary") or "")[:500]
+        findings = _render_findings(e.get("key_findings") or "")
+        url = e.get("url") or ""
         lines.append(f"**{i}. {title}**")
+        if url:
+            lines.append(f"   Source: <{url}>")
         if summary:
             lines.append(f"   Summary: {summary}")
+        if findings:
+            lines.append(f"   Key findings: {findings}")
         lines.append("")
 
     lines.append(
         "Use this prior context to avoid re-fetching already-known information. "
         "You may still call web_search / arxiv / etc. for the *delta* — "
-        "what the library doesn't already cover."
+        "what the library doesn't already cover. When a prior library entry "
+        "contributes evidence, cite its Source URL inline."
     )
     lines.append("")
 
