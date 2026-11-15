@@ -1,0 +1,43 @@
+[Unit]
+Description=Deep Research Agent (web UI)
+Documentation=https://github.com/kunle12/deep_research
+# SearXNG is a system service; order the agent after it and give it a moment
+# to accept requests. The wait loop below is best-effort for readiness.
+After=network-online.target searxng.service
+Wants=network-online.target searxng.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=researcher
+Group=researcher
+WorkingDirectory=/home/researcher/deep_research
+EnvironmentFile=-/home/researcher/.config/deep-research/deep-research.env
+Environment=PYTHONUNBUFFERED=1
+
+# Wait for SearXNG to answer on its configured port (8888) before starting.
+# Fail if it never comes up so systemd retries instead of running with a
+# permanently unavailable search backend.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do curl -fsS -m 2 -o /dev/null http://127.0.0.1:8888/ && exit 0; sleep 1; done; echo "SearXNG did not become ready on 127.0.0.1:8888 after 120s" >&2; exit 1'
+
+# Single worker: research jobs are tracked in memory, so multiple uvicorn
+# workers would split job state and make progress/status unreliable.
+ExecStart=/home/researcher/deep_research/.venv/bin/python -m uvicorn deep_research.webui.app:app --host 0.0.0.0 --port 8080 --workers 1 --log-level info
+
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+TimeoutStopSec=30
+
+# Light hardening: no privilege escalation, isolated /tmp, read-only system
+# directories. The repo and HOME stay writable for the library/cache.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deep-research-web
+
+[Install]
+WantedBy=multi-user.target
