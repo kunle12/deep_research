@@ -1,12 +1,13 @@
-/* App bootstrap: theme, routing, keyboard shortcuts, header search. */
+/* App bootstrap: theme, routing, keyboard shortcuts, header search, account. */
 
 import { el, clear } from "./dom.js";
 import { renderList } from "./views/list.js";
 import { renderReport } from "./views/report.js";
+import { renderAuth } from "./views/login.js";
 import { openResearchModal } from "./views/research.js";
 import { initTaskbar } from "./views/taskbar.js";
 import { restoreJobs } from "./jobs.js";
-import { getStats } from "./api.js";
+import { getStats, getMe, logout } from "./api.js";
 import { closeAllModals } from "./modal.js";
 
 const app = document.getElementById("app");
@@ -14,14 +15,20 @@ const searchInput = document.getElementById("global-search");
 const themeBtn = document.getElementById("theme-toggle");
 const statsEl = document.getElementById("stats");
 const newResearchBtn = document.getElementById("new-research");
+const accountEl = document.getElementById("account");
 
 let currentCleanup = null;
 let currentRoute = { name: "list" };
 
 function routeFromHash() {
-  const hash = location.hash.replace(/^#/, "") || "/";
-  const m = hash.match(/^\/report\/([^/]+)/);
+  const raw = location.hash.replace(/^#/, "") || "/";
+  const [path, query = ""] = raw.split("?");
+  const params = Object.fromEntries(new URLSearchParams(query));
+  const m = path.match(/^\/report\/([^/]+)/);
   if (m) return { name: "report", reportId: decodeURIComponent(m[1]) };
+  if (path === "/login") return { name: "login", params };
+  if (path === "/verify") return { name: "verify", params };
+  if (path === "/reset") return { name: "reset", params };
   return { name: "list" };
 }
 
@@ -38,6 +45,8 @@ function render() {
   currentRoute = route;
   if (route.name === "report") {
     currentCleanup = renderReport(app, route.reportId);
+  } else if (route.name === "login" || route.name === "verify" || route.name === "reset") {
+    currentCleanup = renderAuth(app, route.name, route.params || {});
   } else {
     currentCleanup = renderList(app, searchInput);
   }
@@ -155,6 +164,38 @@ function initNewResearch() {
   }
 }
 
+/* Account chip: shows the signed-in email + logout (multi_user), or the
+ * owner's identity in single_user mode. Empty while unauthenticated. */
+function initAccount() {
+  const refresh = () => {
+    getMe()
+      .then((me) => {
+        if (me.auth_mode === "single_user") {
+          accountEl.replaceChildren(el("span", { class: "account-email", text: me.email, title: "single-user mode" }));
+          return;
+        }
+        accountEl.replaceChildren(
+          el("span", { class: "account-email", text: me.email }),
+          el("button", {
+            class: "linklike",
+            type: "button",
+            text: "Sign out",
+            onclick: () => {
+              logout()
+                .catch(() => {})
+                .finally(() => {
+                  window.location.hash = "#/login";
+                });
+            },
+          }),
+        );
+      })
+      .catch(() => accountEl.replaceChildren());
+  };
+  document.addEventListener("dr:auth", refresh);
+  refresh();
+}
+
 window.addEventListener("hashchange", render);
 initTheme();
 initSearch();
@@ -162,6 +203,7 @@ initKeyboard();
 initStats();
 initStatsRefresh();
 initNewResearch();
+initAccount();
 initTaskbar();
 restoreJobs();
 render();

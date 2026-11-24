@@ -60,6 +60,8 @@ dependencies = [
     "markdown>=3.7,<4.0",
     "weasyprint>=62,<63",
     "pydyf==0.10.0",
+    "argon2-cffi>=23,<26",
+    "email-validator>=2.0,<3.0",
 ]
 
 [project.optional-dependencies]

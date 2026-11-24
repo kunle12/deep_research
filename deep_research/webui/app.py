@@ -1,6 +1,10 @@
 """FastAPI app for the Deep Research Library web UI.
 
-Serves the library browsing API (and, from Phase 2, the static frontend).
+Serves the library browsing API and the static frontend. Since the multi-user
+rollout (docs/MULTI_USER_PLAN.md) the request middleware also resolves the
+caller's account and their personal library: in ``multi_user`` mode via a
+session cookie against the account registry, in ``single_user`` mode by
+mapping every request to the shared backend (legacy behavior, unchanged).
 """
 
 from __future__ import annotations
@@ -10,13 +14,20 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from deep_research.accounts.bootstrap import migrate_legacy_library
+from deep_research.accounts.emails import build_email_sender
+from deep_research.accounts.rows import UserRow
+from deep_research.accounts.service import SESSION_COOKIE, AuthService
+from deep_research.accounts.store import AccountStore
 from deep_research.config import AgentTopConfig
 from deep_research.library.storage import get_backend
 from deep_research.library.storage.base import StorageBackend
+from deep_research.library.storage.registry import LibraryRegistry, StaticLibraryRegistry
 from deep_research.webui.jobs import AttachRunner, ResearchJobManager, ResearchRunner
+from deep_research.webui.routers.auth import router as auth_router
 from deep_research.webui.routers.library import router as library_router
 from deep_research.webui.routers.research import router as research_router
 
@@ -37,6 +48,21 @@ _CSP = (
     "form-action 'self'"
 )
 
+# Methods that can change state; with an authenticated session they must carry
+# the SPA's X-Requested-With header (cross-site forms/fetches cannot set it).
+_CSRF_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+_CSRF_EXEMPT_PREFIX = "/api/auth/"  # login/register precede any session
+
+
+def _synthetic_owner(cfg: AgentTopConfig) -> UserRow:
+    """Owner identity for single_user mode (no registry DB involved)."""
+    return UserRow(
+        user_id="owner",
+        email=cfg.pdl.auth.owner_email or "owner@localhost",
+        display_name="Owner",
+        status="active",
+    )
+
 
 def create_app(
     config_path: str = _DEFAULT_CONFIG,
@@ -50,7 +76,8 @@ def create_app(
 
     `backend` is optional and mainly used by tests: when injected it is used
     as-is (and closed on shutdown); otherwise the backend is resolved from
-    the YAML config at startup.
+    the YAML config at startup. In multi_user mode the backend is *not* used —
+    per-user libraries come from the LibraryRegistry instead.
 
     `checkpoint_dir` lets tests isolate pause/resume state to a temp dir;
     production uses the engine's default checkpoint location.
@@ -58,20 +85,59 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        cfg = AgentTopConfig.load_yaml(config_path)
+        cfg: AgentTopConfig = AgentTopConfig.load_yaml(config_path)
         app.state.config = cfg
-        if app.state.backend is None:
-            app.state.backend = await get_backend(cfg)
-        logger.info("library backend ready (%s)", type(app.state.backend).__name__)
-        # A previous run's checkpoint files survive on disk; surface them as
-        # resumable paused jobs so nothing is lost after a restart.
-        restored = app.state.jobs.restore_paused()
-        if restored:
-            logger.info("restored %d paused research job(s) after restart", len(restored))
-        yield
-        if app.state.backend is not None:
-            await app.state.backend.close()
-            app.state.backend = None
+        app.state.auth_mode = cfg.pdl.auth.mode
+        app.state.auth = None
+        app.state.accounts_store = None
+        store: AccountStore | None = None
+        registry: LibraryRegistry | StaticLibraryRegistry
+        try:
+            if cfg.pdl.auth.mode == "multi_user":
+                if not cfg.pdl.auth.owner_email:
+                    raise RuntimeError(
+                        "pdl.auth.owner_email must be set when pdl.auth.mode is multi_user"
+                    )
+                store = AccountStore(Path(cfg.pdl.root_dir) / "registry.db")
+                await store.connect()
+                app.state.accounts_store = store
+                app.state.auth = AuthService(
+                    store, build_email_sender(cfg.pdl.auth.smtp), cfg.pdl.auth
+                )
+                app.state.owner = await app.state.auth.provision_owner(cfg.pdl.auth.owner_email)
+                # One-time: move a legacy single-user library into the owner's
+                # per-user directory (idempotent, marker-guarded).
+                await migrate_legacy_library(cfg, store, app.state.owner)
+                app.state.backend = None
+                registry = LibraryRegistry(cfg)
+            else:
+                if app.state.backend is None:
+                    app.state.backend = await get_backend(cfg)
+                app.state.owner = _synthetic_owner(cfg)
+                registry = StaticLibraryRegistry(app.state.backend, cfg.pdl.root_dir)
+            app.state.registry = registry
+            logger.info(
+                "library ready (mode=%s, backend=%s)",
+                cfg.pdl.auth.mode,
+                type(registry).__name__,
+            )
+            # A previous run's checkpoint files survive on disk; surface them as
+            # resumable paused jobs so nothing is lost after a restart.
+            restored = app.state.jobs.restore_paused()
+            if restored:
+                logger.info("restored %d paused research job(s) after restart", len(restored))
+            yield
+        finally:
+            reg = getattr(app.state, "registry", None)
+            if reg is not None:
+                await reg.close_all()
+                app.state.registry = None
+            if store is not None:
+                await store.close()
+                app.state.accounts_store = None
+            if app.state.backend is not None:
+                await app.state.backend.close()
+                app.state.backend = None
 
     app = FastAPI(
         title="Deep Research Library Web UI",
@@ -89,13 +155,38 @@ def create_app(
     )
 
     @app.middleware("http")
-    async def security_headers(request, call_next):
+    async def security_and_auth(request, call_next):
+        # -- Authentication & per-user library resolution (before handlers) --
+        state = request.app.state
+        auth: AuthService | None = getattr(state, "auth", None)
+        if auth is not None:
+            # multi_user: resolve the session cookie.
+            user = await auth.resolve_session(request.cookies.get(SESSION_COOKIE))
+            if (
+                user is not None
+                and request.method in _CSRF_METHODS
+                and not request.url.path.startswith(_CSRF_EXEMPT_PREFIX)
+                and request.headers.get("x-requested-with") != "XMLHttpRequest"
+            ):
+                # Cross-site forms/fetches cannot set this custom header.
+                return JSONResponse({"detail": "CSRF check failed"}, status_code=403)
+        else:
+            # single_user: every request belongs to the owner (legacy behavior).
+            user = getattr(state, "owner", None)
+        request.state.user = user
+        registry = getattr(state, "registry", None)
+        if user is not None and registry is not None:
+            request.state.storage = await registry.backend_for(user.user_id)
+            request.state.library_root = str(registry.root_for(user.user_id))
+
         response = await call_next(request)
+        # -- Security headers --
         response.headers.setdefault("Content-Security-Policy", _CSP)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
+    app.include_router(auth_router)
     app.include_router(library_router)
     app.include_router(research_router)
 

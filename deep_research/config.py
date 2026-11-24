@@ -476,6 +476,41 @@ class PDLStorageConfig(BaseModel):
     postgres_dsn_env: str = "DEEP_RESEARCH_PG_DSN"
 
 
+class PDLAuthSMTPConfig(BaseModel):
+    """Outbound SMTP for verification / password-reset emails."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = ""
+    port: int = 587
+    use_starttls: bool = True
+    username_env: str = "DEEP_RESEARCH_SMTP_USER"
+    password_env: str = "DEEP_RESEARCH_SMTP_PASSWORD"
+    from_address: str = ""
+
+
+class PDLAuthConfig(BaseModel):
+    """Library account/auth settings.
+
+    `single_user` (default) preserves the legacy behavior exactly: no login
+    wall, one library at `pdl.root_dir`. `multi_user` enables per-user
+    libraries under `<root_dir>/users/<user_id>/`, migrates a legacy library
+    into the owner's directory on first startup, and requires login.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["single_user", "multi_user"] = "single_user"
+    # Owner identity used to provision/migrate the legacy library. Required
+    # (non-empty) when mode is multi_user and a legacy library is migrated.
+    owner_email: str = ""
+    session_ttl_days: int = 30
+    # open: anyone may register (and must verify their email); closed:
+    # accounts are created out-of-band via the library CLI.
+    registration: Literal["open", "closed"] = "open"
+    smtp: PDLAuthSMTPConfig = Field(default_factory=PDLAuthSMTPConfig)
+
+
 class PDLRefreshConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -501,6 +536,7 @@ class PDLConfig(BaseModel):
     root_dir: str = ".deep_research_library"
     storage: PDLStorageConfig = Field(default_factory=PDLStorageConfig)
     refresh: PDLRefreshConfig = Field(default_factory=PDLRefreshConfig)
+    auth: PDLAuthConfig = Field(default_factory=PDLAuthConfig)
     # Opt-in: after each run, download + archive PDFs for citations that carry
     # an arxiv_id so the web UI can serve local copies. Deep-path citations
     # reference arXiv papers without downloading them, so without this they
@@ -594,6 +630,7 @@ __all__ = [
     "LLMConfig",
     "LLMRole",
     "OutputConfig",
+    "PDLAuthConfig",
     "PDLConfig",
     "PdfVisionConfig",
     "RedditConfig",

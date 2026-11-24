@@ -1,11 +1,19 @@
 """Postgres storage backend — P12.0.
 
 Uses asyncpg for non-blocking PostgreSQL access.
+
+Multi-user (docs/MULTI_USER_PLAN.md §4): an optional ``schema`` scopes the
+backend to one Postgres schema per user (``library_<user_id>``). All SQL stays
+unqualified — the schema is selected via ``search_path`` on every pooled
+connection acquire, so the query bodies never change.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 _MIGRATION_FILE = Path(__file__).resolve().parent / "migrations" / "postgres" / "0001_initial.sql"
 
+_SCHEMA_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
 
 def _escape_like(text: str) -> str:
     """Escape LIKE wildcards so user input is matched literally."""
@@ -37,9 +47,25 @@ class PostgresStorageBackend:
     Uses asyncpg for async PostgreSQL access.
     """
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, schema: str | None = None) -> None:
         self._dsn = dsn
+        self._schema: str | None = None
+        if schema is not None:
+            if not _SCHEMA_NAME_RE.match(schema):
+                raise ValueError(f"invalid Postgres schema name: {schema!r}")
+            self._schema = schema
         self._pool: Any = None
+
+    @asynccontextmanager
+    async def _acquire(self) -> AsyncIterator[Any]:
+        """Acquire a pooled connection with the backend's schema selected."""
+        async with self._pool.acquire() as conn:
+            if self._schema is not None:
+                # search_path is per-session; set it on every acquire so the
+                # unqualified SQL throughout this module lands in the schema.
+                # _SCHEMA_NAME_RE guarantees the identifier is injection-safe.
+                await conn.execute(f'SET search_path TO "{self._schema}", public')
+            yield conn
 
     # -- Lifecycle --
 
@@ -66,7 +92,9 @@ class PostgresStorageBackend:
         # If a future migration ever contains semicolons inside string
         # literals, use a proper SQL parser instead.
         statements = [s.strip() for s in sql.split(";") if s.strip()]
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
+            if self._schema is not None:
+                await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self._schema}"')
             for stmt in statements:
                 await conn.execute(stmt)
             # One-time migration: databases created before the 'image' artifact
@@ -117,21 +145,21 @@ class PostgresStorageBackend:
     async def _fetchone(self, sql: str, *args: Any) -> tuple | None:
         if self._pool is None:
             raise RuntimeError("Postgres backend not connected")
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             row = await conn.fetchrow(sql, *args)
             return tuple(row) if row else None
 
     async def _fetchall(self, sql: str, *args: Any) -> list[tuple]:
         if self._pool is None:
             raise RuntimeError("Postgres backend not connected")
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(sql, *args)
             return [tuple(r) for r in rows]
 
     async def _execute(self, sql: str, *args: Any) -> str | None:
         if self._pool is None:
             raise RuntimeError("Postgres backend not connected")
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             return await conn.execute(sql, *args)
 
     async def _ensure_conn(self) -> None:
@@ -355,7 +383,7 @@ class PostgresStorageBackend:
         await self._ensure_conn()
         if old_run_id == new_run_id:
             return
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
             await conn.execute(
                 "UPDATE analyses SET run_id = $1 WHERE run_id = $2",
                 new_run_id,
@@ -958,7 +986,7 @@ class PostgresStorageBackend:
         indexes directly on the analyses table — no separate FTS table
         to clean up."""
         await self._ensure_conn()
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
             await conn.execute("DELETE FROM analyses WHERE run_id = $1", run_id)
             await conn.execute("DELETE FROM tags WHERE applied_in_run = $1", run_id)
             await conn.execute("DELETE FROM citation_edges WHERE discovered_in_run = $1", run_id)
@@ -981,7 +1009,7 @@ class PostgresStorageBackend:
         if a report still references it via reports.artifact_id — caller
         should nullify or delete that report first."""
         await self._ensure_conn()
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
             await conn.execute("DELETE FROM analyses WHERE artifact_id = $1", artifact_id)
             await conn.execute("DELETE FROM tags WHERE artifact_id = $1", artifact_id)
             await conn.execute(

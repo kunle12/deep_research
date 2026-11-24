@@ -310,6 +310,7 @@ async def test_get_analysis(backend, mock_conn):
             None,
             None,
             "2024-01-01T00:00:00Z",
+            0.8,  # relevance_score (added by the idempotent column migration)
         )
     )
     analysis = await backend.get_analysis("ana1")
@@ -335,6 +336,7 @@ async def test_get_analyses_for_artifact(backend, mock_conn):
                 None,
                 None,
                 "2024-01-01T00:00:00Z",
+                None,  # relevance_score
             ),
         ]
     )
@@ -358,6 +360,7 @@ async def test_get_analyses_for_artifacts(backend, mock_conn):
         None,
         None,
         "2024-01-01T00:00:00Z",
+        None,  # relevance_score
     )
     mock_conn.fetch = AsyncMock(return_value=[row])
     by_art = await backend.get_analyses_for_artifacts(["art1", "art2"])
@@ -578,12 +581,23 @@ async def test_reassign_run_self_is_noop(backend, mock_conn):
 async def test_full_text_search(backend, mock_conn):
     mock_conn.fetch = AsyncMock(
         return_value=[
-            ("art1", "Test Paper", None, "summary", "text", 0.95),
+            (
+                "art1",
+                "Test Paper",
+                None,
+                "summary",
+                "text",
+                0.95,  # relevance_score
+                "https://arxiv.org/abs/2401.00001",  # source_url
+                "arxiv",  # source_type
+            ),
         ]
     )
     hits = await backend.full_text_search("transformer", kind="pdf", limit=10)
     assert len(hits) == 1
     assert hits[0].artifact_id == "art1"
+    assert hits[0].relevance_score == 0.95
+    assert hits[0].url == "https://arxiv.org/abs/2401.00001"
 
 
 @pytest.mark.asyncio

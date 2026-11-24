@@ -1,5 +1,9 @@
 /* Thin fetch wrapper for the library API. */
 
+// Routes that may legitimately return 401 without triggering a login redirect.
+const AUTH_ROUTES = /^#\/(login|verify|reset)\b/;
+const PUBLIC_API = /^\/api\/auth\//;
+
 export async function request(path, { params = {}, method = "GET", body, headers = {} } = {}) {
   const url = new URL(path, window.location.origin);
   for (const [key, value] of Object.entries(params)) {
@@ -8,16 +12,28 @@ export async function request(path, { params = {}, method = "GET", body, headers
   }
   const res = await fetch(url, {
     method,
-    headers: { Accept: "application/json", ...headers },
+    // X-Requested-With is the CSRF signal the server checks on every
+    // state-changing call for an authenticated session (cross-site forms and
+    // fetches cannot set a custom header).
+    headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest", ...headers },
     body,
   });
   if (!res.ok) {
     let detail = res.statusText;
     try {
-      const body = await res.json();
-      if (body && body.detail) detail = body.detail;
+      const errBody = await res.json();
+      if (errBody && errBody.detail) detail = errBody.detail;
     } catch {
       /* keep statusText */
+    }
+    // Session expired / signed out: send the user to the login view unless we
+    // are already on an auth screen or the failing call is itself an auth call.
+    if (
+      res.status === 401 &&
+      !PUBLIC_API.test(path) &&
+      !AUTH_ROUTES.test(window.location.hash)
+    ) {
+      window.location.hash = "#/login";
     }
     throw new Error(`${res.status}: ${detail}`);
   }
@@ -147,4 +163,62 @@ export function abandonJob(jobId) {
 
 export function researchStreamUrl(jobId) {
   return `/api/research/jobs/${encodeURIComponent(jobId)}/stream`;
+}
+
+/* ---------- Account / auth ---------- */
+
+export function getMe() {
+  return request("/api/auth/me");
+}
+
+export function login(email, password) {
+  return request("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function register(email, password, displayName) {
+  return request("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email, password, display_name: displayName || null }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function verifyEmail(email, token) {
+  return request("/api/auth/verify", {
+    method: "POST",
+    body: JSON.stringify({ email, token }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function resendVerification(email) {
+  return request("/api/auth/resend-verification", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function logout() {
+  return request("/api/auth/logout", { method: "POST" });
+}
+
+export function requestPasswordReset(email) {
+  return request("/api/auth/request-password-reset", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function resetPassword(email, token, newPassword) {
+  return request("/api/auth/reset", {
+    method: "POST",
+    body: JSON.stringify({ email, token, new_password: newPassword }),
+    headers: { "Content-Type": "application/json" },
+  });
 }
