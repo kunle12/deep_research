@@ -237,3 +237,19 @@ pdl:
     refresh_concurrency: 4
     re_analyze_on_change: true
     notify_on_change: ["log"]
+  # Accounts & login. "single_user" (default) keeps the classic behavior: no
+  # login wall, one library at root_dir. "multi_user" gives every account its
+  # own library under root_dir/users/<user_id>/, migrates an existing library
+  # into the owner's directory on first startup, and requires login.
+  auth:
+    mode: "single_user"                    # "single_user" | "multi_user"
+    owner_email: ""                        # required when mode is multi_user
+    session_ttl_days: 30
+    registration: "open"                   # "open" | "closed" (closed = create accounts via CLI)
+    smtp:                                  # verification / password-reset email
+      host: ""                             # empty = print emails to the server log instead
+      port: 587
+      use_starttls: true
+      username_env: "DEEP_RESEARCH_SMTP_USER"
+      password_env: "DEEP_RESEARCH_SMTP_PASSWORD"
+      from_address: ""

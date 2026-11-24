@@ -70,6 +70,14 @@ class SessionUserResponse(BaseModel):
     auth_mode: str
 
 
+class AuthStatusResponse(BaseModel):
+    """Always-200 auth probe — lets the SPA boot without a 401 in the console."""
+
+    authenticated: bool
+    auth_mode: str
+    user: SessionUserResponse | None = None
+
+
 class RegisterResponse(BaseModel):
     status: str
     email: str
@@ -157,6 +165,18 @@ async def me(request: Request) -> SessionUserResponse:
         raise HTTPException(status_code=401, detail="authentication required")
     mode = getattr(request.app.state, "auth_mode", "single_user")
     return _user_response(user, auth_mode=mode)
+
+
+@router.get("/status", response_model=AuthStatusResponse)
+async def status(request: Request) -> AuthStatusResponse:
+    """Auth probe that never 401s — used by the SPA's boot sequence."""
+    user = get_user(request)
+    mode = getattr(request.app.state, "auth_mode", "single_user")
+    if user is None:
+        return AuthStatusResponse(authenticated=False, auth_mode=mode)
+    return AuthStatusResponse(
+        authenticated=True, auth_mode=mode, user=_user_response(user, auth_mode=mode)
+    )
 
 
 @router.post("/request-password-reset", status_code=202)

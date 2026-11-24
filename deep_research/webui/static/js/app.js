@@ -7,7 +7,7 @@ import { renderAuth } from "./views/login.js";
 import { openResearchModal } from "./views/research.js";
 import { initTaskbar } from "./views/taskbar.js";
 import { restoreJobs } from "./jobs.js";
-import { getStats, getMe, logout } from "./api.js";
+import { getStats, getAuthStatus, logout } from "./api.js";
 import { closeAllModals } from "./modal.js";
 
 const app = document.getElementById("app");
@@ -19,6 +19,10 @@ const accountEl = document.getElementById("account");
 
 let currentCleanup = null;
 let currentRoute = { name: "list" };
+// null = boot check in flight; false = unauthenticated (login wall);
+// true = signed in. Set before the first render by boot().
+let authed = null;
+const AUTH_ROUTES = new Set(["login", "verify", "reset"]);
 
 function routeFromHash() {
   const raw = location.hash.replace(/^#/, "") || "/";
@@ -33,6 +37,20 @@ function routeFromHash() {
 }
 
 function render() {
+  if (authed === null) return; // boot() renders once auth state is known
+  const route = routeFromHash();
+  // Login wall: unauthenticated visitors only ever see the auth views;
+  // signed-in users skip them. Checked BEFORE touching any data fetch so a
+  // logged-out page load produces no failed requests in the console.
+  if (authed === false && !AUTH_ROUTES.has(route.name)) {
+    if (currentRoute.name !== "login") window.location.hash = "#/login";
+    else renderAuthView("login", {});
+    return;
+  }
+  if (authed === true && AUTH_ROUTES.has(route.name)) {
+    window.location.hash = "#/";
+    return;
+  }
   if (currentCleanup) {
     currentCleanup();
     currentCleanup = null;
@@ -41,15 +59,39 @@ function render() {
   // route never renders underneath a stale overlay.
   closeAllModals();
   clear(app);
-  const route = routeFromHash();
   currentRoute = route;
   if (route.name === "report") {
     currentCleanup = renderReport(app, route.reportId);
-  } else if (route.name === "login" || route.name === "verify" || route.name === "reset") {
+  } else if (AUTH_ROUTES.has(route.name)) {
     currentCleanup = renderAuth(app, route.name, route.params || {});
   } else {
     currentCleanup = renderList(app, searchInput);
   }
+}
+
+function renderAuthView(name, params) {
+  if (currentCleanup) {
+    currentCleanup();
+    currentCleanup = null;
+  }
+  closeAllModals();
+  clear(app);
+  currentRoute = { name, params };
+  currentCleanup = renderAuth(app, name, params);
+}
+
+// Re-check auth state and re-render (login, logout, verification, 401 bounce).
+async function refreshAuth() {
+  const was = authed;
+  const status = await getAuthStatus().catch(() => ({ authenticated: false }));
+  authed = Boolean(status.authenticated);
+  drawAccountChip(status.user || null);
+  if (authed && !was) {
+    // First sign-in this page load: pull the pieces boot() skipped.
+    initStats();
+    restoreJobs();
+  }
+  render();
 }
 
 function initTheme() {
@@ -167,43 +209,63 @@ function initNewResearch() {
 /* Account chip: shows the signed-in email + logout (multi_user), or the
  * owner's identity in single_user mode. Empty while unauthenticated. */
 function initAccount() {
-  const refresh = () => {
-    getMe()
-      .then((me) => {
-        if (me.auth_mode === "single_user") {
-          accountEl.replaceChildren(el("span", { class: "account-email", text: me.email, title: "single-user mode" }));
-          return;
-        }
-        accountEl.replaceChildren(
-          el("span", { class: "account-email", text: me.email }),
-          el("button", {
-            class: "linklike",
-            type: "button",
-            text: "Sign out",
-            onclick: () => {
-              logout()
-                .catch(() => {})
-                .finally(() => {
-                  window.location.hash = "#/login";
-                });
-            },
-          }),
-        );
-      })
-      .catch(() => accountEl.replaceChildren());
+  const drawChip = (me) => {
+    if (!me) {
+      accountEl.replaceChildren();
+      return;
+    }
+    if (me.auth_mode === "single_user") {
+      accountEl.replaceChildren(el("span", { class: "account-email", text: me.email, title: "single-user mode" }));
+      return;
+    }
+    accountEl.replaceChildren(
+      el("span", { class: "account-email", text: me.email }),
+      el("button", {
+        class: "linklike",
+        type: "button",
+        text: "Sign out",
+        onclick: () => {
+          logout()
+            .catch(() => {})
+            .finally(() => {
+              // Drop the authed flag BEFORE navigating: the hashchange render
+              // must not fetch library data with a dead session (would 401).
+              authed = false;
+              statsEl.textContent = "";
+              if (window.location.hash !== "#/login") window.location.hash = "#/login";
+              // refreshAuth re-probes /api/auth/status: clears the chip and
+              // renders the login view.
+              refreshAuth();
+            });
+        },
+      }),
+    );
   };
-  document.addEventListener("dr:auth", refresh);
-  refresh();
+  document.addEventListener("dr:auth", refreshAuth);
+  return drawChip;
 }
 
 window.addEventListener("hashchange", render);
 initTheme();
 initSearch();
 initKeyboard();
-initStats();
 initStatsRefresh();
 initNewResearch();
-initAccount();
 initTaskbar();
-restoreJobs();
-render();
+const drawAccountChip = initAccount();
+
+// Boot: resolve auth state FIRST (one /api/auth/status probe — never 401s),
+// then render the right view — no library data is fetched while logged out,
+// so the console stays clean on the login screen.
+async function boot() {
+  const status = await getAuthStatus().catch(() => ({ authenticated: false }));
+  authed = Boolean(status.authenticated);
+  drawAccountChip(status.user || null);
+  if (authed) {
+    initStats();
+    restoreJobs();
+  }
+  render();
+}
+
+boot();

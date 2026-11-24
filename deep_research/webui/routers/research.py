@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from deep_research.webui.deps import get_storage, require_user
 from deep_research.webui.jobs import _TERMINAL_EVENTS, ResearchJob
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -94,6 +95,19 @@ def _jobs(request: Request):
     return jobs
 
 
+def _owned_job(request: Request, job_id: str) -> ResearchJob:
+    """The job for *job_id* if it exists AND belongs to the caller.
+
+    Other users' jobs are indistinguishable from nonexistent ones (404, not
+    403) so job ids don't leak across accounts.
+    """
+    user = require_user(request)
+    job = _jobs(request).get(job_id)
+    if job is None or (job.user_id is not None and job.user_id != user.user_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
 @router.post("", response_model=ResearchStartResponse, status_code=202)
 async def start_research(body: ResearchStartRequest, request: Request):
     query = body.query.strip()
@@ -117,18 +131,18 @@ async def start_research(body: ResearchStartRequest, request: Request):
             raise HTTPException(
                 status_code=422, detail="attach query must not target a private/loopback host"
             )
-        from deep_research.webui.deps import get_storage
-
         backend = get_storage(request)
         target = await backend.get_report(body.attach_to_run_id)
         if target is None:
             raise HTTPException(status_code=404, detail="target report not found")
 
+    user = require_user(request)
     job = _jobs(request).start(
         query,
         body.path_override,
         attach_to=body.attach_to_run_id,
         webhook_url=body.webhook_url,
+        user_id=user.user_id,
     )
     if job is None:
         raise HTTPException(
@@ -140,23 +154,20 @@ async def start_research(body: ResearchStartRequest, request: Request):
 
 @router.get("/jobs", response_model=list[ResearchJobStatus])
 async def list_jobs(request: Request) -> list[ResearchJobStatus]:
-    return [_status(job) for job in _jobs(request).list_jobs()]
+    user = require_user(request)
+    return [_status(job) for job in _jobs(request).list_jobs(user_id=user.user_id)]
 
 
 @router.get("/jobs/{job_id}", response_model=ResearchJobStatus)
 async def get_job_status(job_id: str, request: Request) -> ResearchJobStatus:
-    job = _jobs(request).get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _owned_job(request, job_id)
     return _status(job)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=ResearchJobStatus)
 async def cancel_job(job_id: str, request: Request) -> ResearchJobStatus:
     manager = _jobs(request)
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _owned_job(request, job_id)
     await manager.cancel(job_id)
     return _status(job)
 
@@ -164,9 +175,7 @@ async def cancel_job(job_id: str, request: Request) -> ResearchJobStatus:
 @router.post("/jobs/{job_id}/pause", response_model=ResearchJobStatus)
 async def pause_job(job_id: str, request: Request) -> ResearchJobStatus:
     manager = _jobs(request)
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _owned_job(request, job_id)
     if not await manager.pause(job_id):
         raise HTTPException(status_code=409, detail="job is not running")
     return _status(job)
@@ -175,9 +184,7 @@ async def pause_job(job_id: str, request: Request) -> ResearchJobStatus:
 @router.post("/jobs/{job_id}/resume", response_model=ResearchJobStatus)
 async def resume_job(job_id: str, request: Request) -> ResearchJobStatus:
     manager = _jobs(request)
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _owned_job(request, job_id)
     if not manager.resume(job_id):
         raise HTTPException(status_code=409, detail="job is not paused (or another job is running)")
     return _status(job)
@@ -186,9 +193,7 @@ async def resume_job(job_id: str, request: Request) -> ResearchJobStatus:
 @router.post("/jobs/{job_id}/abandon", response_model=ResearchJobStatus)
 async def abandon_job(job_id: str, request: Request) -> ResearchJobStatus:
     manager = _jobs(request)
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _owned_job(request, job_id)
     if not manager.abandon(job_id):
         raise HTTPException(status_code=409, detail="job is running; cancel it first")
     return _status(job)
@@ -197,9 +202,7 @@ async def abandon_job(job_id: str, request: Request) -> ResearchJobStatus:
 @router.get("/jobs/{job_id}/stream")
 async def stream_job(job_id: str, request: Request) -> StreamingResponse:
     manager = _jobs(request)
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _owned_job(request, job_id)
     queue = manager.subscribe(job_id)
     if queue is None:
         raise HTTPException(status_code=404, detail="job not found")

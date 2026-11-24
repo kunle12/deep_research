@@ -171,6 +171,11 @@ export function getMe() {
   return request("/api/auth/me");
 }
 
+/* Always-200 probe used by the app boot sequence (no 401 console noise). */
+export function getAuthStatus() {
+  return request("/api/auth/status");
+}
+
 export function login(email, password) {
   return request("/api/auth/login", {
     method: "POST",

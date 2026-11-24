@@ -27,6 +27,33 @@ All responses are JSON unless noted. Destructive endpoints are gated on
 `?confirm=true`. Security headers (CSP, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy`) are set on every response.
 
+### Accounts & authentication — `/api/auth`
+
+Multi-user mode (`pdl.auth.mode: multi_user`) protects every library/research
+endpoint with a session cookie; unauthenticated calls get `401`. In the
+default `single_user` mode no login is required and `GET /api/auth/me` reports
+the implicit owner (`auth_mode: "single_user"`).
+
+| Method | Path | Notes |
+|--------|------|-------|
+| POST | `/api/auth/register` | Body `{email, password, display_name?}`. Creates a `pending` account and emails a verification token. Returns `202 {status, email}` (`status: "exists"` when the address is already registered — no user enumeration). |
+| POST | `/api/auth/verify` | Body `{email, token}`. Consumes the token, activates the account, sets the `pdl_session` cookie. |
+| POST | `/api/auth/resend-verification` | Body `{email}`. Always `202`. |
+| POST | `/api/auth/login` | Body `{email, password}` → session cookie. `401` on bad credentials, `403` for pending/disabled accounts, `429` when rate-limited. |
+| POST | `/api/auth/logout` | Revokes the session, clears the cookie. `204`. |
+| GET | `/api/auth/me` | `{user_id, email, display_name, auth_mode}` for the caller; `401` when unauthenticated. |
+| POST | `/api/auth/request-password-reset` | Body `{email}`. Always `202`; unknown addresses are silently ignored. |
+| POST | `/api/auth/reset` | Body `{email, token, new_password}` → activates a new session; revokes all existing sessions. |
+
+Sessions are opaque 32-byte tokens in an `HttpOnly`, `SameSite=Lax` cookie
+(`Secure` when served over HTTPS); only their SHA-256 hash is stored, with a
+sliding 30-day expiry (`pdl.auth.session_ttl_days`). Every state-changing
+request **must** carry the `X-Requested-With: XMLHttpRequest` header (the web
+app's JS does this) — requests with an authenticated session that lack it get
+`403` (CSRF protection). `/api/auth/*` is exempt. In multi_user mode, all
+library and research data is scoped to the caller's own account; other users'
+research jobs are reported as `404`, not `403`.
+
 ### Health
 
 | Method | Path | Notes |

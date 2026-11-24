@@ -52,6 +52,14 @@ async def research_endpoint(request: ResearchRequest) -> ResearchResponse:
         raise HTTPException(status_code=400, detail="config_path outside allowed directory")
 
     config = AgentTopConfig.load_yaml(config_file)
+    # Multi-user deployments: the microservice is single-tenant, so reports
+    # archive into the owner's personal library (no-op in single_user mode).
+    try:
+        from deep_research.accounts.bootstrap import resolve_user_library_config
+
+        config = await resolve_user_library_config(config)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=500, detail=f"library account error: {e}") from e
     # Run the agent as a child task and wait with a timeout. On timeout we
     # cancel and return promptly (the thread-pool workers launched via
     # asyncio.to_thread inside the agent can't be cancelled, so they keep

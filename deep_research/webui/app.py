@@ -123,7 +123,9 @@ def create_app(
             )
             # A previous run's checkpoint files survive on disk; surface them as
             # resumable paused jobs so nothing is lost after a restart.
-            restored = app.state.jobs.restore_paused()
+            restored = app.state.jobs.restore_paused(
+                owner_user_id=app.state.owner.user_id if app.state.owner else None
+            )
             if restored:
                 logger.info("restored %d paused research job(s) after restart", len(restored))
             yield
@@ -147,11 +149,23 @@ def create_app(
     app.state.backend = backend
     app.state.config_path = config_path
     app.state.config = None
+
+    def _root_for_user(user_id: str | None) -> str | None:
+        """Library root for *user_id* (multi_user); None keeps the legacy root."""
+        registry = getattr(app.state, "registry", None)
+        if registry is None or not user_id:
+            return None
+        try:
+            return str(registry.root_for(user_id))
+        except ValueError:
+            return None
+
     app.state.jobs = ResearchJobManager(
         config_path,
         runner=research_runner,
         attach_runner=attach_runner,
         checkpoint_dir=checkpoint_dir,
+        root_for_user=_root_for_user,
     )
 
     @app.middleware("http")
@@ -184,6 +198,10 @@ def create_app(
         response.headers.setdefault("Content-Security-Policy", _CSP)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        # The SPA has no build step or versioned asset URLs: force etag
+        # revalidation so browser-cached modules from a previous deployment
+        # can never shadow a newer one (stale-module ImportError).
+        response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     app.include_router(auth_router)

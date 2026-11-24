@@ -409,7 +409,8 @@ Notes:
   checkpoints survive on disk, and the UI **restores them automatically as
   resumable paused jobs** after a restart, so an interrupted run is never lost.
   Cancel abandons the job and discards its checkpoint.
-- Only one research job runs at a time; the UI disables Start while one is running.
+- Only one research job runs **per user** at a time; the UI disables Start
+  while one is running.
 - `POST /api/research` accepts an optional `webhook_url`; the server POSTs a
   JSON payload (job id, report markdown, artifact/reference counts) when the
   job completes or fails (see [`docs/REST_API.md`](docs/REST_API.md)).
@@ -422,6 +423,68 @@ Refresh scheduler (daemon that auto-refreshes upstream URLs):
 ```bash
 uv run deep-research-scheduler
 ```
+
+### Multi-user libraries (accounts & login)
+
+By default the library is **single-user** (`pdl.auth.mode: single_user`) — no
+login, one library at `pdl.root_dir`, exactly as before. To give several
+people each their own private library, enable multi-user mode:
+
+```yaml
+pdl:
+  auth:
+    mode: multi_user
+    owner_email: "you@example.com"   # owns the existing/migrated library
+```
+
+On the next web-UI start, an existing library at `pdl.root_dir` is migrated
+once, automatically and idempotently, into the owner's directory
+(`root_dir/users/<user_id>/`) — accounts live in a small `registry.db` next to
+the libraries. Each account then sees only its own reports, artifacts, tags,
+analyses, glossary, and running jobs. Library layout:
+
+```
+.deep_research_library/
+├── registry.db              # accounts, sessions, email tokens
+└── users/
+    └── <user_id>/           # one personal library per account
+        ├── index.db
+        ├── artifacts/
+        └── reports/
+```
+
+Accounts are tied to a **verified email address**: registration emails a
+single-use verification token (24 h), and only verified accounts can sign in
+with their password (Argon2id). If no SMTP server is configured, the
+verification and password-reset emails are printed to the server log instead —
+enough to bootstrap the first account on a self-hosted box.
+
+```bash
+# Account management (out-of-band, works without SMTP):
+uv run deep-research-library users add alice@example.com --password
+uv run deep-research-library users list
+uv run deep-research-library users set-status alice@example.com disabled
+uv run deep-research-library users set-password alice@example.com
+
+# CLI commands target a specific account's library:
+uv run deep-research-library --user alice@example.com ls
+DEEP_RESEARCH_USER=alice@example.com uv run deep-research-library find "transformers"
+```
+
+Notes:
+
+- The owner account is provisioned automatically from `pdl.auth.owner_email`
+  (required in multi_user mode). Set its password with
+  `deep-research-library users set-password`, or let it self-register with the
+  same address (registration verifies it by email).
+- Sessions are cookie-based and revocable; password resets revoke all sessions
+  of the account. State-changing API calls require the SPA's
+  `X-Requested-With` header (CSRF protection).
+- Research jobs run one-at-a-time **per user**; the scheduler refreshes every
+  user's library; the CLI and microservice archive into the owner's library
+  unless `--user` / `DEEP_RESEARCH_USER` is set.
+- Postgres deployments get one schema per user (`library_<user_id>`) in the
+  configured database; the account registry remains the local `registry.db`.
 
 ### As a Python library
 

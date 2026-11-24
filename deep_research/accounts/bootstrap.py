@@ -14,6 +14,7 @@ import shutil
 from pathlib import Path
 
 from deep_research.accounts.rows import UserRow
+from deep_research.accounts.service import AuthService, normalize_email
 from deep_research.accounts.store import AccountStore
 from deep_research.config import AgentTopConfig
 
@@ -37,6 +38,48 @@ _POSTGRES_LEGACY_TABLES = (
     "artifact_versions",
     "refresh_jobs",
 )
+
+
+async def resolve_user_library_config(
+    cfg: AgentTopConfig, email: str | None = None
+) -> AgentTopConfig:
+    """Config pointing at the target user's library (CLI / microservice seam).
+
+    - ``single_user`` mode: returns *cfg* unchanged (legacy layout).
+    - ``multi_user`` mode: ensures the registry + owner exist, runs the
+      idempotent legacy migration, resolves *email* (default: the owner),
+      and returns a copy of *cfg* whose ``pdl.root_dir`` is that user's
+      per-user library directory.
+    """
+    if cfg.pdl.auth.mode != "multi_user":
+        return cfg
+    if not cfg.pdl.auth.owner_email:
+        raise RuntimeError("pdl.auth.owner_email must be set when pdl.auth.mode is multi_user")
+    root = Path(cfg.pdl.root_dir)
+    store = AccountStore(root / "registry.db")
+    await store.connect()
+    try:
+        auth = AuthService(store, _boot_email_sender(cfg), cfg.pdl.auth)
+        owner = await auth.provision_owner(cfg.pdl.auth.owner_email)
+        await migrate_legacy_library(cfg, store, owner)
+        if email:
+            user = await store.get_user_by_email(normalize_email(email))
+            if user is None:
+                raise ValueError(f"no library account for {email!r}")
+        else:
+            user = owner
+        target = root / "users" / user.user_id
+    finally:
+        await store.close()
+    scoped = cfg.model_copy(deep=True)
+    scoped.pdl.root_dir = str(target)
+    return scoped
+
+
+def _boot_email_sender(cfg: AgentTopConfig):
+    from deep_research.accounts.emails import build_email_sender
+
+    return build_email_sender(cfg.pdl.auth.smtp)
 
 
 async def migrate_legacy_library(cfg: AgentTopConfig, store: AccountStore, owner: UserRow) -> bool:

@@ -63,6 +63,7 @@ class ResearchJob:
     path_override: str | None = None
     attach_to: str | None = None
     webhook_url: str | None = None
+    user_id: str | None = None  # owning account (None = pre-multi-user/legacy)
     status: str = "running"  # running | cancelling | done | failed | cancelled | paused
     phase: str = ""
     step: str = ""
@@ -76,6 +77,18 @@ class ResearchJob:
     event_log: list[dict[str, Any]] = field(default_factory=list)
     task: asyncio.Task | None = field(default=None, repr=False, compare=False)
     _subscribers: set[asyncio.Queue] = field(default_factory=set, repr=False, compare=False)
+
+
+def _with_library_root(config: AgentTopConfig, root: str) -> AgentTopConfig:
+    """A per-user config: everything identical except the library root.
+
+    The runners (and `_is_archived`/`_webhook_artifact_count`) open backends
+    and writers from `config.pdl.root_dir`, so swapping it is what scopes a
+    job's entire pipeline — runners never learn about users.
+    """
+    scoped = config.model_copy(deep=True)
+    scoped.pdl.root_dir = root
+    return scoped
 
 
 def _put(queue: asyncio.Queue, event: dict[str, Any]) -> None:
@@ -145,14 +158,35 @@ class ResearchJobManager:
         attach_runner: AttachRunner | None = None,
         max_concurrent: int = 1,
         checkpoint_dir: Path | None = None,
+        root_for_user: Callable[[str | None], str | None] | None = None,
     ) -> None:
         self._config_path = config_path
         self._runner = runner or _default_runner
         self._attach_runner = attach_runner or _default_attach_runner
+        # Concurrency cap is PER USER (multi_user); single-user deployments
+        # have exactly one account, so behavior is unchanged there.
         self._max_concurrent = max_concurrent
+        self._root_for_user = root_for_user
         self._checkpoint_dir = checkpoint_dir or _CHECKPOINT_DIR
         self._jobs: dict[str, ResearchJob] = {}
-        self._running = 0
+        self._running_by_user: dict[str, int] = {}
+
+    def _running_for(self, user_id: str | None) -> int:
+        return self._running_by_user.get(user_id or "", 0)
+
+    def _claim_slot(self, user_id: str | None) -> bool:
+        if self._running_for(user_id) >= self._max_concurrent:
+            return False
+        self._running_by_user[user_id or ""] = self._running_for(user_id) + 1
+        return True
+
+    def _release_slot(self, user_id: str | None) -> None:
+        key = user_id or ""
+        count = self._running_by_user.get(key, 0) - 1
+        if count <= 0:
+            self._running_by_user.pop(key, None)
+        else:
+            self._running_by_user[key] = count
 
     def start(
         self,
@@ -161,9 +195,10 @@ class ResearchJobManager:
         *,
         attach_to: str | None = None,
         webhook_url: str | None = None,
+        user_id: str | None = None,
     ) -> ResearchJob | None:
-        """Start a research job, or return None when at the concurrency cap."""
-        if self._running >= self._max_concurrent:
+        """Start a research job, or return None when *user_id* is at the cap."""
+        if not self._claim_slot(user_id):
             return None
         job = ResearchJob(
             job_id=uuid.uuid4().hex[:16],
@@ -171,6 +206,7 @@ class ResearchJobManager:
             path_override=path_override,
             attach_to=attach_to,
             webhook_url=webhook_url,
+            user_id=user_id,
         )
         if attach_to:
             # Attach jobs mutate an existing report; use its run_id so the
@@ -178,7 +214,6 @@ class ResearchJobManager:
             # resolves against the existing report.
             job.run_id = attach_to
         self._jobs[job.job_id] = job
-        self._running += 1
         job.task = asyncio.create_task(self._run(job))
         self._prune()
         return job
@@ -187,13 +222,18 @@ class ResearchJobManager:
         return self._jobs.get(job_id)
 
     def _discard_checkpoint(self, run_id: str) -> None:
-        """Remove the on-disk checkpoint for *run_id* from the managed dir."""
+        """Remove the on-disk checkpoint (and its owner marker) for *run_id*."""
         with suppress(Exception):
             (self._checkpoint_dir / f"{run_id}.json").unlink(missing_ok=True)
+        with suppress(Exception):
+            (self._checkpoint_dir / f"{run_id}.user").unlink(missing_ok=True)
 
-    def list_jobs(self) -> list[ResearchJob]:
-        """All known jobs, most recently started first."""
-        return sorted(self._jobs.values(), key=lambda j: j.started_at, reverse=True)
+    def list_jobs(self, *, user_id: str | None = None) -> list[ResearchJob]:
+        """Known jobs, most recently started first; optionally one user's."""
+        jobs = sorted(self._jobs.values(), key=lambda j: j.started_at, reverse=True)
+        if user_id is None:
+            return jobs
+        return [j for j in jobs if j.user_id == user_id]
 
     async def cancel(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
@@ -259,13 +299,12 @@ class ResearchJobManager:
             return False
         if not job.run_id:
             return False
-        if self._running >= self._max_concurrent:
+        if not self._claim_slot(job.user_id):
             return False
         job.status = "running"
         job.completed_at = None
         job.paused_at = None
         job.error = None
-        self._running += 1
         job.task = asyncio.create_task(self._run(job))
         self.emit(
             job,
@@ -293,12 +332,15 @@ class ResearchJobManager:
         del self._jobs[job_id]
         return True
 
-    def restore_paused(self) -> list[ResearchJob]:
+    def restore_paused(self, *, owner_user_id: str | None = None) -> list[ResearchJob]:
         """After a restart, register orphaned checkpoint files as paused jobs.
 
         Every running web job writes a checkpoint per iteration keyed by its
         run_id. A restart drops the in-memory job, but its checkpoint survives
-        on disk — so we surface it as a resumable paused job here.
+        on disk — so we surface it as a resumable paused job here. Ownership is
+        restored from the ``<run_id>.user`` sidecar written at start; jobs
+        without one (e.g. checkpoints from before the multi-user upgrade) are
+        attributed to the owner account.
         """
         restored: list[ResearchJob] = []
         if not self._checkpoint_dir.exists():
@@ -324,11 +366,21 @@ class ResearchJobManager:
                 j.run_id == run_id or (j.query and j.query == query) for j in self._jobs.values()
             ):
                 continue
+            marker = self._checkpoint_dir / f"{run_id}.user"
+            user_id = owner_user_id
+            if marker.exists():
+                try:
+                    marked = marker.read_text(encoding="utf-8").strip()
+                    if marked:
+                        user_id = marked
+                except Exception:
+                    pass
             job = ResearchJob(
                 job_id=uuid.uuid4().hex[:16],
                 query=query,
                 status="paused",
                 run_id=run_id,
+                user_id=user_id,
                 started_at=f.stat().st_mtime,
             )
             self._jobs[job.job_id] = job
@@ -380,6 +432,19 @@ class ResearchJobManager:
         config: AgentTopConfig | None = None
         try:
             config = AgentTopConfig.load_yaml(self._config_path)
+            # Scope the whole pipeline (runner, attach, archival check,
+            # webhook counts) to the owning user's library.
+            if job.user_id and self._root_for_user is not None:
+                root = self._root_for_user(job.user_id)
+                if root:
+                    config = _with_library_root(config, root)
+            # Record ownership next to the checkpoint so a restart can
+            # restore the job to the right user's library.
+            if job.user_id:
+                with suppress(Exception):
+                    (self._checkpoint_dir / f"{run_id}.user").write_text(
+                        job.user_id, encoding="utf-8"
+                    )
             if job.attach_to:
                 result = await self._attach_runner(config, job.query, job.attach_to, reporter)
                 if job.status != "running":
@@ -470,7 +535,7 @@ class ResearchJobManager:
                 job.paused_at = job.paused_at or time.time()
             else:
                 job.completed_at = time.time()
-            self._running -= 1
+            self._release_slot(job.user_id)
 
     async def _is_archived(self, config: AgentTopConfig, run_id: str) -> bool:
         """Check whether the finished report made it into the library."""

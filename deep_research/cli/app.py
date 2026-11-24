@@ -188,11 +188,29 @@ def main(
         "-q",
         help="Suppress the live progress panel (useful for piping output to a file)",
     ),
+    user: str | None = typer.Option(
+        None,
+        "--user",
+        envvar="DEEP_RESEARCH_USER",
+        help="Archive the report into this account's library (multi_user mode; default: owner)",
+    ),
 ) -> None:
     """Run a deep research query and print/write the report."""
     _setup_logging(verbose)
     _load_env_dotlocal(Path.cwd())
     config = _load_config(config_path)
+    if config.pdl.auth.mode == "multi_user":
+        import asyncio as _asyncio
+
+        from deep_research.accounts.bootstrap import resolve_user_library_config
+
+        try:
+            config = _asyncio.run(resolve_user_library_config(config, user))
+        except (RuntimeError, ValueError) as e:
+            err_console.print(f"[red]Library account error:[/red] {e}")
+            raise typer.Exit(code=2) from e
+        target = user or config.pdl.auth.owner_email or "the owner"
+        err_console.print(f"[dim]Archiving into {target}'s library ({config.pdl.root_dir})[/dim]")
     config.ensure_dirs()
 
     if fmt not in {"markdown", "json"}:

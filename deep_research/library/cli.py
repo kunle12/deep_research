@@ -1,12 +1,17 @@
 """Library CLI — Personal Digital Library management commands.
 
 P12(d): implemented. Commands: ls, find, show, tag, stats, prune, delete,
-export-bibtex, glossary, refresh.
+export-bibtex, glossary, refresh. Plus `users` admin commands for the
+multi-user account registry (add/list/set-status/set-password).
+
+Multi-user: pass `--user EMAIL` (or set `DEEP_RESEARCH_USER`) to target a
+specific account's library; omitted, the owner's library is used.
 """
 
 from __future__ import annotations
 
 import asyncio
+import getpass
 import json
 import logging
 import re
@@ -22,6 +27,24 @@ from deep_research.library.writer import remove_artifact_files
 logger = logging.getLogger(__name__)
 
 library_app = typer.Typer(name="library", help="Personal Digital Library commands")
+users_app = typer.Typer(name="users", help="Manage library accounts (multi-user registry)")
+
+
+@library_app.callback()
+def _library_callback(
+    ctx: typer.Context,
+    user: str | None = typer.Option(
+        None,
+        "--user",
+        envvar="DEEP_RESEARCH_USER",
+        help="Target library account email (multi_user mode; default: owner).",
+    ),
+) -> None:
+    ctx.obj = {"user": user}
+
+
+def _target_user(ctx: typer.Context) -> str | None:
+    return (getattr(ctx, "obj", None) or {}).get("user")
 
 
 def _replace_title_heading(markdown: str, new_title: str) -> str:
@@ -40,11 +63,23 @@ def _replace_title_heading(markdown: str, new_title: str) -> str:
     return markdown
 
 
-async def _get_backend_and_writer(config_path: str):
+async def _get_backend_and_writer(config_path: str, user_email: str | None = None):
     cfg = AgentTopConfig.load_yaml(config_path)
     if not cfg.pdl.enabled:
         typer.echo("PDL is not enabled (pdl.enabled=false in config)")
         raise typer.Exit(code=1)
+    if cfg.pdl.auth.mode == "multi_user":
+        if user_email:
+            typer.echo(f"Targeting library of {user_email}")
+        else:
+            typer.echo("No --user given; using the owner's library")
+        try:
+            from deep_research.accounts.bootstrap import resolve_user_library_config
+
+            cfg = await resolve_user_library_config(cfg, user_email)
+        except ValueError as exc:
+            typer.echo(f"Error: {exc}")
+            raise typer.Exit(code=1) from exc
     backend = await get_backend(cfg)
     from deep_research.library.writer import LibraryWriter
 
@@ -70,6 +105,7 @@ async def _resolve_report(backend, run_id_prefix: str):
 
 @library_app.command("ls")
 def library_ls(
+    ctx: typer.Context,
     source_type: str | None = typer.Option(
         None, "--source-type", "-t", help="Filter by source type"
     ),
@@ -79,7 +115,7 @@ def library_ls(
     """List artifacts in the library."""
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         # List all artifacts (no direct list method, so we list reports + use find)
         reports = await backend.list_reports(limit=limit)
         # Batch-fetch tags for all reports' artifact_ids
@@ -99,6 +135,7 @@ def library_ls(
 
 @library_app.command("find")
 def library_find(
+    ctx: typer.Context,
     query: str = typer.Argument(..., help="Full-text search query"),
     kind: str = typer.Option("pdf", "--kind", "-k", help="Artifact kind to search"),
     limit: int = typer.Option(20, "--limit", "-L", help="Max results"),
@@ -107,7 +144,7 @@ def library_find(
     """Full-text search across analyses."""
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         hits = await backend.full_text_search(query, kind=kind, limit=limit)
         for h in hits:
             typer.echo(f"{h.artifact_id[:16]}  {h.title[:60]}")
@@ -120,13 +157,14 @@ def library_find(
 
 @library_app.command("show")
 def library_show(
+    ctx: typer.Context,
     artifact_id: str = typer.Argument(..., help="Artifact ID to show"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
     """Show details of a specific artifact."""
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         try:
             art = await backend.get_artifact(artifact_id)
             if art is None:
@@ -154,6 +192,7 @@ def library_show(
 
 @library_app.command("tag")
 def library_tag(
+    ctx: typer.Context,
     artifact_id: str | None = typer.Argument(None, help="Artifact ID"),
     tag_name: str | None = typer.Argument(None, help="Tag name"),
     remove: bool = typer.Option(False, "--remove", "-r", help="Remove tag instead of adding"),
@@ -165,7 +204,7 @@ def library_tag(
     """Add, remove, list, or rename tags."""
 
     async def _run():
-        _cfg, backend, writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, writer = await _get_backend_and_writer(config_path, _target_user(ctx))
 
         if remove and artifact_id and tag_name:
             await backend.delete_tag(tag_name, artifact_id)
@@ -200,12 +239,13 @@ def library_tag(
 
 @library_app.command("stats")
 def library_stats(
+    ctx: typer.Context,
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
     """Show library statistics."""
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         reports = await backend.list_reports(limit=1000)
         typer.echo(f"Reports:     {len(reports)}")
         # Count artifacts by kind (approximate)
@@ -217,13 +257,14 @@ def library_stats(
 
 @library_app.command("delete")
 def library_delete(
+    ctx: typer.Context,
     run_id: str = typer.Argument(..., help="Run ID (or prefix) of the report to delete"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
     """Delete a single report and its files from the library."""
 
     async def _run():
-        cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         # Find matching report(s)
         reports = await backend.list_reports(limit=1000)
         matched = [r for r in reports if r.run_id.startswith(run_id)]
@@ -289,6 +330,7 @@ def library_delete(
 
 @library_app.command("rm-artifact")
 def library_rm_artifact(
+    ctx: typer.Context,
     artifact_id: str | None = typer.Argument(None, help="Artifact ID to delete"),
     arxiv_id: str | None = typer.Option(
         None, "--arxiv", help="Delete the artifact for this arXiv ID"
@@ -305,7 +347,7 @@ def library_rm_artifact(
     """
 
     async def _run():
-        cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         if artifact_id:
             art = await backend.get_artifact(artifact_id)
         elif arxiv_id:
@@ -351,6 +393,7 @@ def library_rm_artifact(
 
 @library_app.command("rename")
 def library_rename(
+    ctx: typer.Context,
     run_id: str = typer.Argument(..., help="Run ID (or prefix) of the report to rename"),
     new_name: str = typer.Argument(..., help="New name for the research"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
@@ -358,7 +401,7 @@ def library_rename(
     """Rename a research report (updates its display name/title)."""
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         r = await _resolve_report(backend, run_id)
         if r is None:
             await backend.close()
@@ -377,6 +420,7 @@ def library_rename(
 
 @library_app.command("merge")
 def library_merge(
+    ctx: typer.Context,
     run_ids: list[str] = typer.Argument(..., help="Two or more run ID prefixes to merge"),
     name: str | None = typer.Option(None, "--name", help="New name for the merged research"),
     delete_sources: bool = typer.Option(
@@ -387,7 +431,7 @@ def library_merge(
     """Merge two or more research reports into a single unified report."""
 
     async def _run():
-        cfg, backend, writer = await _get_backend_and_writer(config_path)
+        cfg, backend, writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         if len(run_ids) < 2:
             typer.echo("merge requires at least two run IDs.")
             await backend.close()
@@ -426,6 +470,7 @@ def library_merge(
 
 @library_app.command("add-source")
 def library_add_source(
+    ctx: typer.Context,
     run_id: str = typer.Argument(..., help="Run ID (or prefix) of the research"),
     url: str = typer.Argument(..., help="URL of the paper/doc/blog to attach"),
     force: bool = typer.Option(
@@ -436,7 +481,7 @@ def library_add_source(
     """Fetch, fully analyze, and attach a new source to an existing research."""
 
     async def _run():
-        cfg, backend, writer = await _get_backend_and_writer(config_path)
+        cfg, backend, writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         r = await _resolve_report(backend, run_id)
         if r is None:
             await backend.close()
@@ -474,6 +519,7 @@ def library_add_source(
 
 @library_app.command("prune")
 def library_prune(
+    ctx: typer.Context,
     older_than_days: int = typer.Option(
         90, "--older-than", help="Delete reports older than N days"
     ),
@@ -488,7 +534,7 @@ def library_prune(
     """
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         # List all reports and filter by age
         reports = await backend.list_reports(limit=1000)
         cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
@@ -514,13 +560,14 @@ def library_prune(
 
 @library_app.command("export-bibtex")
 def library_export_bibtex(
+    ctx: typer.Context,
     output: str = typer.Option("refs.bib", "--out", "-o", help="Output .bib file"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
 ) -> None:
     """Export library artifacts as BibTeX."""
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         reports = await backend.list_reports(limit=1000)
         lines = ["% Generated by deep-research library export-bibtex\n"]
         for r in reports:
@@ -540,6 +587,7 @@ def library_export_bibtex(
 
 @library_app.command("refresh")
 def library_refresh(
+    ctx: typer.Context,
     source_type: str | None = typer.Option(None, "--source-type", help="Filter by source type"),
     tag: str | None = typer.Option(None, "--tag", help="Filter by tag"),
     artifact_id: str | None = typer.Option(
@@ -557,7 +605,7 @@ def library_refresh(
     """Refresh stale artifacts in the personal library."""
 
     async def _run():
-        _cfg, backend, writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         if artifact_id:
             scope_kind, scope_value = "artifact_id", artifact_id
         elif tag:
@@ -581,6 +629,7 @@ def library_refresh(
 
 @library_app.command("glossary")
 def library_glossary(
+    ctx: typer.Context,
     filter_tag: str | None = typer.Option(None, "--filter-tag", help="Filter by domain tag"),
     find: str | None = typer.Option(None, "--find", help="FTS search for a term"),
     term: str | None = typer.Option(None, "--term", help="Detail view of one term"),
@@ -591,7 +640,7 @@ def library_glossary(
     """Browse the glossary. Use --find for full-text search (FTS5), --term for a single term, --filter-tag to filter by domain tag, --out to export as JSON."""
 
     async def _run():
-        _cfg, backend, _writer = await _get_backend_and_writer(config_path)
+        _cfg, backend, _writer = await _get_backend_and_writer(config_path, _target_user(ctx))
         if find:
             entries = await backend.glossary_search(find, limit)
         else:
@@ -640,3 +689,166 @@ def library_glossary(
             expansion = f"  ·  {e.acronym_expansion}" if e.acronym_expansion else ""
             typer.echo(f"{e.term}{expansion}")
             typer.echo(f"  ({e.kind}) {e.short_def or ''}")
+
+
+# -- Account registry admin (multi-user) --
+
+
+def _open_registry(config_path: str):
+    from deep_research.accounts.store import AccountStore
+
+    cfg = AgentTopConfig.load_yaml(config_path)
+    return cfg, AccountStore(Path(cfg.pdl.root_dir) / "registry.db")
+
+
+def _prompt_password() -> str:
+    pw1 = getpass.getpass("Password (min 8 chars): ")
+    pw2 = getpass.getpass("Repeat password: ")
+    if pw1 != pw2:
+        typer.echo("Error: passwords do not match.")
+        raise typer.Exit(code=1)
+    return pw1
+
+
+@users_app.command("add")
+def users_add(
+    email: str = typer.Argument(..., help="Account email address"),
+    display_name: str | None = typer.Option(None, "--display-name", help="Display name"),
+    set_password: bool = typer.Option(
+        False, "--password", help="Interactively set a login password for the account"
+    ),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Create a library account (active, optionally with a password).
+
+    The out-of-band bootstrap for the first account on a multi-user server or
+    for environments without SMTP.
+    """
+
+    async def _run():
+        from deep_research.accounts.passwords import hash_password, validate_password_strength
+        from deep_research.accounts.service import normalize_email
+        from deep_research.accounts.store import DuplicateEmailError
+
+        cfg, store = _open_registry(config_path)
+        await store.connect()
+        try:
+            from deep_research.accounts.service import AuthError
+
+            try:
+                normalized = normalize_email(email)
+            except AuthError as exc:
+                typer.echo(f"Error: {exc}")
+                raise typer.Exit(code=1) from exc
+            kwargs = {"display_name": display_name, "status": "active"}
+            if set_password:
+                pw = _prompt_password()
+                reason = validate_password_strength(pw)
+                if reason:
+                    typer.echo(f"Error: {reason}")
+                    raise typer.Exit(code=1)
+                kwargs["password_hash"] = hash_password(pw)
+            try:
+                user = await store.create_user(normalized, **kwargs)
+            except DuplicateEmailError:
+                typer.echo(f"Error: an account for {normalized} already exists.")
+                raise typer.Exit(code=1) from None
+            typer.echo(f"Created account {user.email} ({user.user_id})")
+        finally:
+            await store.close()
+
+    asyncio.run(_run())
+
+
+@users_app.command("list")
+def users_list(
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """List all library accounts."""
+
+    async def _run():
+        cfg, store = _open_registry(config_path)
+        await store.connect()
+        try:
+            users = await store.list_users()
+        finally:
+            await store.close()
+        if not users:
+            typer.echo("No accounts yet.")
+            return
+        for u in users:
+            pw = "pw" if u.password_hash else "--"
+            typer.echo(f"{u.email[:32]:32s}  {u.status:8s}  {pw:2s}  {u.user_id[:12]}")
+
+    asyncio.run(_run())
+
+
+@users_app.command("set-status")
+def users_set_status(
+    email: str = typer.Argument(..., help="Account email address"),
+    status: str = typer.Argument(..., help="active | pending | disabled"),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Activate, disable, or re-pend an account."""
+
+    async def _run():
+        from deep_research.accounts.service import normalize_email
+
+        cfg, store = _open_registry(config_path)
+        await store.connect()
+        try:
+            user = await store.get_user_by_email(normalize_email(email))
+            if user is None:
+                typer.echo(f"Error: no account for {email}")
+                raise typer.Exit(code=1)
+            try:
+                await store.set_user_status(user.user_id, status)
+            except ValueError as exc:
+                typer.echo(f"Error: {exc}")
+                raise typer.Exit(code=1) from exc
+            typer.echo(f"{user.email} is now {status}")
+        finally:
+            await store.close()
+
+    asyncio.run(_run())
+
+
+@users_app.command("set-password")
+def users_set_password(
+    email: str = typer.Argument(..., help="Account email address"),
+    password_env: str | None = typer.Option(
+        None, "--password-env", help="Env var holding the password (non-interactive)"
+    ),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config path"),
+) -> None:
+    """Set (or reset) an account's login password; revokes its sessions."""
+
+    import os
+
+    async def _run():
+        from deep_research.accounts.service import AuthService, normalize_email
+        from deep_research.config import PDLAuthConfig
+
+        if password_env:
+            password = os.environ.get(password_env, "")
+        else:
+            password = _prompt_password()
+        cfg, store = _open_registry(config_path)
+        await store.connect()
+        try:
+            from deep_research.accounts.emails import ConsoleEmailSender
+
+            auth = AuthService(store, ConsoleEmailSender(), PDLAuthConfig())
+            try:
+                user = await auth.set_password_direct(email, password)
+            except Exception as exc:
+                typer.echo(f"Error: {exc}")
+                raise typer.Exit(code=1) from exc
+            typer.echo(f"Password set for {normalize_email(email)} ({user.user_id[:12]})")
+        finally:
+            await store.close()
+
+    asyncio.run(_run())
+
+
+library_app.add_typer(users_app)

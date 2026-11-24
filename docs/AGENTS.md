@@ -46,6 +46,8 @@ changes.
 | `webui/jobs.py` | In-memory `ResearchJobManager` — runs `run_research` as an asyncio task, broadcasts phase/step events to SSE subscribers; optional fire-and-forget webhook POST (`webhook_url`) on job done/error with `job_id`, `research_id`, report markdown, artifact/reference counts |
 | `webui/routers/library.py` | Library browsing API (reports, tags, artifacts, search, stats, PDF/markdown serving) |
 | `webui/routers/research.py` | Research job API: start (optional `webhook_url`), status, cancel, SSE stream |
+| `accounts/` | Global account layer (multi-user): `store.py` AccountStore over `registry.db` (users/sessions/email_tokens), `service.py` AuthService (register/verify/login/reset, session mint/resolve, rate limiting), `passwords.py` Argon2id, `emails.py` SMTP/console senders, `bootstrap.py` owner provisioning + legacy library migration + `resolve_user_library_config` (CLI/microservice seam) |
+| `library/storage/registry.py` | `LibraryRegistry` — per-user lazy `StorageBackend` (SQLite `users/<user_id>/index.db` or Postgres schema `library_<user_id>`) + `StaticLibraryRegistry` for single-user/injected backends |
 | `docs/REST_API.md` | Human-readable REST API reference for the web UI + microservice; committed OpenAPI snapshots in `deep_research/api.openapi.json` and `deep_research/microservice.openapi.json`. Regenerate them with `app.openapi()` whenever a router/model changes |
 | `webui/static/` | Vanilla-JS SPA (no build step): `markdown.js` safe parser/renderer, views for list/report/research |
 
@@ -986,6 +988,40 @@ if not url or not url.startswith(("http://", "https://", "ftp://")):
 ```
 
 ---
+
+## Multi-User Account Pattern (accounts/ + library/storage/registry.py)
+
+Design: `docs/MULTI_USER_PLAN.md`; log: `docs/MULTI_USER_IMPLEMENTATION_LOG.md`.
+
+- **Accounts are global; libraries are per-user.** The account registry
+  (`<root>/registry.db` via `AccountStore`) never holds library data, and a
+  user's library DB never holds account data. `user_id` (uuid4 hex) is the
+  only on-disk identifier — never the email.
+- **The resolution seam, not the storage layer, is multi-user.** One
+  `StorageBackend` instance still represents exactly one personal library; the
+  app middleware resolves the caller and opens their backend via
+  `LibraryRegistry`. Do NOT thread `user_id` through `StorageBackend` methods.
+- **`single_user` mode (default) must stay byte-compatible**: legacy layout
+  (`<root>/index.db`), no registry, no login. Any change that alters
+  single_user behavior needs an explicit justification in the plan doc.
+- **The legacy migration only runs in `multi_user` mode**, is idempotent
+  (marker in `registry_meta`), and is resumable after a partial move. Never
+  adopt a stray `<root>/index.db` after the marker is set.
+- **Session minting goes through `AuthService._mint_session`** — the single
+  chokepoint for the future SSO `IdentityProvider`. Sessions store only the
+  SHA-256 of the token, slide their expiry past half-TTL, and record
+  `auth_method` for audit.
+- **CSRF**: state-changing requests with a session must carry
+  `X-Requested-With: XMLHttpRequest` (middleware-enforced); `/api/auth/*` is
+  exempt. New state-changing routers must keep this contract.
+- **Jobs ownership**: `ResearchJob.user_id` + a `<run_id>.user` sidecar in the
+  checkpoint dir survive restarts; routers enforce ownership with 404 (not
+  403) so job ids don't leak across accounts. The job pipeline is scoped by
+  handing runners a config whose `pdl.root_dir` points at the user's library
+  (`_with_library_root`) — runners never learn about users.
+- `AccountStore` follows the same single-connection + `_serialized` op-lock
+  discipline as `sqlite_backend.py` (see Concurrency Safety Patterns); never
+  call a public serialized method from another one.
 
 ## Cache TTL Clock
 
