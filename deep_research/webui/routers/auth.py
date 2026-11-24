@@ -37,6 +37,11 @@ def _map_auth_error(exc: AuthError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=str(exc))
 
 
+def _client_ip(request: Request) -> str | None:
+    """Direct client host (TestClient may have none)."""
+    return request.client.host if request.client else None
+
+
 class RegisterRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=128)
@@ -110,7 +115,7 @@ def _set_session_cookie(request: Request, response: Response, token: str) -> Non
 async def register(body: RegisterRequest, request: Request) -> RegisterResponse:
     try:
         result = await _auth(request).register(
-            body.email, body.password, display_name=body.display_name
+            body.email, body.password, display_name=body.display_name, ip=_client_ip(request)
         )
     except AuthError as exc:
         raise _map_auth_error(exc) from exc
@@ -132,7 +137,7 @@ async def verify(body: VerifyRequest, request: Request, response: Response):
 @router.post("/resend-verification", status_code=202)
 async def resend_verification(body: EmailRequest, request: Request) -> dict:
     try:
-        await _auth(request).resend_verification(body.email)
+        await _auth(request).resend_verification(body.email, ip=_client_ip(request))
     except AuthError as exc:
         raise _map_auth_error(exc) from exc
     return {"status": "ok"}
@@ -142,7 +147,7 @@ async def resend_verification(body: EmailRequest, request: Request) -> dict:
 async def login(body: LoginRequest, request: Request, response: Response):
     auth = _auth(request)
     try:
-        token = await auth.login(body.email, body.password)
+        token = await auth.login(body.email, body.password, ip=_client_ip(request))
     except AuthError as exc:
         raise _map_auth_error(exc) from exc
     _set_session_cookie(request, response, token)
@@ -182,7 +187,7 @@ async def status(request: Request) -> AuthStatusResponse:
 @router.post("/request-password-reset", status_code=202)
 async def request_password_reset(body: EmailRequest, request: Request) -> dict:
     try:
-        await _auth(request).request_password_reset(body.email)
+        await _auth(request).request_password_reset(body.email, ip=_client_ip(request))
     except AuthError as exc:
         raise _map_auth_error(exc) from exc
     return {"status": "ok"}

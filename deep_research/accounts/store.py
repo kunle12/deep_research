@@ -117,7 +117,9 @@ class AccountStore:
 
     async def connect(self) -> None:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(self._db_path, timeout=5000)
+        # sqlite3's timeout kwarg is SECONDS (the busy_timeout PRAGMA below is
+        # milliseconds — keep them consistent at 5s).
+        self._conn = await aiosqlite.connect(self._db_path, timeout=5)
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.execute("PRAGMA foreign_keys=ON")
@@ -156,6 +158,26 @@ class AccountStore:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+        await self._conn.commit()
+
+    @_serialized
+    async def meta_claim(self, key: str, value: str) -> bool:
+        """Atomically claim *key* (INSERT OR IGNORE); True when acquired.
+
+        Used as a lock for cross-process one-time work (legacy migration).
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "INSERT OR IGNORE INTO registry_meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        await self._conn.commit()
+        return bool(cursor.rowcount)
+
+    @_serialized
+    async def meta_delete(self, key: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute("DELETE FROM registry_meta WHERE key = ?", (key,))
         await self._conn.commit()
 
     # -- Users --
@@ -368,3 +390,21 @@ class AccountStore:
             (_now_iso(), token_hash),
         )
         await self._conn.commit()
+
+    @_serialized
+    async def consume_email_token(self, token_hash: str, *, purpose: str) -> bool:
+        """Atomically consume a token: single-use + expiry in one UPDATE.
+
+        Returns False when the token is unknown, already used, or expired.
+        The conditional UPDATE (not read-then-write) keeps concurrent submits
+        of the same token from minting two sessions.
+        """
+        assert self._conn is not None
+        now = _now_iso()
+        cursor = await self._conn.execute(
+            "UPDATE email_tokens SET used_at = ? "
+            "WHERE token_hash = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?",
+            (now, token_hash, purpose, now),
+        )
+        await self._conn.commit()
+        return bool(cursor.rowcount)

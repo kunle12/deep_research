@@ -474,6 +474,10 @@ class PDLStorageConfig(BaseModel):
     backend: Literal["sqlite", "postgres"] = "sqlite"
     sqlite: PDLStorageSQLiteConfig = Field(default_factory=PDLStorageSQLiteConfig)
     postgres_dsn_env: str = "DEEP_RESEARCH_PG_DSN"
+    # Multi-user runtime plumbing (docs/MULTI_USER_PLAN.md §4): the per-user
+    # Postgres schema ("library_<user_id>"). Managed internally by the
+    # job/CLI/microservice scoping helpers — do not set this in config.yaml.
+    pg_schema: str = ""
 
 
 class PDLAuthSMTPConfig(BaseModel):

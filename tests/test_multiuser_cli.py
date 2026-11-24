@@ -196,13 +196,13 @@ def test_scheduler_iterates_user_libraries(tmp_path):
             "auth": PDLAuthConfig(mode="multi_user", owner_email="o@x.com"),
         }
     )
-    configs = _user_library_configs(cfg)
+    configs = asyncio.run(_user_library_configs(cfg))
     roots = [c.pdl.root_dir for c in configs]
     assert roots == [str(root / "users" / ("a" * 32)), str(root / "users" / ("b" * 32))]
 
     # single_user mode: exactly the base config.
     single = AgentTopConfig(pdl={"root_dir": str(root)})
-    assert _user_library_configs(single) == [single]
+    assert asyncio.run(_user_library_configs(single)) == [single]
 
 
 def test_main_cli_rejects_unknown_user(tmp_path):

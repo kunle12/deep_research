@@ -142,3 +142,49 @@ Validation:
   → verify (token from server log) → isolated empty library for a second
   user, CSRF 403/202, logout, **zero console errors across the whole
   round-trip**. All smoke processes killed afterwards.
+
+## 2026-11-25 — Adversarial review pass — DONE
+
+Reviewer: DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-flash`) as an
+independent subagent, per the build-and-verify workflow. Counts reported:
+**3 HIGH · 6 MEDIUM · 8 LOW**. Every finding was independently verified
+against the code before fixing; all were confirmed real (none refuted).
+
+| ID | Sev | Finding | Disposition |
+|----|-----|---------|-------------|
+| H1 | HIGH | `LibraryRegistry.backend_for` TOCTOU — concurrent first opens leak an aiosqlite thread / asyncpg pool per user | **fixed**: per-user `asyncio.Lock` double-checked open; regression tests (same-user + cross-user concurrency) |
+| H2 | HIGH | Postgres job/CLI/microservice scoping swaps only `root_dir`; `get_backend` built schema-less backends so all research wrote into `public` | **fixed**: `pdl.storage.schema` (runtime-managed, defaulted ""), honored by `get_backend`; `_with_library_root` and `resolve_user_library_config` set root **and** schema (artifact files live under root in both backends); regression test on `_with_library_root` |
+| H3 | HIGH | Scheduler filesystem enumeration: postgres users invisible (→ refresh recreated legacy tables in `public`); empty `users/` fell back to the global root | **fixed**: `_user_library_configs` async; sqlite keeps dir enumeration but returns `[]` instead of the global config; postgres enumerates the account registry (active users) with schema+root scoping; tests incl. empty-registry case |
+| M1 | MED | 401 left the SPA `authed=true` → infinite `#/` ⇄ `#/login` redirect loop on session expiry | **fixed**: api.js 401 handler dispatches `dr:auth` so `refreshAuth()` re-probes; verified manually in the browser |
+| M2 | MED | Paused-job SSE: server ends the stream on `paused`; EventSource replays + reconnects forever | **fixed** (server-side): paused streams stay open with keepalives so resume events arrive on the same connection (client-side close would break the resume re-attach replay) |
+| M3 | MED | Register returned `status:"exists"` → user enumeration + notification-email bombing vector | **fixed**: identical `pending` body for both outcomes; UI shows the neutral "check your email" message; test updated |
+| M4 | MED | Rate limiting per-email only (plan promised per-IP + per-email) | **fixed**: `_check_rate` per-email AND per-IP buckets; routers pass `request.client.host`; tests for both dimensions |
+| M5 | MED | `_prune` evicted paused (resumable) jobs first (`status != "running"`, `completed_at or 0`) | **fixed**: only terminal jobs (`done/failed/cancelled`) are prune-eligible; regression test |
+| M6 | MED | Email-token consumption read-then-write → double-submit could mint two sessions | **fixed**: atomic `consume_email_token` (`UPDATE … WHERE used_at IS NULL AND expires_at > ?`); verify/reset use it; concurrency regression test |
+| L1 | LOW | `validate_user_id` regex `$` accepted a trailing newline into paths | **fixed**: `\Z` + `fullmatch` in registry, jobs sidecar check, scheduler regex; test |
+| L2 | LOW | Corrupt `.user` sidecar un-scoped a restored job to the global root | **fixed**: sidecar content validated (uuid hex) else attributed to owner; `_run` FAILS a job whose library can't be resolved instead of running unscoped; test |
+| L3 | LOW | `.user` sidecars orphaned on the success path | **fixed**: `checkpoint.discard_checkpoint` removes the sidecar too |
+| L4 | LOW | SSRF guard missed non-canonical IP literals (`http://2130706433/`) | **fixed**: decimal/hex integer forms normalized through `ipaddress` before the private check; test (pre-existing bug, swept while verifying) |
+| L5 | LOW | CSRF 403 short-circuit skipped the security headers | **fixed**: `_apply_security_headers` helper applied on both paths; single_user no-CSRF posture documented in code |
+| L6 | LOW | Login-CSRF via blanket `/api/auth/` exemption | **fixed**: `/api/auth/login` now requires the header when a session cookie exists (SPA always sends it); test covers 401/403/200 paths |
+| L7 | LOW | `aiosqlite.connect(timeout=5000)` — seconds, not ms | **fixed**: `timeout=5` (+ the same latent trap in `sqlite_backend.py`), PRAGMA already correct so behavior unchanged |
+| L8 | LOW | Migration race between concurrent processes; stale claim blocks startup | **fixed**: `meta_claim`/`meta_delete` (INSERT OR IGNORE) claim key + crashed-holder recovery + release on failure; test |
+
+Clean categories the reviewer explicitly confirmed: no `AccountStore` op-lock
+deadlocks; no middleware/deps auth bypass; session sliding expiry correct;
+per-user job slot accounting balanced on all paths; SPA boot race absent;
+wire formats consistent end-to-end; EventSource-under-middleware OK.
+
+Validation after fixes:
+
+- 10 new regression tests in `tests/test_review_fixes.py`; updated the
+  enumeration + scheduler tests.
+- Full suite: 992 tests, **exit 0, zero failures** (re-run after all fixes).
+- Follow-up hardening while re-verifying: the `pdl.storage.schema` field was
+  renamed to **`pdl.storage.pg_schema`** — `schema` shadows a pydantic
+  `BaseModel` method (UserWarning + footgun).
+- Browser re-verification (Playwright, scratch server): login wall with zero
+  console errors; UI login; then a server-side session revocation
+  (`users set-password`, which revokes sessions) followed by an in-page API
+  call → exactly one 401 cycle, stable `#/login`, chip + stats cleared, **no
+  redirect loop** (M1 verified end-to-end). All smoke processes killed.

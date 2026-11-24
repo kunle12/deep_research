@@ -23,8 +23,10 @@ def _reject_private_url(url: str) -> bool:
 
     The server fetches (attach mode) or POSTs (webhook) to these URLs on the
     client's behalf, so pointing them at internal hosts is an SSRF vector.
-    Literal IPs and localhost are rejected; hostnames that resolve to private
-    ranges aren't checked here (would need a DNS lookup).
+    Literal IPs (including non-canonical integer/hex forms like
+    ``http://2130706433/`` → 127.0.0.1) and localhost are rejected; hostnames
+    that resolve to private ranges aren't checked here (would need a DNS
+    lookup).
     """
     host = urlparse(url).hostname
     if not host:
@@ -34,7 +36,18 @@ def _reject_private_url(url: str) -> bool:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return False
+        # Non-canonical IP literal encodings: bare integers (decimal/hex).
+        # `ip_address()` rejects them, but the OS-level resolver accepts them.
+        host_norm = host.lower()
+        try:
+            if host_norm.isdigit():
+                ip = ipaddress.ip_address(int(host_norm))
+            elif host_norm.startswith("0x") and len(host_norm) > 2:
+                ip = ipaddress.ip_address(int(host_norm, 16))
+            else:
+                return False
+        except ValueError:
+            return False
     return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
@@ -230,10 +243,12 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
                     yield ": keepalive\n\n"
                     continue
                 yield _sse(event)
-                # A terminal event (done/error/cancelled) or a pause closes the
-                # stream; a paused job emits only status events, so without this
-                # the connection would stay open with keepalives indefinitely.
-                if event.get("type") in _TERMINAL_EVENTS or event.get("status") == "paused":
+                # Only terminal events (done/error/cancelled) close the stream.
+                # A paused stream stays open with keepalives: closing it made
+                # EventSource reconnect, replay the same paused event from the
+                # job's event log, and end again — an endless reconnect cycle
+                # (and resume events now arrive on the same connection).
+                if event.get("type") in _TERMINAL_EVENTS:
                     break
         finally:
             manager.unsubscribe(job_id, queue)

@@ -74,10 +74,15 @@ def load_checkpoint(run_id: str) -> tuple[ResearchState, dict[str, Any]] | None:
 
 
 def discard_checkpoint(run_id: str) -> None:
-    """Remove the checkpoint file for *run_id* (e.g. after successful finish)."""
+    """Remove the checkpoint file for *run_id* (e.g. after successful finish).
+
+    Also removes the web UI's ``<run_id>.user`` ownership sidecar if present,
+    so completed runs leave no orphan files in the checkpoint directory.
+    """
     path = _checkpoint_path(run_id)
     try:
         path.unlink(missing_ok=True)
+        path.with_suffix(".user").unlink(missing_ok=True)
         logger.debug("checkpoint discarded: %s", path)
     except Exception as e:
         logger.warning("checkpoint discard failed: %s: %s", type(e).__name__, e)

@@ -195,15 +195,15 @@ function renderLoginCard(card, mode, params) {
       });
     } else if (step === "register") {
       guard(form, err, async () => {
-        const result = await register(email.value.trim(), password.value, name.value.trim());
-        if (result.status === "exists") {
-          err.show("An account with this email already exists — sign in instead.");
-          return;
-        }
+        // The response is identical whether or not the account existed
+        // (no user enumeration): either way a token email is on its way —
+        // a new verification, or a "someone tried to register" notice to
+        // the existing owner.
+        await register(email.value.trim(), password.value, name.value.trim());
         showVerify({ lockEmail: true });
         notice.hidden = false;
         notice.textContent =
-          "Account created. Check your email for the verification token" +
+          "Check your email for the verification token" +
           " (self-hosted without SMTP: it is printed in the server log).";
       });
     } else {

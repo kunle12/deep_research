@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 #: registry_meta key recording a completed legacy migration.
 _MIGRATION_MARKER = "legacy_migrated"
+#: registry_meta claim key preventing two processes from migrating at once.
+_MIGRATION_LOCK = "legacy_migrated_lock"
 
 # Top-level entries of a legacy library root that belong to the library
 # itself (everything else — e.g. registry.db, users/ — stays put).
@@ -72,7 +74,12 @@ async def resolve_user_library_config(
     finally:
         await store.close()
     scoped = cfg.model_copy(deep=True)
+    # Both dimensions must be scoped: SQLite keys the DB path off root_dir,
+    # Postgres keys rows off the schema — and artifact FILES always live under
+    # root_dir, so per-user file isolation needs it in both backends.
     scoped.pdl.root_dir = str(target)
+    if cfg.pdl.storage.backend == "postgres":
+        scoped.pdl.storage.pg_schema = f"library_{user.user_id}"
     return scoped
 
 
@@ -91,9 +98,26 @@ async def migrate_legacy_library(cfg: AgentTopConfig, store: AccountStore, owner
     """
     if await store.meta_get(_MIGRATION_MARKER):
         return False
-    if cfg.pdl.storage.backend == "postgres":
-        return await _migrate_postgres_legacy(cfg, store, owner)
-    return await _migrate_sqlite_legacy(cfg, store, owner)
+    # Cross-process claim: two processes starting simultaneously must not both
+    # move the library (the loser would hit the collision RuntimeError). A
+    # stale claim (crashed mid-migration) is recovered below.
+    if not await store.meta_claim(_MIGRATION_LOCK, owner.user_id):
+        if await store.meta_get(_MIGRATION_MARKER):
+            return False  # completed elsewhere while we waited
+        # Crashed holder with no completion marker: recover and retry once.
+        await store.meta_delete(_MIGRATION_LOCK)
+        if not await store.meta_claim(_MIGRATION_LOCK, owner.user_id):
+            raise RuntimeError("legacy migration is locked by another process; retry shortly")
+    try:
+        if cfg.pdl.storage.backend == "postgres":
+            return await _migrate_postgres_legacy(cfg, store, owner)
+        return await _migrate_sqlite_legacy(cfg, store, owner)
+    except Exception:
+        # Release the claim so a later start can retry/resume.
+        await store.meta_delete(_MIGRATION_LOCK)
+        raise
+    finally:
+        await store.meta_delete(_MIGRATION_LOCK)
 
 
 async def _migrate_sqlite_legacy(cfg: AgentTopConfig, store: AccountStore, owner: UserRow) -> bool:

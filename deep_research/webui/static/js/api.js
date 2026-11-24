@@ -26,14 +26,17 @@ export async function request(path, { params = {}, method = "GET", body, headers
     } catch {
       /* keep statusText */
     }
-    // Session expired / signed out: send the user to the login view unless we
-    // are already on an auth screen or the failing call is itself an auth call.
+    // Session expired / revoked: drop the app-level authed flag and move to
+    // the login view. dispatching `dr:auth` makes app.js re-probe
+    // /api/auth/status — without it `authed` stays true and render() bounces
+    // the hash back to "#/", producing an infinite redirect loop.
     if (
       res.status === 401 &&
       !PUBLIC_API.test(path) &&
       !AUTH_ROUTES.test(window.location.hash)
     ) {
       window.location.hash = "#/login";
+      document.dispatchEvent(new CustomEvent("dr:auth"));
     }
     throw new Error(`${res.status}: ${detail}`);
   }

@@ -149,10 +149,55 @@ async def test_register_duplicate_is_not_enumerated_but_notified(store, sender, 
     await service.register("a@example.com", "long enough password")
     n_before = len(sender.emails)
     result = await service.register("a@example.com", "another password 1")
-    assert result.status == "exists"
-    # A notification email went to the existing address instead of a verify mail.
+    # Identical response body to the success path — no user enumeration
+    # (docs/MULTI_USER_PLAN.md §9). The notification email is the only signal.
+    assert result.status == "pending"
     assert len(sender.emails) == n_before + 1
     assert "registration attempt" in sender.emails[-1].subject
+
+
+async def test_register_ip_rate_limit(store, sender, service):
+    """The per-IP bucket throttles registration even across different emails."""
+    for i in range(20):
+        await service.register(f"user{i}@example.com", "long enough password", ip="10.0.0.1")
+    with pytest.raises(AuthError) as exc:
+        await service.register("user20@example.com", "long enough password", ip="10.0.0.1")
+    assert exc.value.status == 429
+    # A different IP is unaffected.
+    result = await service.register("user21@example.com", "long enough password", ip="10.0.0.2")
+    assert result.status == "pending"
+
+
+async def test_login_ip_rate_limit(store, sender, service):
+    await service.register("a@example.com", "long enough password")
+    await service.verify("a@example.com", sender.last_token())
+    # Spray many accounts from one IP — the IP bucket trips.
+    for i in range(30):
+        with pytest.raises(AuthError) as exc:
+            await service.login(f"victim{i}@example.com", "wrong password x", ip="203.0.113.7")
+        assert exc.value.status in (401, 429)
+    with pytest.raises(AuthError) as exc:
+        await service.login("a@example.com", "long enough password", ip="203.0.113.7")
+    assert exc.value.status == 429
+
+
+async def test_verify_token_double_submit_single_session(store, sender, service):
+    """Concurrent verifies with one token mint exactly one session (M6)."""
+    await service.register("a@example.com", "long enough password")
+    token = sender.last_token()
+    results = await asyncio.gather(
+        service.verify("a@example.com", token),
+        service.verify("a@example.com", token),
+        return_exceptions=True,
+    )
+    ok = [r for r in results if isinstance(r, str)]
+    failed = [r for r in results if isinstance(r, AuthError)]
+    assert len(ok) == 1, f"exactly one verify must succeed, got {results}"
+    assert len(failed) == 1
+    # The single minted session resolves; the other request was rejected.
+
+    user = await service.resolve_session(ok[0])
+    assert user is not None
 
 
 async def test_registration_closed(store, sender):

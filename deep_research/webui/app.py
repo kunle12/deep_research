@@ -51,7 +51,21 @@ _CSP = (
 # Methods that can change state; with an authenticated session they must carry
 # the SPA's X-Requested-With header (cross-site forms/fetches cannot set it).
 _CSRF_METHODS = ("POST", "PUT", "PATCH", "DELETE")
-_CSRF_EXEMPT_PREFIX = "/api/auth/"  # login/register precede any session
+# /api/auth/* is exempt (no session yet / revocation) — EXCEPT /api/auth/login:
+# requiring the header there blocks login-CSRF (a third party silently signing
+# the victim into an attacker-controlled account).
+_CSRF_EXEMPT_PREFIX = "/api/auth/"
+_CSRF_LOGIN_PATH = "/api/auth/login"
+
+
+def _apply_security_headers(response) -> None:
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    # The SPA has no build step or versioned asset URLs: force etag
+    # revalidation so browser-cached modules from a previous deployment can
+    # never shadow a newer one (stale-module ImportError).
+    response.headers.setdefault("Cache-Control", "no-cache")
 
 
 def _synthetic_owner(cfg: AgentTopConfig) -> UserRow:
@@ -150,13 +164,13 @@ def create_app(
     app.state.config_path = config_path
     app.state.config = None
 
-    def _root_for_user(user_id: str | None) -> str | None:
-        """Library root for *user_id* (multi_user); None keeps the legacy root."""
+    def _library_for_user(user_id: str | None) -> tuple[str, str | None] | None:
+        """(library_root, postgres_schema) for *user_id*; None = unresolvable."""
         registry = getattr(app.state, "registry", None)
         if registry is None or not user_id:
             return None
         try:
-            return str(registry.root_for(user_id))
+            return str(registry.root_for(user_id)), registry.schema_for(user_id)
         except ValueError:
             return None
 
@@ -165,7 +179,7 @@ def create_app(
         runner=research_runner,
         attach_runner=attach_runner,
         checkpoint_dir=checkpoint_dir,
-        root_for_user=_root_for_user,
+        library_for_user=_library_for_user,
     )
 
     @app.middleware("http")
@@ -176,16 +190,21 @@ def create_app(
         if auth is not None:
             # multi_user: resolve the session cookie.
             user = await auth.resolve_session(request.cookies.get(SESSION_COOKIE))
+            path = request.url.path
+            csrf_exempt = path.startswith(_CSRF_EXEMPT_PREFIX) and path != _CSRF_LOGIN_PATH
             if (
                 user is not None
                 and request.method in _CSRF_METHODS
-                and not request.url.path.startswith(_CSRF_EXEMPT_PREFIX)
+                and not csrf_exempt
                 and request.headers.get("x-requested-with") != "XMLHttpRequest"
             ):
                 # Cross-site forms/fetches cannot set this custom header.
-                return JSONResponse({"detail": "CSRF check failed"}, status_code=403)
+                response = JSONResponse({"detail": "CSRF check failed"}, status_code=403)
+                _apply_security_headers(response)
+                return response
         else:
-            # single_user: every request belongs to the owner (legacy behavior).
+            # single_user: every request belongs to the owner (legacy behavior;
+            # no credentials are in play, so CSRF protection is not required).
             user = getattr(state, "owner", None)
         request.state.user = user
         registry = getattr(state, "registry", None)
@@ -194,14 +213,7 @@ def create_app(
             request.state.library_root = str(registry.root_for(user.user_id))
 
         response = await call_next(request)
-        # -- Security headers --
-        response.headers.setdefault("Content-Security-Policy", _CSP)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        # The SPA has no build step or versioned asset URLs: force etag
-        # revalidation so browser-cached modules from a previous deployment
-        # can never shadow a newer one (stale-module ImportError).
-        response.headers.setdefault("Cache-Control", "no-cache")
+        _apply_security_headers(response)
         return response
 
     app.include_router(auth_router)

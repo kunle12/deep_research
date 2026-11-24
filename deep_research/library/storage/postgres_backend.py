@@ -10,6 +10,7 @@ connection acquire, so the query bodies never change.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -55,6 +56,9 @@ class PostgresStorageBackend:
                 raise ValueError(f"invalid Postgres schema name: {schema!r}")
             self._schema = schema
         self._pool: Any = None
+        # Serializes lazy connect(): concurrent first calls must not each
+        # create a pool (the loser's pool would leak).
+        self._conn_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def _acquire(self) -> AsyncIterator[Any]:
@@ -164,7 +168,9 @@ class PostgresStorageBackend:
 
     async def _ensure_conn(self) -> None:
         if self._pool is None:
-            await self.connect()
+            async with self._conn_lock:
+                if self._pool is None:  # re-check inside the lock (TOCTOU)
+                    await self.connect()
 
     # -- Artifact ops --
 

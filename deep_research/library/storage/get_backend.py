@@ -36,7 +36,11 @@ async def get_backend(config: AgentTopConfig) -> StorageBackend:
             )
         from deep_research.library.storage.postgres_backend import PostgresStorageBackend
 
-        backend = PostgresStorageBackend(dsn=dsn)
+        # schema is set by the multi-user scoping helpers (job runner, CLI,
+        # microservice) so every backend resolved from a scoped config lands
+        # in the owning user's schema (plan §4).
+        schema = config.pdl.storage.pg_schema or None
+        backend = PostgresStorageBackend(dsn=dsn, schema=schema)
         await backend.connect()
         await backend.ensure_schema()
         return backend

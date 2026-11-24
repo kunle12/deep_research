@@ -75,7 +75,7 @@ class SqliteStorageBackend:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(
             self._db_path,
-            timeout=5000,  # busy_timeout_ms
+            timeout=5,  # seconds; the busy_timeout PRAGMA below is milliseconds
         )
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA busy_timeout=5000")

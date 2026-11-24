@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -28,6 +29,9 @@ from deep_research.util import strip_arxiv_version
 from deep_research.webui.progress import JobProgressReporter
 
 logger = logging.getLogger(__name__)
+
+# \Z (not $) so a trailing newline can never slip into a user_id.
+_USER_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
 
 _MAX_JOBS = 50
 _QUEUE_MAX = 500
@@ -79,15 +83,20 @@ class ResearchJob:
     _subscribers: set[asyncio.Queue] = field(default_factory=set, repr=False, compare=False)
 
 
-def _with_library_root(config: AgentTopConfig, root: str) -> AgentTopConfig:
-    """A per-user config: everything identical except the library root.
+def _with_library_root(
+    config: AgentTopConfig, root: str, schema: str | None = None
+) -> AgentTopConfig:
+    """A per-user config: everything identical except the library location.
 
     The runners (and `_is_archived`/`_webhook_artifact_count`) open backends
-    and writers from `config.pdl.root_dir`, so swapping it is what scopes a
-    job's entire pipeline — runners never learn about users.
+    and writers from `config.pdl.root_dir` / `config.pdl.storage.pg_schema`, so
+    swapping both is what scopes a job's entire pipeline — runners never learn
+    about users. `schema` scopes Postgres backends (ignored by SQLite).
     """
     scoped = config.model_copy(deep=True)
     scoped.pdl.root_dir = root
+    if schema:
+        scoped.pdl.storage.pg_schema = schema
     return scoped
 
 
@@ -158,7 +167,7 @@ class ResearchJobManager:
         attach_runner: AttachRunner | None = None,
         max_concurrent: int = 1,
         checkpoint_dir: Path | None = None,
-        root_for_user: Callable[[str | None], str | None] | None = None,
+        library_for_user: Callable[[str | None], tuple[str, str | None] | None] | None = None,
     ) -> None:
         self._config_path = config_path
         self._runner = runner or _default_runner
@@ -166,7 +175,7 @@ class ResearchJobManager:
         # Concurrency cap is PER USER (multi_user); single-user deployments
         # have exactly one account, so behavior is unchanged there.
         self._max_concurrent = max_concurrent
-        self._root_for_user = root_for_user
+        self._library_for_user = library_for_user
         self._checkpoint_dir = checkpoint_dir or _CHECKPOINT_DIR
         self._jobs: dict[str, ResearchJob] = {}
         self._running_by_user: dict[str, int] = {}
@@ -371,7 +380,10 @@ class ResearchJobManager:
             if marker.exists():
                 try:
                     marked = marker.read_text(encoding="utf-8").strip()
-                    if marked:
+                    # Only trust a well-formed uuid hex: anything else (corrupt
+                    # file, pre-multi-user content) falls back to the owner
+                    # instead of un-scoping the job to the global root.
+                    if marked and _USER_ID_RE.fullmatch(marked):
                         user_id = marked
                 except Exception:
                     pass
@@ -414,9 +426,10 @@ class ResearchJobManager:
     def _prune(self) -> None:
         if len(self._jobs) <= _MAX_JOBS:
             return
-        # Drop oldest finished jobs first.
+        # Only drop TERMINAL jobs (paused jobs are resumable and must survive;
+        # cancelling jobs are mid-unwind). All pruned jobs have completed_at.
         finished = sorted(
-            (j for j in self._jobs.values() if j.status != "running"),
+            (j for j in self._jobs.values() if j.status in ("done", "failed", "cancelled")),
             key=lambda j: j.completed_at or 0,
         )
         overflow = len(self._jobs) - _MAX_JOBS
@@ -433,11 +446,17 @@ class ResearchJobManager:
         try:
             config = AgentTopConfig.load_yaml(self._config_path)
             # Scope the whole pipeline (runner, attach, archival check,
-            # webhook counts) to the owning user's library.
-            if job.user_id and self._root_for_user is not None:
-                root = self._root_for_user(job.user_id)
-                if root:
-                    config = _with_library_root(config, root)
+            # webhook counts) to the owning user's library. An unresolvable
+            # user must FAIL the job, never fall back to the global root
+            # (that would write a stray library outside every account).
+            if job.user_id and self._library_for_user is not None:
+                scoped = self._library_for_user(job.user_id)
+                if scoped is None:
+                    raise RuntimeError(
+                        f"cannot resolve library for user {job.user_id!r}; refusing to run"
+                    )
+                root, schema = scoped
+                config = _with_library_root(config, root, schema)
             # Record ownership next to the checkpoint so a restart can
             # restore the job to the right user's library.
             if job.user_id:

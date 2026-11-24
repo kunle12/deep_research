@@ -63,7 +63,7 @@ class AuthError(Exception):
 
 @dataclass
 class RegisterResult:
-    status: str  # "pending" | "exists"
+    status: str  # always "pending" — duplicate emails are indistinguishable
     email: str
 
 
@@ -194,22 +194,43 @@ class AuthService:
 
     # -- Registration & verification --
 
+    def _check_rate(
+        self,
+        bucket: str,
+        email: str,
+        ip: str | None,
+        *,
+        email_limit: int,
+        ip_limit: int,
+        window_s: float,
+    ) -> None:
+        """Per-email AND per-IP sliding windows (plan §9); AuthError(429) on either."""
+        if not self._limiter.check(bucket, email, limit=email_limit, window_s=window_s):
+            raise AuthError("too many attempts; try again later", 429)
+        if ip and not self._limiter.check(f"{bucket}:ip", ip, limit=ip_limit, window_s=window_s):
+            raise AuthError("too many attempts; try again later", 429)
+
     async def register(
-        self, raw_email: str, password: str, *, display_name: str | None = None
+        self,
+        raw_email: str,
+        password: str,
+        *,
+        display_name: str | None = None,
+        ip: str | None = None,
     ) -> RegisterResult:
         email = normalize_email(raw_email)
         if self._cfg.registration != "open":
             raise AuthError("registration is disabled on this server", 403)
-        if not self._limiter.check("register", email, limit=10, window_s=3600):
-            raise AuthError("too many registration attempts; try again later", 429)
+        self._check_rate("register", email, ip, email_limit=10, ip_limit=20, window_s=3600)
         reason = validate_password_strength(password)
         if reason:
             raise AuthError(reason, 422)
 
         existing = await self._store.get_user_by_email(email)
         if existing is not None:
-            # No enumeration: same result shape as success. Tell the address
-            # owner someone tried to register their email.
+            # No enumeration: identical response body to the success path
+            # (plan §9). The notification email is what tells the address
+            # owner an account already exists.
             await self._sender.send(
                 OutgoingEmail(
                     to_address=email,
@@ -221,7 +242,7 @@ class AuthService:
                     ),
                 )
             )
-            return RegisterResult(status="exists", email=email)
+            return RegisterResult(status="pending", email=email)
 
         try:
             user = await self._store.create_user(
@@ -231,7 +252,7 @@ class AuthService:
                 status="pending",
             )
         except DuplicateEmailError:
-            return RegisterResult(status="exists", email=email)
+            return RegisterResult(status="pending", email=email)
         await self._send_verification(user)
         logger.info("registered new account %s (pending verification)", email)
         return RegisterResult(status="pending", email=email)
@@ -257,10 +278,9 @@ class AuthService:
             )
         )
 
-    async def resend_verification(self, raw_email: str) -> None:
+    async def resend_verification(self, raw_email: str, *, ip: str | None = None) -> None:
         email = normalize_email(raw_email)
-        if not self._limiter.check("resend", email, limit=5, window_s=3600):
-            raise AuthError("too many requests; try again later", 429)
+        self._check_rate("resend", email, ip, email_limit=5, ip_limit=20, window_s=3600)
         user = await self._store.get_user_by_email(email)
         if user is None or user.status != "pending":
             # No enumeration; nothing to do for active/unknown accounts.
@@ -272,12 +292,13 @@ class AuthService:
         email = normalize_email(raw_email)
         user = await self._store.get_user_by_email(email)
         row = await self._store.get_email_token(hash_token(token), purpose="verify")
-        if user is None or row is None or row.user_id != user.user_id or row.used_at:
+        if user is None or row is None or row.user_id != user.user_id:
             raise AuthError("invalid or expired verification token", 400)
-        expires = _parse_iso(row.expires_at)
-        if expires is None or expires.timestamp() <= time.time():
+        # Atomic single-use consumption: a double submit (or raced retry) of
+        # the same token yields exactly one success.
+        consumed = await self._store.consume_email_token(hash_token(token), purpose="verify")
+        if not consumed:
             raise AuthError("invalid or expired verification token", 400)
-        await self._store.mark_email_token_used(row.token_hash)
         if user.status == "pending":
             await self._store.set_user_status(user.user_id, "active")
         refreshed = await self._store.get_user(user.user_id)
@@ -287,10 +308,9 @@ class AuthService:
 
     # -- Login --
 
-    async def login(self, raw_email: str, password: str) -> str:
+    async def login(self, raw_email: str, password: str, *, ip: str | None = None) -> str:
         email = normalize_email(raw_email)
-        if not self._limiter.check("login", email, limit=10, window_s=300):
-            raise AuthError("too many login attempts; try again later", 429)
+        self._check_rate("login", email, ip, email_limit=10, ip_limit=30, window_s=300)
         user = await self._store.get_user_by_email(email)
         if user is None or not verify_password(user.password_hash, password):
             raise AuthError("invalid email or password", 401)
@@ -306,10 +326,9 @@ class AuthService:
 
     # -- Password reset --
 
-    async def request_password_reset(self, raw_email: str) -> None:
+    async def request_password_reset(self, raw_email: str, *, ip: str | None = None) -> None:
         email = normalize_email(raw_email)
-        if not self._limiter.check("reset-request", email, limit=5, window_s=3600):
-            raise AuthError("too many requests; try again later", 429)
+        self._check_rate("reset-request", email, ip, email_limit=5, ip_limit=20, window_s=3600)
         user = await self._store.get_user_by_email(email)
         # Unknown accounts: respond silently (no enumeration).
         if user is None or user.status != "active":
@@ -333,19 +352,20 @@ class AuthService:
             )
         )
 
-    async def reset_password(self, raw_email: str, token: str, new_password: str) -> str:
+    async def reset_password(
+        self, raw_email: str, token: str, new_password: str, *, ip: str | None = None
+    ) -> str:
         email = normalize_email(raw_email)
         reason = validate_password_strength(new_password)
         if reason:
             raise AuthError(reason, 422)
         user = await self._store.get_user_by_email(email)
         row = await self._store.get_email_token(hash_token(token), purpose="reset")
-        if user is None or row is None or row.user_id != user.user_id or row.used_at:
+        if user is None or row is None or row.user_id != user.user_id:
             raise AuthError("invalid or expired reset token", 400)
-        expires = _parse_iso(row.expires_at)
-        if expires is None or expires.timestamp() <= time.time():
+        consumed = await self._store.consume_email_token(hash_token(token), purpose="reset")
+        if not consumed:
             raise AuthError("invalid or expired reset token", 400)
-        await self._store.mark_email_token_used(row.token_hash)
         await self._store.set_password(user.user_id, hash_password(new_password))
         # A reset invalidates existing sessions everywhere.
         await self._store.revoke_user_sessions(user.user_id)

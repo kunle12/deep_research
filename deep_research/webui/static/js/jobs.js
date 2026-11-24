@@ -198,6 +198,9 @@ function attachStream(jobId) {
     if (TERMINAL.has(event.type)) {
       closeStream(jobId);
     }
+    // A `paused` status does NOT close the stream: the server keeps it open
+    // with keepalives, so the resumed `running` event arrives on the same
+    // connection (no reconnect/replay storm).
   };
   es.onerror = () => {
     if (!streams.has(jobId)) return; // stream already closed (terminal event raced)

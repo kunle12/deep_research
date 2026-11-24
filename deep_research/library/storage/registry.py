@@ -18,6 +18,7 @@ Layouts:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -28,12 +29,13 @@ from deep_research.library.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-_USER_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+# \Z (not $) so a trailing newline can never sneak into a filesystem path.
+_USER_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
 
 
 def validate_user_id(user_id: str) -> str:
     """Ensure *user_id* is a uuid4 hex string (path-traversal safe)."""
-    if not _USER_ID_RE.match(user_id):
+    if not _USER_ID_RE.fullmatch(user_id):
         raise ValueError(f"invalid user_id: {user_id!r}")
     return user_id
 
@@ -49,10 +51,21 @@ class LibraryRegistry:
         self._cfg = cfg
         self._root = Path(cfg.pdl.root_dir)
         self._backends: dict[str, StorageBackend] = {}
+        # Serializes first-open per user: concurrent requests for the same
+        # not-yet-open user must not each open a backend (leaking the loser's
+        # aiosqlite thread / asyncpg pool). H1, docs/MULTI_USER_IMPLEMENTATION_LOG.md.
+        self._open_locks: dict[str, asyncio.Lock] = {}
 
     def root_for(self, user_id: str) -> Path:
         validate_user_id(user_id)
         return self._root / "users" / user_id
+
+    def schema_for(self, user_id: str) -> str | None:
+        """Postgres schema for this user's library (None for SQLite)."""
+        validate_user_id(user_id)
+        if self._cfg.pdl.storage.backend != "postgres":
+            return None
+        return f"library_{user_id}"
 
     def has_library(self, user_id: str) -> bool:
         """True when the user's library directory exists on disk (SQLite)."""
@@ -75,9 +88,17 @@ class LibraryRegistry:
         backend = self._backends.get(user_id)
         if backend is not None:
             return backend
-        backend = await self._open(user_id)
-        self._backends[user_id] = backend
-        return backend
+        # Double-checked open under a per-user lock: concurrent first requests
+        # share one _open; the loser re-reads the cache and returns it.
+        lock = self._open_locks.get(user_id)
+        if lock is None:
+            lock = self._open_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            backend = self._backends.get(user_id)
+            if backend is None:
+                backend = await self._open(user_id)
+                self._backends[user_id] = backend
+            return backend
 
     def peek_backend(self, user_id: str) -> StorageBackend | None:
         """Already-open backend for *user_id*, or None (sync fast path)."""
@@ -90,6 +111,7 @@ class LibraryRegistry:
             except Exception:
                 logger.warning("failed to close backend for user %s", user_id, exc_info=True)
         self._backends.clear()
+        self._open_locks.clear()
 
     async def _open(self, user_id: str) -> StorageBackend:
         storage = self._cfg.pdl.storage.backend
@@ -129,6 +151,9 @@ class StaticLibraryRegistry:
 
     def root_for(self, user_id: str) -> Path:
         return self._root
+
+    def schema_for(self, user_id: str) -> str | None:
+        return None
 
     def has_library(self, user_id: str) -> bool:
         return True

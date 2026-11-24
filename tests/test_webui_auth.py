@@ -183,8 +183,12 @@ def test_login_rejects_wrong_password(tmp_path, captured_sender):
             "/api/auth/verify",
             json={"email": "a@example.com", "token": captured_sender.last_token()},
         )
+        # The verify response set a session cookie, so a login POST now sits
+        # behind the CSRF gate (L6) — the SPA always sends the header.
         r = client.post(
-            "/api/auth/login", json={"email": "a@example.com", "password": "wrong password"}
+            "/api/auth/login",
+            json={"email": "a@example.com", "password": "wrong password"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
         )
         assert r.status_code == 401
 
@@ -226,9 +230,12 @@ def test_csrf_header_required_for_mutations(tmp_path, captured_sender):
         )
         assert r.status_code == 404
 
-        # Auth endpoints are CSRF-exempt (no session yet at login time).
+        # /api/auth/* is CSRF-exempt — EXCEPT login (L6: login-CSRF blocked
+        # once a session cookie exists). With the SPA's header it succeeds.
         r = client.post(
-            "/api/auth/login", json={"email": "a@example.com", "password": "correct horse battery"}
+            "/api/auth/login",
+            json={"email": "a@example.com", "password": "correct horse battery"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
         )
         assert r.status_code == 200
 
