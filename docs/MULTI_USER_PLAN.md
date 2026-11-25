@@ -380,3 +380,32 @@ Secrets come from env, matching the existing `*_env` pattern
    `auth_identities` table; `IdentityProvider` implementations (local password
    first, then the custom SSO); JIT provisioning and verified-email-claim
    linking per §3; optional "SSO required" mode that disables password login.
+   *(Note, 2026-11-25: `0003_sharing.sql` now occupies the next migration
+   slot — the SSO migration becomes `0004_sso.sql`.)*
+
+## 14. Sharing (view-only) — implemented addendum, 2026-11-25
+
+Decisions (user-confirmed): **links + named accounts**, **individual reports
+only**, **view-only** (no copy/import).
+
+- One authorization core (`accounts/shares.py::ShareService`): a share row in
+  the global registry (`0003_sharing.sql`: `shares` + `share_grants`) is live
+  when not revoked and not expired; access = hold the secret link token
+  (`GET /api/share/{token}[/asset]`, no session needed — the token IS the
+  capability) **or** hold a named grant (`GET /api/shared/{share_id}[/asset]`,
+  session + grant row). The raw link token is shown once at creation and can
+  be rotated; listings never return it (SHA-256 at rest, like sessions).
+- Shared reads open the OWNER's library through `LibraryRegistry` on the
+  server — grantees never write into another library, so sharing is read-only
+  by construction and the per-user isolation model (§2/§4) is untouched.
+- Owner management: `POST/GET /api/shares`, `DELETE /api/shares/{id}`
+  (revoke), `POST /api/shares/{id}/rotate`, grant add/remove. Creation
+  validates the run in the CALLER's library and resolves grantee emails
+  BEFORE inserting the row (a failed request leaves no orphan share).
+- `GET /api/shared` ("Shared with me") is the grantee's listing;
+  `single_user` mode disables management routes (400) and `GET /api/shared`
+  returns `[]`.
+- Frontend: report-page **Share** dialog (create link / add people / revoke /
+  rotate), a **Shared with me** view (`#/shared`), and read-only report
+  rendering for both access paths (`#/shared/<id>`, `#/share/<token>`) with
+  all mutation affordances hidden.

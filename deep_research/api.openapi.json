@@ -206,6 +206,28 @@
         }
       }
     },
+    "/api/auth/status": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Status",
+        "description": "Auth probe that never 401s \u2014 used by the SPA's boot sequence.",
+        "operationId": "status_api_auth_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/request-password-reset": {
       "post": {
         "tags": [
@@ -1733,6 +1755,464 @@
           }
         }
       }
+    },
+    "/api/shares": {
+      "get": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "List My Shares",
+        "operationId": "list_my_shares_api_shares_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ShareInfo"
+                  },
+                  "type": "array",
+                  "title": "Response List My Shares Api Shares Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Create Share",
+        "operationId": "create_share_api_shares_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shares/{share_id}": {
+      "delete": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Revoke Share",
+        "operationId": "revoke_share_api_shares__share_id__delete",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Share Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shares/{share_id}/rotate": {
+      "post": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Rotate Share Token",
+        "operationId": "rotate_share_token_api_shares__share_id__rotate_post",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Share Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shares/{share_id}/grants": {
+      "post": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Add Share Grants",
+        "operationId": "add_share_grants_api_shares__share_id__grants_post",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Share Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareGrantsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ShareInfo"
+                  },
+                  "title": "Response Add Share Grants Api Shares  Share Id  Grants Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shares/{share_id}/grants/{grantee_user_id}": {
+      "delete": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Remove Share Grant",
+        "operationId": "remove_share_grant_api_shares__share_id__grants__grantee_user_id__delete",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Share Id"
+            }
+          },
+          {
+            "name": "grantee_user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Grantee User Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shared": {
+      "get": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "List Shared With Me",
+        "operationId": "list_shared_with_me_api_shared_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SharedItem"
+                  },
+                  "type": "array",
+                  "title": "Response List Shared With Me Api Shared Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shared/{share_id}": {
+      "get": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Read Shared Report",
+        "operationId": "read_shared_report_api_shared__share_id__get",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Share Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shared/{share_id}/{asset}": {
+      "get": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Read Shared Asset",
+        "operationId": "read_shared_asset_api_shared__share_id___asset__get",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Share Id"
+            }
+          },
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "pdf",
+                "markdown",
+                "bibliography",
+                "bibliography.bib",
+                "glossary.md"
+              ],
+              "type": "string",
+              "title": "Asset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/share/{token}": {
+      "get": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Read Share By Token",
+        "operationId": "read_share_by_token_api_share__token__get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/share/{token}/{asset}": {
+      "get": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Read Share Asset By Token",
+        "operationId": "read_share_asset_by_token_api_share__token___asset__get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          },
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "pdf",
+                "markdown",
+                "bibliography",
+                "bibliography.bib",
+                "glossary.md"
+              ],
+              "type": "string",
+              "title": "Asset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2173,6 +2653,35 @@
         },
         "type": "object",
         "title": "ArxivPdfResponse"
+      },
+      "AuthStatusResponse": {
+        "properties": {
+          "authenticated": {
+            "type": "boolean",
+            "title": "Authenticated"
+          },
+          "auth_mode": {
+            "type": "string",
+            "title": "Auth Mode"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionUserResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "authenticated",
+          "auth_mode"
+        ],
+        "title": "AuthStatusResponse",
+        "description": "Always-200 auth probe \u2014 lets the SPA boot without a 401 in the console."
       },
       "CitationEdgeInfo": {
         "properties": {
@@ -3120,6 +3629,162 @@
           "auth_mode"
         ],
         "title": "SessionUserResponse"
+      },
+      "ShareCreateRequest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 4,
+            "title": "Run Id"
+          },
+          "with_emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 25,
+            "title": "With Emails"
+          },
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 365.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "ShareCreateRequest"
+      },
+      "ShareGrantsRequest": {
+        "properties": {
+          "emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 25,
+            "minItems": 1,
+            "title": "Emails"
+          }
+        },
+        "type": "object",
+        "required": [
+          "emails"
+        ],
+        "title": "ShareGrantsRequest"
+      },
+      "ShareInfo": {
+        "properties": {
+          "share_id": {
+            "type": "string",
+            "title": "Share Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "grants": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Grants"
+          }
+        },
+        "type": "object",
+        "required": [
+          "share_id",
+          "run_id",
+          "created_at"
+        ],
+        "title": "ShareInfo"
+      },
+      "SharedItem": {
+        "properties": {
+          "share_id": {
+            "type": "string",
+            "title": "Share Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "owner_email": {
+            "type": "string",
+            "title": "Owner Email"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "share_id",
+          "run_id",
+          "owner_email",
+          "created_at"
+        ],
+        "title": "SharedItem"
       },
       "StatsResponse": {
         "properties": {

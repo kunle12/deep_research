@@ -230,3 +230,56 @@ export function resetPassword(email, token, newPassword) {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+/* ---------- Sharing (view-only report shares) ---------- */
+
+export function createShare(runId, withEmails, expiresInDays) {
+  return request("/api/shares", {
+    method: "POST",
+    body: JSON.stringify({
+      run_id: runId,
+      with_emails: withEmails || [],
+      expires_in_days: expiresInDays || null,
+    }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function listMyShares() {
+  return request("/api/shares");
+}
+
+export function revokeShare(shareId) {
+  return request(`/api/shares/${encodeURIComponent(shareId)}`, { method: "DELETE" });
+}
+
+export function rotateShare(shareId) {
+  return request(`/api/shares/${encodeURIComponent(shareId)}/rotate`, { method: "POST" });
+}
+
+export function addShareGrants(shareId, emails) {
+  return request(`/api/shares/${encodeURIComponent(shareId)}/grants`, {
+    method: "POST",
+    body: JSON.stringify({ emails }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function removeShareGrant(shareId, granteeUserId) {
+  return request(
+    `/api/shares/${encodeURIComponent(shareId)}/grants/${encodeURIComponent(granteeUserId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function listSharedWithMe() {
+  return request("/api/shared");
+}
+
+export function getSharedReport(shareId) {
+  return request(`/api/shared/${encodeURIComponent(shareId)}`);
+}
+
+export function getShareByToken(token) {
+  return request(`/api/share/${encodeURIComponent(token)}`);
+}

@@ -4,6 +4,7 @@ import { el, clear } from "./dom.js";
 import { renderList } from "./views/list.js";
 import { renderReport } from "./views/report.js";
 import { renderAuth } from "./views/login.js";
+import { renderSharedByGrant, renderSharedByToken, renderSharedList } from "./views/shared.js";
 import { openResearchModal } from "./views/research.js";
 import { initTaskbar } from "./views/taskbar.js";
 import { restoreJobs } from "./jobs.js";
@@ -22,7 +23,9 @@ let currentRoute = { name: "list" };
 // null = boot check in flight; false = unauthenticated (login wall);
 // true = signed in. Set before the first render by boot().
 let authed = null;
-const AUTH_ROUTES = new Set(["login", "verify", "reset"]);
+// Routes reachable WITHOUT a session: the auth screens and secret share
+// links (a share token IS the capability).
+const AUTH_ROUTES = new Set(["login", "verify", "reset", "share"]);
 
 function routeFromHash() {
   const raw = location.hash.replace(/^#/, "") || "/";
@@ -30,9 +33,14 @@ function routeFromHash() {
   const params = Object.fromEntries(new URLSearchParams(query));
   const m = path.match(/^\/report\/([^/]+)/);
   if (m) return { name: "report", reportId: decodeURIComponent(m[1]) };
+  const sh = path.match(/^\/shared\/([^/]+)/);
+  if (sh) return { name: "sharedReport", shareId: decodeURIComponent(sh[1]) };
+  const sl = path.match(/^\/share\/([^/]+)/);
+  if (sl) return { name: "share", token: decodeURIComponent(sl[1]) };
   if (path === "/login") return { name: "login", params };
   if (path === "/verify") return { name: "verify", params };
   if (path === "/reset") return { name: "reset", params };
+  if (path === "/shared") return { name: "shared" };
   return { name: "list" };
 }
 
@@ -62,6 +70,12 @@ function render() {
   currentRoute = route;
   if (route.name === "report") {
     currentCleanup = renderReport(app, route.reportId);
+  } else if (route.name === "shared") {
+    currentCleanup = renderSharedList(app);
+  } else if (route.name === "sharedReport") {
+    currentCleanup = renderSharedByGrant(app, route.shareId);
+  } else if (route.name === "share") {
+    currentCleanup = renderSharedByToken(app, route.token);
   } else if (AUTH_ROUTES.has(route.name)) {
     currentCleanup = renderAuth(app, route.name, route.params || {});
   } else {
@@ -210,6 +224,8 @@ function initNewResearch() {
  * owner's identity in single_user mode. Empty while unauthenticated. */
 function initAccount() {
   const drawChip = (me) => {
+    const sharedLink = document.getElementById("nav-shared");
+    if (sharedLink) sharedLink.hidden = !me || me.auth_mode === "single_user";
     if (!me) {
       accountEl.replaceChildren();
       return;

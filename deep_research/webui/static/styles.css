@@ -1185,3 +1185,65 @@ body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
   color: var(--text-2);
   font-size: 13px;
 }
+
+/* ---------- Sharing ---------- */
+
+.nav-shared { font-size: 13px; white-space: nowrap; }
+.nav-shared[hidden] { display: none; }
+
+.share-banner {
+  margin: 6px 0 2px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--accent-soft);
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.share-modal {
+  width: min(640px, 92vw);
+  max-height: 84vh;
+  overflow: auto;
+  padding: 20px 22px;
+}
+
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.modal-title { margin: 0 0 6px; font-size: 18px; }
+
+.share-intro { margin: 0 0 12px; color: var(--text-2); font-size: 13px; }
+
+.share-create { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.share-create-row { display: flex; gap: 8px; align-items: center; }
+
+.share-list { display: flex; flex-direction: column; gap: 10px; }
+.share-empty { color: var(--text-2); font-size: 13px; }
+
+.share-link-box {
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--accent-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.share-link-row { display: flex; gap: 8px; }
+
+.share-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--surface);
+}
+.share-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.share-row-meta { display: flex; gap: 6px; color: var(--text-2); font-size: 12px; flex-wrap: wrap; }
+.share-grants { display: flex; gap: 5px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
+.share-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.shared-wrap { max-width: 860px; margin: 0 auto; padding: 22px 16px; }
+.shared-title { font-size: 20px; margin: 4px 0 14px; }

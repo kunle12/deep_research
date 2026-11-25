@@ -1,4 +1,6 @@
-/* Report view: rendered markdown, TOC, references panel, tags, delete. */
+/* Report view: rendered markdown, TOC, references panel, tags, delete.
+ * Also renders read-only shares: `opts.loader` supplies the report (a share
+ * payload is the same shape), `opts.mutate=false` hides every mutation affordance. */
 
 import { el, clear } from "../dom.js";
 import { formatDate, plural } from "../format.js";
@@ -17,12 +19,14 @@ import {
 import { headingText, parse, renderBlocks, safeUrl } from "../markdown.js";
 import { hasActiveJob, trackJob } from "../jobs.js";
 import { confirmDialog } from "./dialog.js";
+import { openShareDialog } from "./shareDialog.js";
 
 // One report view renders at a time; track any open query popover so the
 // route cleanup can dismiss it (removing its document click listener).
 let _activeQueryCleanup = null;
 
-export function renderReport(root, runId) {
+export function renderReport(root, runId, opts = {}) {
+  const { loader = getReport(runId), mutate = true } = opts;
   clear(root);
 
   const bar = el(
@@ -44,14 +48,25 @@ export function renderReport(root, runId) {
   root.append(content);
 
   let disposed = false;
-  getReport(runId)
-    .then((report) => {
+  // Loaders may be passed as a function (owner path) or a ready promise
+  // (shared paths in shared.js) — accept both.
+  const load = typeof loader === "function" ? loader() : loader;
+  Promise.resolve(load)
+    .then((result) => {
       if (disposed) return; // navigated away while loading — ignore stale response
+      // Owner path: loader resolves to the report itself; shared loaders
+      // resolve to {report, banner, back}.
+      const report = result && result.report ? result.report : result;
+      const view = {
+        mutate,
+        banner: (result && result.banner) || null,
+        back: (result && result.back) || { href: "#/", label: "← Library" },
+      };
       clear(content);
       // Drop the loading-state class so its `text-align: center` no longer
       // leaks into the rendered report (bibliography/glossary/panels).
       content.className = "";
-      content.append(buildReport(report));
+      content.append(buildReport(report, view));
     })
 
     .catch((err) => {
@@ -75,7 +90,8 @@ export function renderReport(root, runId) {
   };
 }
 
-function buildReport(report) {
+function buildReport(report, view) {
+  const { mutate, banner, back } = view;
   // Parse once; the first heading becomes the header title and is excluded
   // from the rendered body so the title never appears twice.
   const blocks = parse(report.markdown);
@@ -85,7 +101,8 @@ function buildReport(report) {
   const header = el(
     "header",
     { class: "report-header" },
-    el("a", { class: "link-btn", href: "#/", text: "← Library" }),
+    back ? el("a", { class: "link-btn", href: back.href, text: back.label }) : null,
+    banner ? el("div", { class: "share-banner", text: banner }) : null,
     reportTitle(titleText, report),
     el(
       "div",
@@ -100,20 +117,33 @@ function buildReport(report) {
     el(
       "div",
       { class: "report-actions" },
-      el("button", {
-        class: "btn",
-        type: "button",
-        text: "Rename",
-        title: "Rename this research",
-        onclick: () => promptRename(report),
-      }),
-      el("button", {
-        class: "btn",
-        type: "button",
-        text: "Add source",
-        title: "Analyze a new URL and attach it to this research",
-        onclick: () => openAddSource(report),
-      }),
+      mutate
+        ? el("button", {
+            class: "btn",
+            type: "button",
+            text: "Rename",
+            title: "Rename this research",
+            onclick: () => promptRename(report),
+          })
+        : null,
+      mutate
+        ? el("button", {
+            class: "btn",
+            type: "button",
+            text: "Add source",
+            title: "Analyze a new URL and attach it to this research",
+            onclick: () => openAddSource(report),
+          })
+        : null,
+      mutate
+        ? el("button", {
+            class: "btn",
+            type: "button",
+            text: "Share",
+            title: "Share this research (read-only link or with named accounts)",
+            onclick: () => openShareDialog(report),
+          })
+        : null,
       report.has_pdf
         ? el("a", { class: "btn", href: safeUrl(report.pdf_url), target: "_blank", rel: "noopener", text: "Open PDF" })
         : null,
@@ -195,19 +225,21 @@ function buildReport(report) {
     glossaryPanel(report),
 
 
-    tagEditor(report),
-    mergePanel(report),
-    el(
-      "div",
-      { class: "panel" },
-      el("h2", { class: "panel-title", text: "Danger zone" }),
-      el("button", {
-        class: "btn btn-danger",
-        type: "button",
-        text: "Delete report",
-        onclick: () => confirmDelete(report),
-      }),
-    ),
+    mutate ? tagEditor(report) : null,
+    mutate ? mergePanel(report) : null,
+    mutate
+      ? el(
+          "div",
+          { class: "panel" },
+          el("h2", { class: "panel-title", text: "Danger zone" }),
+          el("button", {
+            class: "btn btn-danger",
+            type: "button",
+            text: "Delete report",
+            onclick: () => confirmDelete(report),
+          }),
+        )
+      : null,
   );
 
   return el("div", { class: "layout report-layout" }, toc, article, refs);

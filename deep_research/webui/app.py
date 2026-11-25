@@ -30,6 +30,7 @@ from deep_research.webui.jobs import AttachRunner, ResearchJobManager, ResearchR
 from deep_research.webui.routers.auth import router as auth_router
 from deep_research.webui.routers.library import router as library_router
 from deep_research.webui.routers.research import router as research_router
+from deep_research.webui.routers.shares import router as shares_router
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(library_router)
     app.include_router(research_router)
+    app.include_router(shares_router)
 
     if _STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")

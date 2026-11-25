@@ -22,17 +22,23 @@ from pathlib import Path
 
 import aiosqlite
 
-from deep_research.accounts.rows import EmailTokenRow, SessionRow, UserRow
+from deep_research.accounts.rows import (
+    EmailTokenRow,
+    SessionRow,
+    ShareGrantRow,
+    ShareRow,
+    UserRow,
+)
 
 logger = logging.getLogger(__name__)
 
-_MIGRATION_FILE = (
-    Path(__file__).resolve().parent.parent
-    / "library"
-    / "storage"
-    / "migrations"
-    / "sqlite"
-    / "0002_registry.sql"
+_MIGRATIONS_DIR = (
+    Path(__file__).resolve().parent.parent / "library" / "storage" / "migrations" / "sqlite"
+)
+# 0001_initial.sql is the PER-LIBRARY schema (never applied to the registry);
+# every other numbered file is a registry migration (0002_registry, 0003_sharing, …).
+_REGISTRY_MIGRATIONS = sorted(
+    p for p in _MIGRATIONS_DIR.glob("0*.sql") if p.name != "0001_initial.sql"
 )
 
 
@@ -134,10 +140,15 @@ class AccountStore:
     async def ensure_schema(self) -> None:
         if self._conn is None:
             raise RuntimeError("AccountStore not connected")
-        sql = _MIGRATION_FILE.read_text(encoding="utf-8")
-        await self._conn.executescript(sql)
+        for migration in _REGISTRY_MIGRATIONS:
+            sql = migration.read_text(encoding="utf-8")
+            await self._conn.executescript(sql)
         await self._conn.commit()
-        logger.info("registry schema initialized from %s", _MIGRATION_FILE.name)
+        logger.info(
+            "registry schema initialized (%d migrations): %s",
+            len(_REGISTRY_MIGRATIONS),
+            ", ".join(m.name for m in _REGISTRY_MIGRATIONS),
+        )
 
     # -- Meta (migration markers etc.) --
 
@@ -408,3 +419,156 @@ class AccountStore:
         )
         await self._conn.commit()
         return bool(cursor.rowcount)
+
+    # -- Shares (view-only report sharing) --
+
+    @staticmethod
+    def _share_from_row(row) -> ShareRow:
+        from deep_research.accounts.rows import ShareRow
+
+        return ShareRow(
+            share_id=row[0],
+            token_hash=row[1],
+            owner_user_id=row[2],
+            run_id=row[3],
+            title=row[4],
+            created_at=row[5],
+            expires_at=row[6],
+            revoked_at=row[7],
+        )
+
+    @_serialized
+    async def create_share(
+        self,
+        *,
+        share_id: str,
+        token_hash: str,
+        owner_user_id: str,
+        run_id: str,
+        title: str | None,
+        expires_at: str | None,
+    ) -> ShareRow:
+        assert self._conn is not None
+        now = _now_iso()
+        await self._conn.execute(
+            "INSERT INTO shares (share_id, token_hash, owner_user_id, run_id, title, "
+            "created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (share_id, token_hash, owner_user_id, run_id, title, now, expires_at),
+        )
+        await self._conn.commit()
+        return ShareRow(
+            share_id=share_id,
+            token_hash=token_hash,
+            owner_user_id=owner_user_id,
+            run_id=run_id,
+            title=title,
+            created_at=now,
+            expires_at=expires_at,
+        )
+
+    @_serialized
+    async def get_share(self, share_id: str) -> ShareRow | None:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT share_id, token_hash, owner_user_id, run_id, title, created_at, "
+            "expires_at, revoked_at FROM shares WHERE share_id = ?",
+            (share_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return self._share_from_row(row) if row else None
+
+    @_serialized
+    async def get_share_by_token(self, token_hash: str) -> ShareRow | None:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT share_id, token_hash, owner_user_id, run_id, title, created_at, "
+            "expires_at, revoked_at FROM shares WHERE token_hash = ?",
+            (token_hash,),
+        ) as cur:
+            row = await cur.fetchone()
+        return self._share_from_row(row) if row else None
+
+    @_serialized
+    async def list_shares_for_owner(self, owner_user_id: str) -> list[ShareRow]:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT share_id, token_hash, owner_user_id, run_id, title, created_at, "
+            "expires_at, revoked_at FROM shares WHERE owner_user_id = ? "
+            "ORDER BY created_at DESC",
+            (owner_user_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._share_from_row(r) for r in rows]
+
+    @_serialized
+    async def revoke_share(self, share_id: str) -> bool:
+        """Hard-delete a share (cascades its grants). True when it existed."""
+        assert self._conn is not None
+        cursor = await self._conn.execute("DELETE FROM shares WHERE share_id = ?", (share_id,))
+        await self._conn.commit()
+        return bool(cursor.rowcount)
+
+    @_serialized
+    async def rotate_share_token(self, share_id: str, token_hash: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "UPDATE shares SET token_hash = ? WHERE share_id = ?",
+            (token_hash, share_id),
+        )
+        await self._conn.commit()
+        return bool(cursor.rowcount)
+
+    @_serialized
+    async def add_grant(self, share_id: str, user_id: str) -> bool:
+        """Grant a named account access; idempotent. True when newly added."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "INSERT OR IGNORE INTO share_grants (share_id, user_id, created_at) VALUES (?, ?, ?)",
+            (share_id, user_id, _now_iso()),
+        )
+        await self._conn.commit()
+        return bool(cursor.rowcount)
+
+    @_serialized
+    async def remove_grant(self, share_id: str, user_id: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "DELETE FROM share_grants WHERE share_id = ? AND user_id = ?",
+            (share_id, user_id),
+        )
+        await self._conn.commit()
+        return bool(cursor.rowcount)
+
+    @_serialized
+    async def list_grants(self, share_id: str) -> list[ShareGrantRow]:
+        """Grants of a share with the grantee's email joined for display."""
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT g.share_id, g.user_id, g.created_at, u.email "
+            "FROM share_grants g JOIN users u ON u.user_id = g.user_id "
+            "WHERE g.share_id = ? ORDER BY g.created_at",
+            (share_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            ShareGrantRow(share_id=r[0], user_id=r[1], created_at=r[2], email=r[3]) for r in rows
+        ]
+
+    @_serialized
+    async def list_shares_for_grantee(self, user_id: str) -> list[tuple[ShareRow, str]]:
+        """(share, owner_email) for every live share granted to *user_id*."""
+        assert self._conn is not None
+        now = _now_iso()
+        async with self._conn.execute(
+            "SELECT s.share_id, s.token_hash, s.owner_user_id, s.run_id, s.title, "
+            "s.created_at, s.expires_at, s.revoked_at, u.email "
+            "FROM shares s "
+            "JOIN share_grants g ON g.share_id = s.share_id "
+            "JOIN users u ON u.user_id = s.owner_user_id "
+            "WHERE g.user_id = ? AND s.revoked_at IS NULL "
+            "AND (s.expires_at IS NULL OR s.expires_at > ?) "
+            "ORDER BY s.created_at DESC",
+            (user_id, now),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(self._share_from_row(r), r[8]) for r in rows]

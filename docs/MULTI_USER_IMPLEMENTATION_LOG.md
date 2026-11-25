@@ -188,3 +188,64 @@ Validation after fixes:
   (`users set-password`, which revokes sessions) followed by an in-page API
   call → exactly one 401 cycle, stable `#/login`, chip + stats cleared, **no
   redirect loop** (M1 verified end-to-end). All smoke processes killed.
+
+## 2026-11-25 — Sharing (view-only) — DONE
+
+User-confirmed scope: **links + named accounts**, **individual reports only**,
+**view-only** (no copy/import). Design addendum: plan §14.
+
+Backend:
+
+- `0003_sharing.sql` (registry migration slot 3; the future SSO migration
+  becomes `0004_sso.sql`): `shares` (share_id public + token_hash secret,
+  owner, run_id, denormalized title, expiry, revocation) + `share_grants`
+  (named accounts). `AccountStore.ensure_schema` now applies ALL registry
+  migration files (`0*.sql` except the per-library `0001_initial.sql`) in
+  sorted order.
+- `accounts/shares.py::ShareService` — the single authorization core:
+  `share_is_live` (not revoked, not expired); access via raw link token OR
+  grant row OR ownership. Token = 32-byte secret, SHA-256 at rest, shown once
+  at creation, rotatable. Grantee emails are resolved to accounts BEFORE the
+  share row is created (a failed request leaves no orphan share — caught by
+  test). Limits: 100 shares/owner, 25 grantees/share.
+- `webui/routers/shares.py` — 10 endpoints: owner CRUD (`/api/shares*`),
+  grantee path (`/api/shared/{id}[/asset]`, session + grant), link path
+  (`/api/share/{token}[/asset]`, no auth). Shared reads build the same
+  `ReportDetail` shape as `GET /api/reports/{run_id}` from the OWNER's
+  backend via `LibraryRegistry` — read-only by construction, grantee's own
+  library untouched, `404` (not 403) for shares the caller can't access.
+  Assets: pdf / markdown / bibliography / bibliography.bib / glossary.md.
+
+Frontend:
+
+- Report page **Share** button → share dialog (create link w/ optional email
+  grantees + expiry; copy-once URL; rotate; revoke; grant list).
+- **Shared with me** view (`#/shared`, topbar link hidden in single_user) and
+  read-only report rendering for `#/shared/<id>` and `#/share/<token>` —
+  `renderReport` gained an opts object (loader / mutate / back / banner);
+  share views hide Rename/Add source/Share/tags editor/merge/Danger zone.
+- `#/share/<token>` is reachable unauthenticated (the token is the
+  capability); `#/shared*` stays behind the login wall.
+
+Validation:
+
+- `tests/test_webui_shares.py` (6): single_user disabled (400 / empty list),
+  link roundtrip incl. unauthenticated read + pdf/markdown assets + no-token-
+  in-listings, named-grant roundtrip with email normalization + owner_email
+  in listing + stranger gets 404 on read AND revoke, revocation + rotation
+  (old link dies, new link works), expiry (forced past), unknown grantee /
+  missing run (and the orphan-share bug the test caught → fixed by resolving
+  grantees before insert).
+- Full suite: see next entry; OpenAPI snapshot regenerated (35 → 46 paths).
+- **Browser verification** (Playwright, scratch server + seeded report):
+  owner report page shows Share; dialog creates a link (URL shown once,
+  rotate/revoke present); signing out and opening the link renders the
+  read-only report with a "Shared link — read only" banner and **zero console
+  errors**. Three UI bugs caught and fixed during verification:
+  (1) `shareDialog.js` referenced a `listWrap` local from another closure
+  (dialog error message) — hoisted; (2) share URL built with a duplicated
+  slash (`origin//#/share/…`) — fixed; (3) `renderReport` loaders now accept
+  a ready promise as well as a function (shared views pass promises). Note
+  for future sessions: hash-only navigations keep the old ES module map —
+  after editing static JS, force a real `location.reload()` before judging
+  what the browser runs. All smoke processes killed.

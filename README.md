@@ -486,6 +486,23 @@ Notes:
 - Postgres deployments get one schema per user (`library_<user_id>`) in the
   configured database; the account registry remains the local `registry.db`.
 
+#### Sharing research (view-only)
+
+Any account can share an individual report, two ways:
+
+- **Secret link**: the report page's **Share** button mints a link
+  (`…/#/share/<token>`) that anyone can open — no account needed. The token is
+  shown once (rotate it to invalidate old copies), links can carry an expiry,
+  and revoking deletes access instantly.
+- **Named accounts**: add colleagues by email; they see the report under
+  **Shared with me** in their top bar. They must have registered (unknown
+  emails are rejected with a hint rather than silently ignored).
+
+Sharing is strictly **read-only**: recipients see the report, its references,
+tags, glossary and the archived PDF, served from the owner's library — they
+can never modify it, and their own library is unaffected. All shares are
+managed (and revocable) from the same Share dialog.
+
 ### As a Python library
 
 ```python
