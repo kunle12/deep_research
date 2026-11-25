@@ -502,11 +502,27 @@ class AccountStore:
 
     @_serialized
     async def revoke_share(self, share_id: str) -> bool:
-        """Hard-delete a share (cascades its grants). True when it existed."""
+        """Hard-delete a share (cascades its grants). True when it existed.
+
+        Revocation is deliberately a DELETE (not a revoked_at update): the
+        share disappears from every listing and every access path at once,
+        and grant rows cascade away with it.
+        """
         assert self._conn is not None
         cursor = await self._conn.execute("DELETE FROM shares WHERE share_id = ?", (share_id,))
         await self._conn.commit()
         return bool(cursor.rowcount)
+
+    @_serialized
+    async def delete_shares_for_run(self, owner_user_id: str, run_id: str) -> int:
+        """Drop all shares of one report (report-deletion cascade, F4)."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "DELETE FROM shares WHERE owner_user_id = ? AND run_id = ?",
+            (owner_user_id, run_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount or 0
 
     @_serialized
     async def rotate_share_token(self, share_id: str, token_hash: str) -> bool:
@@ -556,7 +572,11 @@ class AccountStore:
 
     @_serialized
     async def list_shares_for_grantee(self, user_id: str) -> list[tuple[ShareRow, str]]:
-        """(share, owner_email) for every live share granted to *user_id*."""
+        """(share, owner_email) for every live share granted to *user_id*.
+
+        Shares of disabled owners are filtered here as well as in the service
+        resolver (F14) — disabling an account kills its outgoing shares.
+        """
         assert self._conn is not None
         now = _now_iso()
         async with self._conn.execute(
@@ -566,6 +586,7 @@ class AccountStore:
             "JOIN share_grants g ON g.share_id = s.share_id "
             "JOIN users u ON u.user_id = s.owner_user_id "
             "WHERE g.user_id = ? AND s.revoked_at IS NULL "
+            "AND u.status = 'active' "
             "AND (s.expires_at IS NULL OR s.expires_at > ?) "
             "ORDER BY s.created_at DESC",
             (user_id, now),

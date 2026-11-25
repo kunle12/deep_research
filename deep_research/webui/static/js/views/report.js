@@ -60,7 +60,12 @@ export function renderReport(root, runId, opts = {}) {
       const view = {
         mutate,
         banner: (result && result.banner) || null,
-        back: (result && result.back) || { href: "#/", label: "← Library" },
+        // `back: null` is meaningful (no back link on anonymous share views)
+        // — only fall back to the default when the key is absent entirely.
+        back:
+          result && result.back === undefined
+            ? { href: "#/", label: "← Library" }
+            : (result && result.back) || null,
       };
       clear(content);
       // Drop the loading-state class so its `text-align: center` no longer

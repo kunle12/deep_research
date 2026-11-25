@@ -1927,11 +1927,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ShareInfo"
-                  },
-                  "title": "Response Add Share Grants Api Shares  Share Id  Grants Post"
+                  "$ref": "#/components/schemas/ShareInfo"
                 }
               }
             }
@@ -3666,6 +3662,24 @@
         ],
         "title": "ShareCreateRequest"
       },
+      "ShareGrantInfo": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "email"
+        ],
+        "title": "ShareGrantInfo"
+      },
       "ShareGrantsRequest": {
         "properties": {
           "emails": {
@@ -3733,7 +3747,7 @@
           },
           "grants": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/ShareGrantInfo"
             },
             "type": "array",
             "title": "Grants"

@@ -237,6 +237,40 @@ Validation:
   missing run (and the orphan-share bug the test caught → fixed by resolving
   grantees before insert).
 - Full suite: see next entry; OpenAPI snapshot regenerated (35 → 46 paths).
+
+## 2026-11-25 — Sharing adversarial review pass — DONE
+
+Reviewer: DeepSeek V4.1 Flash 1017 subagent (same workflow as the Phase 0–2
+review). Counts: **2 HIGH · 4 MEDIUM · 8 LOW** (2 LOW informational). The
+authorization core itself came back clean (no bypasses, CSRF correct, expiry
+semantics consistent, ReportDetail builders field-identical, no op-lock
+deadlocks, migration wiring correct). All findings verified before fixing:
+
+| ID | Sev | Finding | Disposition |
+|----|-----|---------|-------------|
+| F1 | HIGH | Shared views rendered the full OWNER mutation UI (`mutate` defaulted true; my earlier browser assertion was defeated by JSON escaping and missed it) | **fixed**: both shared loaders pass `mutate: false`; browser-verified with corrected assertions (no Rename/Share/Delete rendered) |
+| F2 | HIGH | Signed-in users were bounced off `#/share/<token>` (`AUTH_ROUTES` double duty) — the capability link was dead for exactly its intended audience | **fixed**: `share` exempt from the authed redirect; browser-verified as a signed-in grantee |
+| F3 | MED | Malformed grantee email at creation → 500 (normalize outside try) | **fixed**: moved inside try → 422; test added |
+| F4 | MED | Deleting a report left orphan shares: dead "Shared with me" cards, unrevokable via UI, cap slots held forever | **fixed**: `delete_shares_for_run` cascade in the web delete handler; test added (CLI deletions documented as leaving shares, which then 404 cleanly) |
+| F5 | MED | Grants payload carried emails only — remove-grant endpoint unreachable from the SPA; add/remove never wired | **fixed**: `grants: [{user_id, email}]`; dialog wired (add-people per share, × per grantee); grants-add response shape fixed to single ShareInfo |
+| F6 | MED | Citation `local_pdf_url` in shared payloads pointed at the viewer's library (404/401 on every archived-PDF reference button) | **fixed**: `local_pdf_url`/`local_image_url`/`local_artifact_id` stripped in shared payloads; the shared report's own PDF stays share-scoped; test added |
+| F7 | LOW | `revoked_at` dead (revoke is a hard DELETE) | **fixed by decision**: hard-delete semantics documented in `revoke_share` + log; dead UI badge and unused `validate_grantee_email` removed; column kept (harmless, defensible in `share_is_live`) |
+| F8 | LOW | Self-grant asymmetry: create allowed sharing with yourself | **fixed**: owner filtered in create too; test added |
+| F9 | LOW | Grant-insert failure after share commit → orphan share with unseen token | **fixed**: grants rolled back (share deleted) on failure |
+| F10 | LOW | Rotate-vs-revoke race returned 200 for a deleted share | **fixed**: rotate checks rowcount → 404; test added. Cap race (two concurrent creates → 101) accepted: owner-harmless, self-hosted scale |
+| F11 | LOW | `back: null` defeated by falsy `\|\|` fallback → anonymous readers got a login-wall "← Library" link | **fixed**: absent-vs-null distinguished |
+| F12 | LOW | `decodeURIComponent` on a malformed hash threw and blanked the app | **fixed**: guarded decode with raw fallback |
+| F13 | LOW (info) | Raw capability tokens in server access logs | **documented** (REST_API.md): inherent to capability-URL design; the page fragment + `Referrer-Policy: no-referrer` protect the link itself |
+| F14 | LOW (info) | A disabled owner's shares stayed live | **fixed**: owner `status='active'` required in both resolve paths + filtered in the grantee listing SQL; test added |
+
+Validation:
+
+- 5 new API tests + updated grants-shape assertion (`test_webui_shares.py`,
+  11 tests); full suite green (see next entry).
+- Playwright re-verification: signed-in grantee opens the secret link in
+  place (F2), shared view renders with banner and **no** Rename/Share/Delete
+  controls (F1, correctly asserted this time), zero console errors. All
+  smoke processes killed.
 - **Browser verification** (Playwright, scratch server + seeded report):
   owner report page shows Share; dialog creates a link (URL shown once,
   rotate/revoke present); signing out and opening the link renders the

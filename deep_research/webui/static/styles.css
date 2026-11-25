@@ -1247,3 +1247,7 @@ body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
 
 .shared-wrap { max-width: 860px; margin: 0 auto; padding: 22px 16px; }
 .shared-title { font-size: 20px; margin: 4px 0 14px; }
+
+.share-add-row { display: flex; gap: 6px; margin-top: 6px; }
+.share-add-row .text-input { flex: 1; }
+.share-grants .linklike { font-size: 11px; padding: 0 2px; }

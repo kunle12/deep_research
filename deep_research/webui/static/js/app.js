@@ -31,12 +31,21 @@ function routeFromHash() {
   const raw = location.hash.replace(/^#/, "") || "/";
   const [path, query = ""] = raw.split("?");
   const params = Object.fromEntries(new URLSearchParams(query));
+  // decodeURIComponent can throw on malformed escapes (a mangled paste) —
+  // fall back to the raw segment so one bad hash can't blank the app.
+  const decode = (s) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  };
   const m = path.match(/^\/report\/([^/]+)/);
-  if (m) return { name: "report", reportId: decodeURIComponent(m[1]) };
+  if (m) return { name: "report", reportId: decode(m[1]) };
   const sh = path.match(/^\/shared\/([^/]+)/);
-  if (sh) return { name: "sharedReport", shareId: decodeURIComponent(sh[1]) };
+  if (sh) return { name: "sharedReport", shareId: decode(sh[1]) };
   const sl = path.match(/^\/share\/([^/]+)/);
-  if (sl) return { name: "share", token: decodeURIComponent(sl[1]) };
+  if (sl) return { name: "share", token: decode(sl[1]) };
   if (path === "/login") return { name: "login", params };
   if (path === "/verify") return { name: "verify", params };
   if (path === "/reset") return { name: "reset", params };
@@ -55,7 +64,9 @@ function render() {
     else renderAuthView("login", {});
     return;
   }
-  if (authed === true && AUTH_ROUTES.has(route.name)) {
+  if (authed === true && route.name !== "share" && AUTH_ROUTES.has(route.name)) {
+    // login/verify/reset are pointless once signed in — but a share link is a
+    // capability its recipient may well open while signed in (F2): never bounce.
     window.location.hash = "#/";
     return;
   }

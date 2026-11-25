@@ -19,8 +19,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from email_validator import EmailNotValidError, validate_email
-
 from deep_research.accounts.rows import ShareRow
 from deep_research.accounts.service import AuthError, normalize_email
 from deep_research.accounts.store import AccountStore
@@ -90,8 +88,13 @@ class ShareService:
                 timespec="seconds"
             )
         # Resolve grantees BEFORE creating the row: a failed request must not
-        # leave an orphan share behind.
-        grantee_ids = await self._resolve_grantee_ids(with_emails or [])
+        # leave an orphan share behind. The owner's own email is filtered so a
+        # self-share never appears in their own "Shared with me" (F8).
+        grantee_ids = [
+            gid
+            for gid in await self._resolve_grantee_ids(with_emails or [])
+            if gid != owner_user_id
+        ]
         token = secrets.token_urlsafe(_TOKEN_BYTES)
         share = await self._store.create_share(
             share_id=uuid.uuid4().hex,
@@ -101,8 +104,15 @@ class ShareService:
             title=title,
             expires_at=expires_at,
         )
-        for gid in grantee_ids:
-            await self._store.add_grant(share.share_id, gid)
+        try:
+            for gid in grantee_ids:
+                await self._store.add_grant(share.share_id, gid)
+        except Exception:
+            # A grant insert failed (e.g. the grantee vanished mid-flight):
+            # roll the whole share back instead of leaving an orphan with a
+            # live token the owner never saw (F9).
+            await self._store.revoke_share(share.share_id)
+            raise
         logger.info(
             "share created: %s for run %s (%d grants)", share.share_id, run_id, len(grantee_ids)
         )
@@ -144,12 +154,20 @@ class ShareService:
                 added += 1
         return added
 
+    async def _owner_active(self, owner_user_id: str) -> bool:
+        """A disabled owner's shares must not keep serving (F14) — admins get
+        an account-level kill switch by disabling the account."""
+        owner = await self._store.get_user(owner_user_id)
+        return owner is not None and owner.status == "active"
+
     async def resolve_for_token(self, token: str) -> ShareRow:
-        """Link path: raw token -> live share."""
+        """Link path: raw token -> live share of an active owner."""
         if not token:
             raise AuthError("share not found", 404)
         share = await self._store.get_share_by_token(hash_share_token(token))
         if share is None or not share_is_live(share):
+            raise AuthError("share not found", 404)
+        if not await self._owner_active(share.owner_user_id):
             raise AuthError("share not found", 404)
         return share
 
@@ -160,6 +178,8 @@ class ShareService:
             raise AuthError("share not found", 404)
         if share.owner_user_id == user_id:
             return share
+        if not await self._owner_active(share.owner_user_id):
+            raise AuthError("share not found", 404)
         grants = await self._store.list_grants(share_id)
         if not any(g.user_id == user_id for g in grants):
             # Indistinguishable from nonexistent — share ids don't leak.
@@ -179,18 +199,9 @@ class ShareService:
         logger.info("share revoked: %s", share_id)
 
 
-def validate_grantee_email(raw: str) -> str:
-    """Syntax-only check with the house normalizer (used for early errors)."""
-    try:
-        return validate_email(raw, check_deliverability=False).normalized.lower()
-    except EmailNotValidError as exc:
-        raise AuthError(f"invalid email address: {exc}", 422) from exc
-
-
 __all__ = [
     "CreatedShare",
     "ShareService",
     "hash_share_token",
     "share_is_live",
-    "validate_grantee_email",
 ]

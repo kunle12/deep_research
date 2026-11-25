@@ -348,9 +348,7 @@ def _replace_bibliography_section(markdown: str, citations: list[dict[str, Any]]
     return "\n".join(lines[:idx] + new_block + lines[end:])
 
 
-async def _other_cited_artifact_ids(
-    backend: StorageBackend, run_id: str
-) -> set[str]:
+async def _other_cited_artifact_ids(backend: StorageBackend, run_id: str) -> set[str]:
     """Set of artifact_ids cited by reports other than *run_id* (shared copies
     that must survive when a reference is removed). Computed once per request
     so the delete loop never re-scans the report table per citation."""
@@ -474,7 +472,9 @@ async def get_report_glossary_markdown(run_id: str, request: Request) -> PlainTe
     return PlainTextResponse(
         md,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(run_id)}-glossary.md"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{_safe_filename(run_id)}-glossary.md"'
+        },
     )
 
 
@@ -492,7 +492,9 @@ async def get_report_bibliography(run_id: str, request: Request) -> PlainTextRes
     return PlainTextResponse(
         bib_md,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(run_id)}-bibliography.md"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{_safe_filename(run_id)}-bibliography.md"'
+        },
     )
 
 
@@ -650,6 +652,15 @@ async def delete_report(
             pass
     # Delete the report row + its run-scoped rows.
     await backend.delete_report(run_id)
+    # Cascade: drop any shares of this report so they can't dangle (dead
+    # "Shared with me" cards + permanent 404s + cap slots held forever — F4).
+    store = getattr(request.app.state, "accounts_store", None)
+    user = getattr(request.state, "user", None)
+    if store is not None and user is not None:
+        try:
+            await store.delete_shares_for_run(user.user_id, run_id)
+        except Exception as e:
+            logger.warning("share cleanup failed for %s: %s", run_id, e)
     # Clean up the report's own output artifact (report PDF / markdown) when no
     # other report still references it — delete_report deliberately keeps
     # artifacts, so without this the report's own artifact leaks forever.

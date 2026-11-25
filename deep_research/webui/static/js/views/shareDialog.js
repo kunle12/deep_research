@@ -136,9 +136,51 @@ export function openShareDialog(report) {
 
   function shareRow(s) {
     const grantsEl = el("div", { class: "share-grants" });
-    for (const email of s.grants) {
-      grantsEl.append(el("span", { class: "tag", text: email }));
+    for (const g of s.grants) {
+      grantsEl.append(
+        el("span", { class: "tag" },
+          g.email,
+          el("button", {
+            class: "linklike",
+            type: "button",
+            text: " ×",
+            title: `Remove access for ${g.email}`,
+            onclick: () => guard(async () => {
+              await removeShareGrant(s.share_id, g.user_id);
+              drawWithNewLink(null);
+            }),
+          })),
+      );
     }
+    if (!s.grants.length) {
+      grantsEl.append(el("span", { text: "Link only" }));
+    }
+    const addInput = el("input", {
+      class: "text-input",
+      type: "text",
+      placeholder: "Add people by email, comma-separated",
+      autocomplete: "off",
+    });
+    const addRow = el(
+      "div",
+      { class: "share-add-row" },
+      addInput,
+      el("button", {
+        class: "btn",
+        type: "button",
+        text: "Add",
+        onclick: () => guard(async () => {
+          const emails = addInput.value
+            .split(/[,\s]+/)
+            .map((x) => x.trim())
+            .filter(Boolean);
+          if (!emails.length) return;
+          await addShareGrants(s.share_id, emails);
+          addInput.value = "";
+          drawWithNewLink(null);
+        }),
+      }),
+    );
     return el(
       "div",
       { class: "share-row" },
@@ -148,9 +190,9 @@ export function openShareDialog(report) {
         el("div", { class: "share-row-meta" },
           el("span", { text: `Created ${formatDate(s.created_at)}` }),
           s.expires_at ? el("span", { text: ` · expires ${formatDate(s.expires_at)}` }) : null,
-          s.revoked_at ? el("span", { class: "badge", text: "revoked" }) : null,
         ),
-        grantsEl.childElementCount ? grantsEl : el("div", { class: "share-grants", text: "Link only" }),
+        grantsEl,
+        addRow,
       ),
       el(
         "div",

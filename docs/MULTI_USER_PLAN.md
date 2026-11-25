@@ -409,3 +409,8 @@ only**, **view-only** (no copy/import).
   rotate), a **Shared with me** view (`#/shared`), and read-only report
   rendering for both access paths (`#/shared/<id>`, `#/share/<token>`) with
   all mutation affordances hidden.
+- Post-review hardening (2026-11-25, see implementation log): report deletion
+  cascades share removal; disabled owners' shares die everywhere; malformed
+  grantee emails map to 422; rotate-vs-revoke race returns 404; self-grants
+  filtered; grant rows carry `user_id` for per-grantee removal from the
+  dialog; citation `local_*` links stripped from shared payloads.

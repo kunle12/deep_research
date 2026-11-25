@@ -56,14 +56,14 @@ export function renderSharedByGrant(root, shareId) {
     const mine = items.find((i) => i.share_id === shareId);
     return { report, banner: `Shared by ${mine ? mine.owner_email : "another account"} — read only`, back: { href: "#/shared", label: "← Shared with me" } };
   });
-  return renderReport(root, null, { loader });
+  return renderReport(root, null, { loader, mutate: false });
 }
 
 export function renderSharedByToken(root, token) {
   const loader = getShareByToken(token).then((report) => ({
     report,
     banner: "Shared link — read only",
-    back: null,
+    back: null, // deliberate: no back link on anonymous capability views
   }));
-  return renderReport(root, null, { loader });
+  return renderReport(root, null, { loader, mutate: false });
 }

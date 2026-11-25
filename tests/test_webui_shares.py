@@ -205,7 +205,12 @@ def test_named_grant_roundtrip_and_isolation(tmp_path, captured_sender):
         )
         assert r.status_code == 201, r.text
         share_id = r.json()["share_id"]
-        assert r.json()["grants"] == ["colleague@example.com"]  # normalized
+        # Grants carry user_id + email (F5): the SPA needs the id to remove a
+        # grantee, and the email is normalized.
+        grants = r.json()["grants"]
+        assert len(grants) == 1
+        assert grants[0]["email"] == "colleague@example.com"
+        assert len(grants[0]["user_id"]) == 32
         client.post("/api/auth/logout")
 
         # Grantee signs in (already registered): sees it under "Shared with me".
@@ -356,3 +361,181 @@ def test_share_unknown_grantee_and_missing_run(tmp_path, captured_sender):
         assert "register first" in r.json()["detail"]
         # Nothing was created for the failed request.
         assert client.get("/api/shares").json() == []
+
+
+def test_deleting_report_cascades_shares(tmp_path, captured_sender):
+    """Report deletion drops its shares everywhere (F4): link dead, grants gone."""
+    root = tmp_path
+    cfg = _multi_config(root)
+    app = create_app(config_path=str(cfg))
+    with TestClient(app) as client:
+        owner_uid = _register_and_login(client, captured_sender, "owner@example.com")
+        client.post("/api/auth/logout")
+        _seed_owner_library(root, owner_uid)
+        # Colleague must exist before the grant.
+        _register_and_login(client, captured_sender, "colleague@example.com")
+        client.post("/api/auth/logout")
+        client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.com", "password": "correct horse battery"},
+        )
+        created = client.post(
+            "/api/shares",
+            json={"run_id": "owner_run_1", "with_emails": ["colleague@example.com"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ).json()
+        token, share_id = created["token"], created["share_id"]
+        assert client.get(f"/api/share/{token}").status_code == 200
+
+        # Owner deletes the report.
+        r = client.delete(
+            "/api/reports/owner_run_1?confirm=true",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert r.status_code == 200
+
+        # The share is gone from every path: link, owner list, grantee list.
+        assert client.get(f"/api/share/{token}").status_code == 404
+        assert client.get("/api/shares").json() == []
+        client.post("/api/auth/logout")
+        client.post(
+            "/api/auth/login",
+            json={"email": "colleague@example.com", "password": "correct horse battery"},
+        )
+        assert client.get("/api/shared").json() == []
+        assert client.get(f"/api/shared/{share_id}").status_code == 404
+
+
+def test_self_share_excluded_from_shared_with_me(tmp_path, captured_sender):
+    """Sharing with yourself is a no-op on both create and add-grantees (F8)."""
+    root = tmp_path
+    cfg = _multi_config(root)
+    app = create_app(config_path=str(cfg))
+    with TestClient(app) as client:
+        owner_uid = _register_and_login(client, captured_sender, "owner@example.com")
+        client.post("/api/auth/logout")
+        _seed_owner_library(root, owner_uid)
+        client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.com", "password": "correct horse battery"},
+        )
+        r = client.post(
+            "/api/shares",
+            json={"run_id": "owner_run_1", "with_emails": ["owner@example.com"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert r.status_code == 201
+        assert r.json()["grants"] == []
+        # Adding yourself to an existing share is also a no-op.
+        r2 = client.post(
+            f"/api/shares/{r.json()['share_id']}/grants",
+            json={"emails": ["owner@example.com"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert r2.status_code == 200
+        assert r2.json()["grants"] == []
+        assert client.get("/api/shared").json() == []
+
+
+def test_rotate_after_revoke_is_404(tmp_path, captured_sender):
+    """Rotate vs revoke race: rotating a deleted share must 404 (F10)."""
+    root = tmp_path
+    cfg = _multi_config(root)
+    app = create_app(config_path=str(cfg))
+    with TestClient(app) as client:
+        owner_uid = _register_and_login(client, captured_sender, "owner@example.com")
+        client.post("/api/auth/logout")
+        _seed_owner_library(root, owner_uid)
+        client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.com", "password": "correct horse battery"},
+        )
+        created = client.post(
+            "/api/shares",
+            json={"run_id": "owner_run_1"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ).json()
+        client.delete(
+            f"/api/shares/{created['share_id']}",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        r = client.post(
+            f"/api/shares/{created['share_id']}/rotate",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert r.status_code == 404
+
+
+def test_disabled_owner_shares_die(tmp_path, captured_sender):
+    """Disabling the owner account kills its outgoing shares everywhere (F14)."""
+    root = tmp_path
+    cfg = _multi_config(root)
+    app = create_app(config_path=str(cfg))
+    with TestClient(app) as client:
+        owner_uid = _register_and_login(client, captured_sender, "owner@example.com")
+        client.post("/api/auth/logout")
+        _seed_owner_library(root, owner_uid)
+        _register_and_login(client, captured_sender, "colleague@example.com")
+        client.post("/api/auth/logout")
+        client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.com", "password": "correct horse battery"},
+        )
+        created = client.post(
+            "/api/shares",
+            json={"run_id": "owner_run_1", "with_emails": ["colleague@example.com"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ).json()
+        assert client.get(f"/api/share/{created['token']}").status_code == 200
+
+        async def _disable():
+            from deep_research.accounts.store import AccountStore
+
+            store = AccountStore(root / "registry.db")
+            await store.connect()
+            try:
+                await store.set_user_status(owner_uid, "disabled")
+            finally:
+                await store.close()
+
+        asyncio.run(_disable())
+
+        # Link path and grant path are both dead; grantee listing is empty.
+        assert client.get(f"/api/share/{created['token']}").status_code == 404
+        client.post("/api/auth/logout")
+        client.post(
+            "/api/auth/login",
+            json={"email": "colleague@example.com", "password": "correct horse battery"},
+        )
+        assert client.get("/api/shared").json() == []
+        assert client.get(f"/api/shared/{created['share_id']}").status_code == 404
+
+
+def test_shared_payload_strips_viewer_scoped_citation_links(tmp_path, captured_sender):
+    """Citation local_* links are stripped from shared payloads (F6): they
+    point into the OWNER's library and 404/401 for everyone else."""
+    root = tmp_path
+    cfg = _multi_config(root)
+    app = create_app(config_path=str(cfg))
+    with TestClient(app) as client:
+        owner_uid = _register_and_login(client, captured_sender, "owner@example.com")
+        client.post("/api/auth/logout")
+        _seed_owner_library(root, owner_uid)
+        client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.com", "password": "correct horse battery"},
+        )
+        created = client.post(
+            "/api/shares",
+            json={"run_id": "owner_run_1"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ).json()
+
+        shared = client.get(f"/api/share/{created['token']}").json()
+        for c in shared["citations"]:
+            assert "local_pdf_url" not in c
+            assert "local_image_url" not in c
+            assert "local_artifact_id" not in c
+        # The shared report's own PDF stays reachable via the share asset.
+        assert shared["pdf_url"] == f"/api/share/{created['token']}/pdf"
+        assert client.get(f"/api/share/{created['token']}/pdf").content == b"%PDF-1.4 shared pdf"

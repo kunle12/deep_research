@@ -62,11 +62,11 @@ the `X-Requested-With` header like every other authenticated endpoint.
 
 | Method | Path | Notes |
 |--------|------|-------|
-| POST | `/api/shares` | Body `{run_id, with_emails?, expires_in_days?}`. Creates a share for one of the caller's reports. Returns `201 {share_id, run_id, title, token, url, grants}` — **`token` is shown once** (rotatable); `with_emails` grants named accounts (must be registered; email is resolved before the share row is created, so failures leave nothing behind). |
-| GET | `/api/shares` | The caller's outgoing shares (`title`, `grants` as emails, expiry/revocation) — never the raw token. |
-| DELETE | `/api/shares/{share_id}` | Revoke (owner only). Kills the link and all grants; `204`. |
-| POST | `/api/shares/{share_id}/rotate` | Mint a fresh link token; the old link stops working immediately. |
-| POST | `/api/shares/{share_id}/grants` | Body `{emails: [...]}` — add named grantees. |
+| POST | `/api/shares` | Body `{run_id, with_emails?, expires_in_days?}`. Creates a share for one of the caller's reports. Returns `201 {share_id, run_id, title, token, url, grants}` — **`token` is shown once** (rotatable); `with_emails` grants named accounts (must be registered; emails are resolved **before** the share row is created, so failures — including a malformed address, `422` — leave nothing behind). |
+| GET | `/api/shares` | The caller's outgoing shares (`title`, `grants` as `[{user_id, email}]`, expiry) — never the raw token. |
+| DELETE | `/api/shares/{share_id}` | Revoke (owner only). Hard-deletes the share and its grants; `204`. Deleting a report via the API also cascades its shares away. |
+| POST | `/api/shares/{share_id}/rotate` | Mint a fresh link token; the old link stops working immediately. `404` if the share was concurrently revoked. |
+| POST | `/api/shares/{share_id}/grants` | Body `{emails: [...]}` — add named grantees (self-grants ignored). Returns the updated share. |
 | DELETE | `/api/shares/{share_id}/grants/{user_id}` | Remove one grantee. |
 | GET | `/api/shared` | "Shared with me": live shares granted to the caller (`share_id`, `title`, `owner_email`). |
 | GET | `/api/shared/{share_id}` | Read-only report detail (same shape as `GET /api/reports/{run_id}`) served from the OWNER's library. Requires a grant. |
@@ -77,7 +77,18 @@ the `X-Requested-With` header like every other authenticated endpoint.
 Shared reads always open the owner's library server-side; a grantee can never
 write into it, and their own library is unaffected. `404` (not `403`) is
 returned for shares the caller does not own or hold a grant for, so share ids
-don't leak across accounts.
+don't leak across accounts. Disabling an owner account (CLI `users
+set-status … disabled`) immediately kills all of that account's outgoing
+shares. Citation-level `local_pdf_url`/`local_artifact_id` links are stripped
+from shared payloads (they resolve in the owner's library only); the shared
+report's own archived PDF remains downloadable via its share-scoped `pdf_url`.
+
+Capability-token note: the secret link token appears in the paths of the
+share API calls a recipient's browser makes (the page itself uses a `#`
+fragment, which is never sent to the server, and responses set
+`Referrer-Policy: no-referrer`), so it will appear in server/proxy access
+logs — inherent to capability-URL design. Rotate the token to invalidate a
+link that may have leaked.
 
 ### Health
 

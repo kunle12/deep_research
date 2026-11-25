@@ -90,6 +90,14 @@ async def _shared_report_detail(request: Request, share) -> ReportDetail:
         tag_rows = await backend.get_tags_for_artifact(report.artifact_id)
         tags = sorted(t.tag for t in tag_rows)
     has_pdf = _artifact_has_pdf(root, artifact)
+    citations = await _enrich_citations(backend, root, report.citations_json)
+    # `_enrich_citations` builds viewer-library URLs (`/api/artifacts/…`) for
+    # locally archived citation PDFs — those 404/401 for a share recipient
+    # (F6). Strip them: recipients keep the upstream link, and the shared
+    # report's own PDF stays reachable via the share-scoped `pdf_url`.
+    for c in citations:
+        for key in ("local_pdf_url", "local_image_url", "local_artifact_id"):
+            c.pop(key, None)
     return ReportDetail(
         run_id=report.run_id,
         started_at=report.started_at,
@@ -99,7 +107,7 @@ async def _shared_report_detail(request: Request, share) -> ReportDetail:
         classifier_rationale=report.classifier_rationale,
         iterations=report.iterations,
         markdown=report.markdown,
-        citations=await _enrich_citations(backend, root, report.citations_json),
+        citations=citations,
         tags=tags,
         artifact_id=report.artifact_id,
         has_pdf=has_pdf,
@@ -164,6 +172,11 @@ async def _shared_asset(request: Request, share, asset: ShareAsset) -> Response:
 # ---------- Owner management ----------
 
 
+class ShareGrantInfo(BaseModel):
+    user_id: str
+    email: str
+
+
 class ShareInfo(BaseModel):
     share_id: str
     run_id: str
@@ -171,7 +184,7 @@ class ShareInfo(BaseModel):
     created_at: str
     expires_at: str | None = None
     revoked_at: str | None = None
-    grants: list[str] = Field(default_factory=list)  # grantee emails
+    grants: list[ShareGrantInfo] = Field(default_factory=list)  # id + email (F5)
 
 
 @router.post("/shares", status_code=201)
@@ -187,8 +200,10 @@ async def create_share(body: ShareCreateRequest, request: Request):
     if report is None:
         raise HTTPException(status_code=404, detail="report not found")
 
-    emails = [normalize_email(e) for e in body.with_emails]
     try:
+        # Inside the try: normalize_email raises AuthError(422) on a bad
+        # address — it must map to HTTP, not surface as a 500 (F3).
+        emails = [normalize_email(e) for e in body.with_emails]
         created = await service.create_share(
             user.user_id,
             body.run_id,
@@ -198,7 +213,10 @@ async def create_share(body: ShareCreateRequest, request: Request):
         )
     except AuthError as exc:
         raise _map_auth_error(exc) from exc
-    grants = [g.email for g in await store.list_grants(created.share.share_id)]
+    grants = [
+        ShareGrantInfo(user_id=g.user_id, email=g.email)
+        for g in await store.list_grants(created.share.share_id)
+    ]
     return {
         "share_id": created.share.share_id,
         "run_id": created.share.run_id,
@@ -219,7 +237,10 @@ async def list_my_shares(request: Request) -> list[ShareInfo]:
     shares = await store.list_shares_for_owner(user.user_id)
     out: list[ShareInfo] = []
     for s in shares:
-        grants = [g.email for g in await store.list_grants(s.share_id)]
+        grants = [
+            ShareGrantInfo(user_id=g.user_id, email=g.email)
+            for g in await store.list_grants(s.share_id)
+        ]
         out.append(
             ShareInfo(
                 share_id=s.share_id,
@@ -257,11 +278,14 @@ async def rotate_share_token(share_id: str, request: Request):
     except AuthError as exc:
         raise _map_auth_error(exc) from exc
     new_token = secrets.token_urlsafe(32)
-    await store.rotate_share_token(share.share_id, hash_share_token(new_token))
+    # Check the rowcount: a concurrent revoke between resolve and update means
+    # the share is gone — 404 instead of minting a link to nothing (F10).
+    if not await store.rotate_share_token(share.share_id, hash_share_token(new_token)):
+        raise HTTPException(status_code=404, detail="share not found")
     return {"share_id": share.share_id, "token": new_token, "url": f"/#/share/{new_token}"}
 
 
-@router.post("/shares/{share_id}/grants", response_model=list[ShareInfo])
+@router.post("/shares/{share_id}/grants", response_model=ShareInfo)
 async def add_share_grants(share_id: str, body: ShareGrantsRequest, request: Request):
     user = get_user(request)
     if user is None:
@@ -272,18 +296,19 @@ async def add_share_grants(share_id: str, body: ShareGrantsRequest, request: Req
         await service.add_grantees(share.share_id, user.user_id, body.emails)
     except AuthError as exc:
         raise _map_auth_error(exc) from exc
-    grants = [g.email for g in await store.list_grants(share.share_id)]
-    return [
-        ShareInfo(
-            share_id=share.share_id,
-            run_id=share.run_id,
-            title=share.title,
-            created_at=share.created_at,
-            expires_at=share.expires_at,
-            revoked_at=share.revoked_at,
-            grants=grants,
-        )
+    grants = [
+        ShareGrantInfo(user_id=g.user_id, email=g.email)
+        for g in await store.list_grants(share.share_id)
     ]
+    return ShareInfo(
+        share_id=share.share_id,
+        run_id=share.run_id,
+        title=share.title,
+        created_at=share.created_at,
+        expires_at=share.expires_at,
+        revoked_at=share.revoked_at,
+        grants=grants,
+    )
 
 
 @router.delete("/shares/{share_id}/grants/{grantee_user_id}", status_code=204)
