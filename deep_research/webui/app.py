@@ -13,7 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -46,7 +46,8 @@ _CSP = (
     "font-src 'self'; "
     "object-src 'none'; "
     "base-uri 'self'; "
-    "form-action 'self'"
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
 )
 
 # Methods that can change state; with an authenticated session they must carry
@@ -277,6 +278,13 @@ def create_app(
         async def index() -> FileResponse:
             return FileResponse(_STATIC_DIR / "index.html", media_type="text/html")
 
+        # HEAD is what the console's app-status probe sends. Starlette does not
+        # add HEAD automatically for a GET route, and a 405 would paint the
+        # tile's status dot "off".
+        @app.head("/", include_in_schema=False)
+        async def index_head() -> Response:
+            return Response(status_code=200, media_type="text/html")
+
     return app
 
 
@@ -286,7 +294,14 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("deep_research.webui.app:app", host="127.0.0.1", port=8080)
+    # proxy_headers=False: trusted-header SSO uses request.client.host, so a
+    # loopback caller must not be able to rewrite it with X-Forwarded-For.
+    uvicorn.run(
+        "deep_research.webui.app:app",
+        host="127.0.0.1",
+        port=8080,
+        proxy_headers=False,
+    )
 
 
 if __name__ == "__main__":

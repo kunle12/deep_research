@@ -427,6 +427,8 @@ def test_index_and_static_assets(client):
     # Relative asset paths keep the SPA mountable under a path prefix
     # (the console serves it at /research/).
     assert 'src="static/js/app.js"' in r.text
+    # The console's app-status probe uses HEAD; a 405 would dot the tile off.
+    assert client.head("/").status_code == 200
 
     r = client.get("/static/js/app.js")
     assert r.status_code == 200

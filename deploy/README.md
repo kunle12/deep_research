@@ -93,6 +93,18 @@ systemctl --user disable --now deep-research-web.service   # before system insta
   systemd retries after SearXNG finishes booting.
 - **Secrets stay out of git.** Edit the env file directly; do not copy keys into
   the unit file.
+- **Trusted-header SSO (`pdl.auth.sso`).** The shipped units pass
+  `--no-proxy-headers` so `request.client.host` is the TCP peer. Uvicorn's
+  default trusts `X-Forwarded-For` from `127.0.0.1`; with the default, a local
+  user could claim to be the trusted proxy and forge `X-Auth-User`. If you
+  override the unit, keep the flag (or set `forwarded_allow_ips` explicitly
+  and never include loopback unless loopback really is the proxy). The public
+  shell/share paths in front of this app must also clear identity headers.
+- **Share tokens stay out of the journal.** The shipped units pass
+  `--no-access-log` because `/api/share/<token>` puts the capability in the
+  request path. Application and error logs remain; put request logging in the
+  reverse proxy and redact the share prefix there (`access_log off` for it).
+  If you re-enable uvicorn access logs, add a redacting formatter first.
 - **Updating the code.** `git pull`, then `uv sync` (or `uv sync --extra dev`),
   then `systemctl restart deep-research-web.service`. A venv rebuild while the
   service is running is fine; restart after the sync.

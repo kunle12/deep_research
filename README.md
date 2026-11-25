@@ -546,7 +546,10 @@ Any account can share an individual report, two ways:
 - **Secret link**: the report page's **Share** button mints a link
   (`…/#/share/<token>`) that anyone can open — no account needed. The token is
   shown once (rotate it to invalidate old copies), links can carry an expiry,
-  and revoking deletes access instantly.
+  and revoking deletes access instantly. The browser maps it to
+  `/api/share/<token>`, so keep that path out of access logs: the shipped
+  service units pass `--no-access-log`, and a reverse proxy should disable or
+  redact logging for `/api/share/`.
 - **Named accounts**: add colleagues by email; they see the report under
   **Shared with me** in their top bar. They must have registered (unknown
   emails are rejected with a hint rather than silently ignored).

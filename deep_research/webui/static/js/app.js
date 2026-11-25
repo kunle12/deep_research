@@ -125,7 +125,7 @@ async function refreshAuth() {
   const status = await getAuthStatus().catch(() => ({ authenticated: false }));
   authed = Boolean(status.authenticated);
   if (authed !== was) authEpoch += 1;
-  drawAccountChip(status.user || null);
+  drawAccountChip(status.user || null, status.workspace_url || "/");
   if (authed && !was) {
     // First sign-in this page load: pull the pieces boot() skipped.
     initStats();
@@ -313,7 +313,7 @@ function initNewResearch() {
 /* Account chip: shows the signed-in email + logout (multi_user), or the
  * owner's identity in single_user mode. Empty while unauthenticated. */
 function initAccount() {
-  const drawChip = (me) => {
+  const drawChip = (me, workspaceUrl = "/") => {
     authUser = me;
     setMode(me);
     const sharedLink = document.getElementById("nav-shared");
@@ -336,7 +336,7 @@ function initAccount() {
           class: "linklike",
           type: "button",
           text: "Workspace",
-          onclick: () => window.location.assign("/"),
+          onclick: () => window.location.assign(workspaceUrl),
         }),
       );
       return;
@@ -385,7 +385,7 @@ const drawAccountChip = initAccount();
 async function boot() {
   const status = await getAuthStatus().catch(() => ({ authenticated: false }));
   authed = Boolean(status.authenticated);
-  drawAccountChip(status.user || null);
+  drawAccountChip(status.user || null, status.workspace_url || "/");
   if (authed) {
     initStats();
     refreshSharedCount();
