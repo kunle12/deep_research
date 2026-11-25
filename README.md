@@ -551,8 +551,9 @@ Any account can share an individual report, two ways:
   service units pass `--no-access-log`, and a reverse proxy should disable or
   redact logging for `/api/share/`.
 - **Named accounts**: add colleagues by email; they see the report under
-  **Shared with me** in their top bar. They must have registered (unknown
-  emails are rejected with a hint rather than silently ignored).
+  **Shared with me** in their top bar. They must have an app account (opened
+  the app once under SSO, or created via the library CLI); unknown emails are
+  rejected with a hint rather than silently ignored.
 
 Sharing is strictly **read-only**: recipients see the report, its references,
 tags, glossary and the archived PDF, served from the owner's library — they
