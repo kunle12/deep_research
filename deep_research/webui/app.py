@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from deep_research.accounts.bootstrap import migrate_legacy_library
 from deep_research.accounts.emails import build_email_sender
 from deep_research.accounts.rows import UserRow
-from deep_research.accounts.service import SESSION_COOKIE, AuthService
+from deep_research.accounts.service import SESSION_COOKIE, AuthError, AuthService
 from deep_research.accounts.store import AccountStore
 from deep_research.config import AgentTopConfig
 from deep_research.library.storage import get_backend
@@ -57,6 +57,20 @@ _CSRF_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 # the victim into an attacker-controlled account).
 _CSRF_EXEMPT_PREFIX = "/api/auth/"
 _CSRF_LOGIN_PATH = "/api/auth/login"
+
+# Local credential endpoints. When SSO is `required`, a request that did not
+# arrive through the trusted proxy cannot use any of these — the app port is
+# not a second front door around the console.
+_SSO_LOCAL_CREDENTIAL_PATHS = frozenset(
+    {
+        "/api/auth/register",
+        "/api/auth/verify",
+        "/api/auth/resend-verification",
+        "/api/auth/login",
+        "/api/auth/request-password-reset",
+        "/api/auth/reset",
+    }
+)
 
 
 def _apply_security_headers(response) -> None:
@@ -188,10 +202,40 @@ def create_app(
         # -- Authentication & per-user library resolution (before handlers) --
         state = request.app.state
         auth: AuthService | None = getattr(state, "auth", None)
+        request.state.sso = False
         if auth is not None:
-            # multi_user: resolve the session cookie.
-            user = await auth.resolve_session(request.cookies.get(SESSION_COOKIE))
+            # multi_user: a trusted reverse proxy may assert the identity with
+            # a header (the console's guard). The header only counts from a
+            # configured proxy address; nginx overwrites any client-supplied
+            # value, so a browser cannot forge it. Otherwise fall back to the
+            # local session cookie unless SSO is required.
+            cfg = getattr(state, "config", None)
+            sso = cfg.pdl.auth.sso if cfg is not None and getattr(cfg, "pdl", None) else None
             path = request.url.path
+            sso_user: UserRow | None = None
+            if sso is not None and sso.enabled:
+                asserted = request.headers.get(sso.header)
+                client_host = request.client.host if request.client else ""
+                if asserted and client_host in sso.trusted_proxies:
+                    try:
+                        sso_user = await auth.provision_sso_identity(asserted)
+                    except AuthError as exc:
+                        response = JSONResponse({"detail": str(exc)}, status_code=exc.status)
+                        _apply_security_headers(response)
+                        return response
+                    request.state.sso = True
+                if sso.required and sso_user is None and path in _SSO_LOCAL_CREDENTIAL_PATHS:
+                    response = JSONResponse({"detail": "single sign-on required"}, status_code=403)
+                    _apply_security_headers(response)
+                    return response
+            if sso_user is not None:
+                user = sso_user
+            elif sso is not None and sso.enabled and sso.required:
+                # SSO is the only credential: a stale/local cookie must not
+                # become a second front door around the console.
+                user = None
+            else:
+                user = await auth.resolve_session(request.cookies.get(SESSION_COOKIE))
             csrf_exempt = path.startswith(_CSRF_EXEMPT_PREFIX) and path != _CSRF_LOGIN_PATH
             if (
                 user is not None

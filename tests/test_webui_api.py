@@ -424,7 +424,9 @@ def test_index_and_static_assets(client):
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     assert "Deep Research Library" in r.text
-    assert 'src="/static/js/app.js"' in r.text
+    # Relative asset paths keep the SPA mountable under a path prefix
+    # (the console serves it at /research/).
+    assert 'src="static/js/app.js"' in r.text
 
     r = client.get("/static/js/app.js")
     assert r.status_code == 200

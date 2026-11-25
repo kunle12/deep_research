@@ -13,10 +13,19 @@ const URL_START_RE = /https?:\/\//g;
 const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 export function safeUrl(url, base) {
+  // Resolve app-relative paths against the document base, not the origin
+  // root: the SPA is mounted at /research/ behind the console. Stripping the
+  // leading slash is what keeps "/api/…" inside the mount; absolute URLs and
+  // hash routes are unaffected.
   const origin =
-    base ?? (typeof window !== "undefined" ? window.location.origin : "http://localhost");
+    base ??
+    (typeof document !== "undefined"
+      ? document.baseURI
+      : "http://localhost/");
   try {
-    const parsed = new URL(url, origin);
+    const target =
+      typeof url === "string" && url.startsWith("/") ? url.slice(1) : url;
+    const parsed = new URL(target, origin);
     if (SAFE_PROTOCOLS.has(parsed.protocol)) return parsed.href;
   } catch {
     /* fall through */

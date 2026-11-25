@@ -495,6 +495,41 @@ Notes:
 - Postgres deployments get one schema per user (`library_<user_id>`) in the
   configured database; the account registry remains the local `registry.db`.
 
+#### Trusted-header SSO (console / reverse proxy)
+
+When the app sits behind an authenticating reverse proxy (the Kunle console's
+guard), the proxy can assert the signed-in email and skip the app's own login.
+The header is **only honoured from the configured proxy address**; nginx
+overwrites any client-supplied value:
+
+```yaml
+pdl:
+  auth:
+    mode: multi_user
+    owner_email: "you@example.com"
+    sso:
+      enabled: true
+      header: "X-Auth-User"
+      trusted_proxies: ["192.168.0.1"]   # the nginx host
+      auto_provision: true               # JIT-create the per-user library
+      required: true                     # disable local login/registration
+      workspace_url: "/"                 # account-chip "Workspace" link
+```
+
+- The asserted address is treated as verified. Existing accounts are linked by
+  normalized email; missing accounts are created active with no password;
+  `pending` accounts are activated; `disabled` accounts get **403**.
+- `required: true` ignores local session cookies and rejects
+  `/api/auth/login`, `/api/auth/register` and the reset endpoints, so a direct
+  connection to the app port is not a second front door. The account chip
+  shows **Workspace** (return to the console) instead of a local **Sign out**.
+- With `required: false` the header is additive: a local password session
+  remains a fallback when the header is absent.
+- The SPA is mountable under a path prefix (`/research/`): API calls, share
+  links and exported assets resolve against the page's base directory.
+
+Reproduce with `tests/test_webui_sso.py`.
+
 #### Sharing research (view-only)
 
 Any account can share an individual report, two ways:

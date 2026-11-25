@@ -73,6 +73,10 @@ class SessionUserResponse(BaseModel):
     email: str
     display_name: str | None = None
     auth_mode: str
+    # True when this request was authenticated by the trusted reverse proxy
+    # rather than a local password session (the SPA shows "Workspace" instead
+    # of a local "Sign out").
+    sso: bool = False
 
 
 class AuthStatusResponse(BaseModel):
@@ -81,6 +85,8 @@ class AuthStatusResponse(BaseModel):
     authenticated: bool
     auth_mode: str
     user: SessionUserResponse | None = None
+    sso_required: bool = False
+    workspace_url: str | None = None
 
 
 class RegisterResponse(BaseModel):
@@ -88,7 +94,9 @@ class RegisterResponse(BaseModel):
     email: str
 
 
-def _user_response(user: UserRow | None, *, auth_mode: str) -> SessionUserResponse:
+def _user_response(
+    user: UserRow | None, *, auth_mode: str, sso: bool = False
+) -> SessionUserResponse:
     if user is None:  # pragma: no cover — callers re-read the row after minting
         raise HTTPException(status_code=500, detail="account disappeared")
     return SessionUserResponse(
@@ -96,6 +104,7 @@ def _user_response(user: UserRow | None, *, auth_mode: str) -> SessionUserRespon
         email=user.email,
         display_name=user.display_name,
         auth_mode=auth_mode,
+        sso=sso,
     )
 
 
@@ -169,7 +178,7 @@ async def me(request: Request) -> SessionUserResponse:
     if user is None:
         raise HTTPException(status_code=401, detail="authentication required")
     mode = getattr(request.app.state, "auth_mode", "single_user")
-    return _user_response(user, auth_mode=mode)
+    return _user_response(user, auth_mode=mode, sso=bool(getattr(request.state, "sso", False)))
 
 
 @router.get("/status", response_model=AuthStatusResponse)
@@ -177,10 +186,22 @@ async def status(request: Request) -> AuthStatusResponse:
     """Auth probe that never 401s — used by the SPA's boot sequence."""
     user = get_user(request)
     mode = getattr(request.app.state, "auth_mode", "single_user")
+    cfg = getattr(request.app.state, "config", None)
+    sso = cfg.pdl.auth.sso if cfg is not None and getattr(cfg, "pdl", None) else None
+    sso_on = bool(sso is not None and sso.enabled)
     if user is None:
-        return AuthStatusResponse(authenticated=False, auth_mode=mode)
+        return AuthStatusResponse(
+            authenticated=False,
+            auth_mode=mode,
+            sso_required=bool(sso_on and sso.required),
+            workspace_url=sso.workspace_url if sso_on else None,
+        )
     return AuthStatusResponse(
-        authenticated=True, auth_mode=mode, user=_user_response(user, auth_mode=mode)
+        authenticated=True,
+        auth_mode=mode,
+        user=_user_response(user, auth_mode=mode, sso=bool(getattr(request.state, "sso", False))),
+        sso_required=bool(sso_on and sso.required),
+        workspace_url=sso.workspace_url if sso_on else None,
     )
 
 

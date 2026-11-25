@@ -8,6 +8,7 @@
 import { el, clear } from "../dom.js";
 import {
   addShareGrants,
+  appHref,
   createShare,
   listMyShares,
   removeShareGrant,
@@ -114,14 +115,14 @@ export function openShareDialog(report) {
           { class: "share-link-box" },
           el("div", { class: "field-label", text: "Share link (copy it now — shown once; you can rotate it later):" }),
           el("div", { class: "share-link-row" },
-            el("input", { class: "text-input", type: "text", readonly: true, value: `${window.location.origin}${created.url}` }),
+            el("input", { class: "text-input", type: "text", readonly: true, value: appHref(created.url) }),
             el("button", {
               class: "btn",
               type: "button",
               text: "Copy",
               onclick: (event) => {
                 navigator.clipboard
-                  ?.writeText(`${window.location.origin}${created.url}`)
+                  ?.writeText(appHref(created.url))
                   .then(() => { event.target.textContent = "Copied!"; })
                   .catch(() => {});
               },

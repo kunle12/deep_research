@@ -387,6 +387,38 @@ class AuthService:
         await self._store.revoke_user_sessions(user.user_id)
         return user
 
+    async def provision_sso_identity(self, raw_email: str) -> UserRow:
+        """Resolve the account asserted by a trusted reverse proxy.
+
+        The proxy (the console's guard/nginx) is the authentication boundary,
+        so the asserted address is treated as verified. Existing accounts are
+        linked by normalized email; a pending account is activated because the
+        proxy just proved the address; a missing account is JIT-provisioned as
+        active with no local password. Disabled accounts are refused.
+        """
+        email = normalize_email(raw_email)
+        user = await self._store.get_user_by_email(email)
+        if user is None:
+            if not self._cfg.sso.auto_provision:
+                raise AuthError("account is not provisioned for single sign-on", 403)
+            try:
+                user = await self._store.create_user(email, display_name=None, status="active")
+            except DuplicateEmailError:
+                # Concurrent first request (or a CLI create) won the insert.
+                user = await self._store.get_user_by_email(email)
+                if user is None:
+                    raise AuthError("account could not be provisioned", 409) from None
+            else:
+                logger.info("provisioned SSO account %s (%s)", email, user.user_id)
+        if user.status == "pending":
+            await self._store.set_user_status(user.user_id, "active")
+            refreshed = await self._store.get_user(user.user_id)
+            if refreshed is not None:
+                user = refreshed
+        if user.status != "active":
+            raise AuthError("account is disabled", 403)
+        return user
+
     async def provision_owner(self, raw_email: str, *, display_name: str = "Owner") -> UserRow:
         """Get-or-create the active owner account (single_user + migration)."""
         email = normalize_email(raw_email) if raw_email else "owner@localhost"

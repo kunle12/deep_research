@@ -493,6 +493,34 @@ class PDLAuthSMTPConfig(BaseModel):
     from_address: str = ""
 
 
+class PDLAuthSSOConfig(BaseModel):
+    """Trusted-reverse-proxy SSO (the console's guard identity).
+
+    When enabled, a request may assert its identity with ``header`` instead of
+    a password cookie. The header is only honoured from ``trusted_proxies``
+    (exact source IPs, e.g. the nginx host); a browser cannot forge it because
+    nginx overwrites the header on the way in. Accounts are linked by
+    normalized email and auto-provisioned on first sight (docs/MULTI_USER_PLAN
+    §3: verified-email linking).
+
+    ``required`` makes the header the only credential: cookie sessions and the
+    password/registration endpoints are ignored, so a direct connection to the
+    app port cannot bypass the console. Leave it false for a local fallback.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    header: str = "X-Auth-User"
+    # Exact host strings compared with request.client.host. Empty => no source
+    # is trusted and the header is ignored (fail closed).
+    trusted_proxies: list[str] = Field(default_factory=list)
+    auto_provision: bool = True
+    required: bool = False
+    # Where the SPA's account chip sends an SSO user ("Workspace").
+    workspace_url: str = "/"
+
+
 class PDLAuthConfig(BaseModel):
     """Library account/auth settings.
 
@@ -513,6 +541,7 @@ class PDLAuthConfig(BaseModel):
     # accounts are created out-of-band via the library CLI.
     registration: Literal["open", "closed"] = "open"
     smtp: PDLAuthSMTPConfig = Field(default_factory=PDLAuthSMTPConfig)
+    sso: PDLAuthSSOConfig = Field(default_factory=PDLAuthSSOConfig)
 
 
 class PDLRefreshConfig(BaseModel):

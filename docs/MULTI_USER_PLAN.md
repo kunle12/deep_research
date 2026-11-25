@@ -105,6 +105,14 @@ log so a single admin user can still bootstrap.
 
 ### SSO-ready identity model (future custom SSO / unified login)
 
+> **Implemented 25 Nov 2026 (trusted-header variant):** the console's guard
+> asserts `X-Auth-User` through nginx; `pdl.auth.sso` enables the trusted-proxy
+> path, JIT-provisions by normalized email, and can make SSO the only
+> credential (`required: true`). See README "Trusted-header SSO" and
+> `tests/test_webui_sso.py`. The `auth_identities` migration below was not
+> needed for this variant — the proxy asserts a verified email, and user_id
+> remains the storage anchor.
+
 Password login is deliberately structured as "just the first credential
 source", so the later custom SSO integration is additive:
 

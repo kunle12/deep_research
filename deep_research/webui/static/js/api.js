@@ -1,11 +1,28 @@
 /* Thin fetch wrapper for the library API. */
 
+// The SPA can be mounted under a path prefix (the console serves it at
+// /research/), so resolve every request against the page's base directory,
+// not the origin root. Hash routes never change the pathname.
+export const APP_BASE = new URL("./", document.baseURI);
+
+function apiUrl(path) {
+  return new URL(String(path).replace(/^\//, ""), APP_BASE);
+}
+
+// Absolute URL for a server-supplied local path or hash route; external URLs
+// pass through unchanged. Used for share links and exported artifacts.
+export function appHref(path) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return path;
+  if (String(path).startsWith("#")) return new URL(path, APP_BASE).href;
+  return apiUrl(path).href;
+}
+
 // Routes that may legitimately return 401 without triggering a login redirect.
 const AUTH_ROUTES = /^#\/(login|verify|reset)\b/;
 const PUBLIC_API = /^\/api\/auth\//;
 
 export async function request(path, { params = {}, method = "GET", body, headers = {} } = {}) {
-  const url = new URL(path, window.location.origin);
+  const url = apiUrl(path);
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null || value === "") continue;
     url.searchParams.set(key, String(value));
@@ -165,7 +182,7 @@ export function abandonJob(jobId) {
 }
 
 export function researchStreamUrl(jobId) {
-  return `/api/research/jobs/${encodeURIComponent(jobId)}/stream`;
+  return apiUrl(`/api/research/jobs/${encodeURIComponent(jobId)}/stream`).href;
 }
 
 /* ---------- Account / auth ---------- */

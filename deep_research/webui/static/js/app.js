@@ -223,7 +223,9 @@ function setMode(me) {
     ? "AWAITING SIGN-IN"
     : me.auth_mode === "single_user"
       ? "SINGLE-USER · LOCAL"
-      : "MULTI-USER · SECURE";
+      : me.sso
+        ? "WORKSPACE · SSO"
+        : "MULTI-USER · SECURE";
   if (telemetryMode) telemetryMode.textContent = label;
 }
 
@@ -322,6 +324,21 @@ function initAccount() {
     }
     if (me.auth_mode === "single_user") {
       accountEl.replaceChildren(el("span", { class: "account-email", text: me.email, title: "single-user mode" }));
+      return;
+    }
+    if (me.sso) {
+      // The console's guard authenticated this request. A local sign-out
+      // would be undone by the next header, so return to the workspace where
+      // the real sign-out lives.
+      accountEl.replaceChildren(
+        el("span", { class: "account-email", text: me.email, title: "workspace session" }),
+        el("button", {
+          class: "linklike",
+          type: "button",
+          text: "Workspace",
+          onclick: () => window.location.assign("/"),
+        }),
+      );
       return;
     }
     accountEl.replaceChildren(
