@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDL mockup — Report (owner)</title>
+<link rel="stylesheet" href="fonts.css"><link rel="stylesheet" href="lcars.css"><script src="frame.js"></script>
+</head>
+<body data-readout="12 REPORTS · 91 ARTIFACTS" data-who="XUN@GMAIL.COM · SIGN OUT">
+<div class="screen">
+  <div class="pbar"><i style="width:38%"></i></div>
+
+  <div class="hdr" style="align-items:flex-start;border-bottom:none;margin-bottom:2px;padding-bottom:8px">
+    <div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <button class="pill sm">← Library</button>
+        <span class="kicker">Deep path · 2026-11-20 · 9 iterations · 23 references</span>
+      </div>
+      <h1 class="rtitle">Vision-Language-Action Models: A State-of-the-Art Review
+        <span class="qbadge" title="Show original research query">
+          <svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2.4" d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-4.35-4.35"/></svg>
+        </span>
+      </h1>
+      <div class="qpop" style="margin-top:10px">
+        <div class="k">Original query</div>
+        <div class="v">Survey recent vision-language-action architectures, compare them on generalization
+          benchmarks, and summarize the open challenges for real-world deployment.</div>
+      </div>
+      <div class="ractions">
+        <button class="pill sm">Rename</button>
+        <button class="pill sm">Add source</button>
+        <button class="pill sm amber">Share</button>
+        <button class="pill sm sky">Open PDF</button>
+        <button class="pill sm ghost">Download .md</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="rlayout">
+    <nav class="toc">
+      <div class="glabel sky">Contents</div>
+      <ul>
+        <li><button>1 · Introduction</button></li>
+        <li><button>2 · Background</button></li>
+        <li><button class="lvl3">2.1 · Tokenizing actions</button></li>
+        <li><button>3 · Architectures</button></li>
+        <li><button class="lvl3">3.1 · RT-2 lineage</button></li>
+        <li><button class="lvl3">3.2 · OpenVLA &amp; beyond</button></li>
+        <li><button>4 · Benchmarks</button></li>
+        <li><button>5 · Open challenges</button></li>
+        <li><button>6 · Conclusion</button></li>
+      </ul>
+    </nav>
+
+    <article class="article">
+      <div class="md">
+        <h2>2 · Background</h2>
+        <p>Vision-language-action models condition a policy on camera observations and a natural-language
+          instruction, emitting robot actions as tokens. The paradigm treats control as a continuation of
+          language modelling: the same transformer that completes a sentence completes a trajectory.</p>
+        <h3>2.1 · Tokenizing actions</h3>
+        <p>Continuous actions are discretized into bins or encoded via VQ-VAE codebooks. Token granularity
+          trades off dexterity against sequence length — finer bins improve precision but dilute attention
+          over long horizons.</p>
+        <blockquote>The key insight of the RT-2 lineage is that web-scale vision-language pretraining
+          transfers: manipulation benefits from Internet-scale semantics without any robot data being
+          web-scale itself.</blockquote>
+        <ul>
+          <li><strong>Co-training</strong> on mixed web + robot corpora outperforms robot-only training at equal scale.</li>
+          <li>Action chunks reduce compounding error; the optimal chunk length is task dependent.</li>
+          <li>Backbone choice matters less than data curation — see <code>SIMPLER</code> ablations.</li>
+        </ul>
+        <h2>3 · Architectures</h2>
+        <p>Three families dominate: autoregressive action-token models (RT-2, OpenVLA),
+          diffusion heads over continuous action windows, and hybrid systems that pair a
+          frozen VLM encoder with a small learned controller. The trade-off is latency versus
+          expressiveness — token models reuse the whole language stack, diffusion heads
+          recover smooth trajectories but need their own sampling budget.</p>
+        <h3>3.2 · OpenVLA &amp; beyond</h3>
+        <p>OpenVLA showed a 7B open checkpoint rivals closed systems on the standard
+          manipulation suite, at the cost of inference speed. Follow-up work compresses the
+          policy with action-chunk decoding and speculative sampling, closing most of the gap.</p>
+        <h2>4 · Benchmarks</h2>
+        <p>Generalization is measured along three axes: unseen objects, unseen instructions and
+          unseen embodiments. Most reported gains concentrate on the first two; cross-embodiment
+          transfer remains the weak spot, and evaluation harnesses are not yet standardized.</p>
+        <blockquote>Numbers move fast; methodology moves slowly. Treat cross-paper comparisons
+          with the same skepticism you would apply to any benchmark without a shared harness.</blockquote>
+      </div>
+    </article>
+
+    <aside style="display:flex;flex-direction:column;gap:14px">
+      <div class="panel">
+        <div class="glabel sky">References (23)</div>
+        <div class="refcard">
+          <h4>RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control</h4>
+          <p class="rm">Brohan et al. · 2023 · arXiv:2307.15818</p>
+          <div class="snip">We demonstrate that by transferring visual-semantic knowledge from web-scale
+            vision-language pretraining to robot control, policies improve dramatically on emergent
+            skill and semantic reasoning…</div>
+          <div class="ra">
+            <button class="pill sm sky">arXiv PDF</button>
+            <button class="pill sm ghost">DOI</button>
+            <button class="pill sm ghost">URL</button>
+            <button class="pill sm ghost">Get PDF</button>
+            <button class="pill sm red">Delete</button>
+          </div>
+        </div>
+        <div class="refcard">
+          <h4>OpenVLA: An Open-Source Vision-Language-Action Model</h4>
+          <p class="rm">Kim et al. · 2024 · arXiv:2406.09246</p>
+          <div class="ra">
+            <button class="pill sm sky">arXiv PDF</button>
+            <button class="pill sm ghost">DOI</button>
+            <button class="pill sm ghost">URL</button>
+            <button class="pill sm red">Delete</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="pill sm ghost">Download .bib</button>
+          <button class="pill sm ghost">Bibliography .md</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="glabel mauve">Glossary (4)</div>
+        <div class="gloss">
+          <div class="term">VLA <span class="badge b-academic">acronym</span></div>
+          <div class="desc">Vision-Language-Action — policy class mapping images + instructions to actions.</div>
+        </div>
+        <div class="gloss">
+          <div class="term">Action chunking</div>
+          <div class="desc">Predicting a window of future actions per step to reduce compounding error.</div>
+        </div>
+        <div style="margin-top:8px"><button class="pill sm ghost">Glossary .md</button></div>
+      </div>
+
+      <div class="panel">
+        <div class="glabel lilac">Tags</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+          <span class="chip">vision-language-models <button title="Remove tag">×</button></span>
+          <span class="chip">robotics <button title="Remove tag">×</button></span>
+        </div>
+        <div style="display:flex;gap:6px">
+          <input class="tinput" style="height:30px;font-size:12px" placeholder="Add a tag…">
+          <button class="pill sm">Add</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="glabel marigold">Merge with another report</div>
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <input class="tinput" style="height:30px;font-size:12px" placeholder="Search reports to merge…">
+          <button class="pill sm">Add</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+          <span class="chip">Diffusion Policy Survey <button>×</button></span>
+        </div>
+        <input class="tinput" style="height:30px;font-size:12px;margin-bottom:10px" placeholder="New merged name (optional)">
+        <label style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:9px;
+          letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:12px">
+          <input type="checkbox"> Delete source reports</label>
+        <button class="pill sm lilac">Merge now</button>
+      </div>
+
+      <div class="panel" style="box-shadow:0 0 0 1px rgba(204,102,102,.35)">
+        <div class="glabel red">Danger zone</div>
+        <button class="pill sm red">Delete report</button>
+      </div>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

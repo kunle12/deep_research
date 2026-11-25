@@ -393,6 +393,15 @@ attach it to this research — runs as a tracked job); and a **Merge with…**
 panel to combine it with other reports into one unified research (optional new
 name, optional delete sources).
 
+The UI uses an **LCARS (Okudagram)** theme: light by default with a
+persisted dark mode, a live clock, a bottom telemetry band whose last segment
+is the Shared-with-me shortcut (with its live count), and a responsive mobile
+layout (panes stack, dialogs go full-width). Every dialog — new research,
+job progress, share, rename, add source and destructive confirmations — is
+themed. The access panel reserves an `SSO` slot for the planned single sign-on
+integration. Design notes and mockups: [`docs/UI_RESTYLE.md`](docs/UI_RESTYLE.md)
+and [`docs/ui-mockups-lcars/`](docs/ui-mockups-lcars/README.md).
+
 Or run the server directly:
 
 ```bash

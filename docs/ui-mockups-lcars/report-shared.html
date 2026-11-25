@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDL mockup — Report shared with me (read-only)</title>
+<link rel="stylesheet" href="fonts.css"><link rel="stylesheet" href="lcars.css"><script src="frame.js"></script>
+</head>
+<body data-readout="SHARED ACCESS · VIEW ONLY" data-who="BOB@EXAMPLE.COM · SIGN OUT">
+<div class="screen">
+  <div class="pbar"><i style="width:22%"></i></div>
+
+  <div class="hdr" style="align-items:flex-start;border-bottom:none;margin-bottom:2px;padding-bottom:8px">
+    <div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <button class="pill sm">← Shared with me</button>
+        <span class="strip sky">Shared by wang.xun@gmail.com — read only</span>
+      </div>
+      <h1 class="rtitle">Vision-Language-Action Models: A State-of-the-Art Review
+        <span class="qbadge" title="Show original research query">
+          <svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2.4" d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-4.35-4.35"/></svg>
+        </span>
+      </h1>
+      <div class="rmeta"><span class="badge b-deep">deep</span><span>2026-11-20</span><span>9 iterations</span><span>23 references</span></div>
+      <div class="ractions">
+        <button class="pill sm sky">Open PDF</button>
+        <button class="pill sm ghost">Download .md</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="rlayout">
+    <nav class="toc">
+      <div class="glabel sky">Contents</div>
+      <ul>
+        <li><button>1 · Introduction</button></li>
+        <li><button>2 · Background</button></li>
+        <li><button class="lvl3">2.1 · Tokenizing actions</button></li>
+        <li><button>3 · Architectures</button></li>
+        <li><button>4 · Benchmarks</button></li>
+        <li><button>5 · Open challenges</button></li>
+      </ul>
+    </nav>
+
+    <article class="article">
+      <div class="md">
+        <h2>2 · Background</h2>
+        <p>Vision-language-action models condition a policy on camera observations and a natural-language
+          instruction, emitting robot actions as tokens. The paradigm treats control as a continuation of
+          language modelling.</p>
+        <h3>2.1 · Tokenizing actions</h3>
+        <p>Continuous actions are discretized into bins or encoded via VQ-VAE codebooks. Token granularity
+          trades off dexterity against sequence length.</p>
+        <blockquote>The key insight of the RT-2 lineage is that web-scale vision-language pretraining
+          transfers to manipulation without any robot data being web-scale itself.</blockquote>
+      </div>
+    </article>
+
+    <aside style="display:flex;flex-direction:column;gap:14px">
+      <div class="panel">
+        <div class="glabel sky">References (23)</div>
+        <div class="refcard">
+          <h4>RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control</h4>
+          <p class="rm">Brohan et al. · 2023 · arXiv:2307.15818</p>
+          <div class="ra">
+            <button class="pill sm sky">PDF</button>
+            <button class="pill sm ghost">DOI</button>
+            <button class="pill sm ghost">URL</button>
+          </div>
+        </div>
+        <div class="refcard">
+          <h4>OpenVLA: An Open-Source Vision-Language-Action Model</h4>
+          <p class="rm">Kim et al. · 2024 · arXiv:2406.09246</p>
+          <div class="ra">
+            <button class="pill sm sky">PDF</button>
+            <button class="pill sm ghost">DOI</button>
+            <button class="pill sm ghost">URL</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="glabel mauve">Glossary (4)</div>
+        <div class="gloss">
+          <div class="term">VLA</div>
+          <div class="desc">Vision-Language-Action — policy class mapping images + instructions to actions.</div>
+        </div>
+      </div>
+      <div class="empty" style="text-align:center;padding:6px 0">No tags · no merge · no danger zone — read-only share</div>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,46 @@
+/* Self-hosted typefaces for the console mockups.
+   Production serves the same woff2 from its own origin: the design forbids
+   third-party requests, so no CDN <link>. */
+
+/* UI text — variable, 100..900 */
+@font-face {
+  font-family: 'Saira';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(fonts/saira-var.woff2) format('woff2');
+}
+
+/* Display — ultra-compressed, for panel titles and the headline.
+   Reference face is Helvetica Ultra Compressed (Okuda, LCARS); this is the
+   closest libre stand-in. Licensing the real face is a one-line swap. */
+@font-face {
+  font-family: 'Saira Extra Condensed';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url(fonts/saira-extra-condensed-300.woff2) format('woff2');
+}
+@font-face {
+  font-family: 'Saira Extra Condensed';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(fonts/saira-extra-condensed-400.woff2) format('woff2');
+}
+
+/* Instrument readouts — stardate, codes, chip labels */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(fonts/ibm-plex-mono-400.woff2) format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(fonts/ibm-plex-mono-500.woff2) format('woff2');
+}

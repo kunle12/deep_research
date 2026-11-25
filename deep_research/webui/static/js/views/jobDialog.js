@@ -31,7 +31,6 @@ export function openJobDialog(jobId) {
   if (!job) return;
   if (current) current.close();
 
-  const overlay = el("div", { class: "modal-overlay jobdialog-overlay" });
   const badgeEl = el("span", { class: "badge" });
   const elapsedEl = el("span", { class: "jobdialog-elapsed" });
   const metaEl = el("div", { class: "jobdialog-meta" }, badgeEl, elapsedEl);
@@ -49,9 +48,12 @@ export function openJobDialog(jobId) {
     feedEl,
     actionsEl,
   );
-  overlay.append(dialog);
-
+  // openModal owns the overlay that is actually attached to the document; the
+  // dialog must land INSIDE it (appending to a detached overlay rendered
+  // nothing at all — the dialog silently never appeared).
   const modal = openModal({ onClose: cleanup });
+  modal.overlay.classList.add("jobdialog-overlay");
+  modal.overlay.append(dialog);
 
   let closed = false;
   let rendered = 0;

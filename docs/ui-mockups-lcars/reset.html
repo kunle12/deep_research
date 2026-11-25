@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDL mockup — Reset password</title>
+<link rel="stylesheet" href="fonts.css"><link rel="stylesheet" href="lcars.css"><script src="frame.js"></script>
+</head>
+<body data-readout="ACCOUNT RECOVERY · STARDATE 79887.5">
+<div class="screen" style="display:grid;place-items:center;overflow:hidden">
+  <div class="dotfield"></div>
+  <div class="panelcard" style="position:relative;z-index:2">
+    <div class="cap">ACCESS PANEL · RECOVERY <span class="dots"><i></i><i></i><i></i></span></div>
+    <div class="body">
+      <h2>Reset password</h2>
+      <p class="sub">Enter your email, request a reset token,<br>then set a new password.</p>
+      <div class="field"><label class="flabel">Email</label>
+        <input class="tinput" value="wang.xun@gmail.com"></div>
+      <div class="actions" style="margin:0 0 16px"><button class="pill lilac">Email me a reset token</button></div>
+      <div class="noticebox">If the account exists, a reset token was sent.<br>
+        Self-hosted without SMTP: check the server log.</div>
+      <div class="field" style="margin-top:12px"><label class="flabel">Reset token</label>
+        <input class="tinput mono" placeholder="Token from the reset email"></div>
+      <div class="field"><label class="flabel">New password · min 8 characters</label>
+        <input class="tinput" type="password" placeholder="••••••••••••"></div>
+      <div class="actions" style="margin-top:14px">
+        <button class="pill amber" style="flex:1;justify-content:center;height:46px">Set new password</button>
+      </div>
+      <p class="notice" style="text-align:center"><u>← back to sign in</u></p>
+    </div>
+    <div class="foot2"><span class="f1">Account recovery</span><span class="f2">Secure</span></div>
+  </div>
+</div>
+</body>
+</html>

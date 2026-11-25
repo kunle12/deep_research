@@ -214,7 +214,19 @@ function renderLoginCard(card, mode, params) {
     }
   };
 
-  card.append(title, form, alt);
+  // Email is the active method; SSO ships in a later release (kept visible so
+  // the access panel already has its slot).
+  const tabs = el(
+    "div",
+    { class: "auth-tabs" },
+    el("span", { class: "auth-tab auth-tab-active", text: "Email" }),
+    el("span", {
+      class: "auth-tab",
+      text: "SSO · soon",
+      title: "Single sign-on arrives in a later release",
+    }),
+  );
+  card.append(title, tabs, form, alt);
   if (step === "verify") showVerify({ lockEmail: false });
   else showSignin();
 }

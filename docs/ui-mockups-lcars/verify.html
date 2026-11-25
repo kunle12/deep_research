@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDL mockup — Verify email</title>
+<link rel="stylesheet" href="fonts.css"><link rel="stylesheet" href="lcars.css"><script src="frame.js"></script>
+</head>
+<body data-readout="AWAITING IDENTITY VERIFICATION · STARDATE 79887.5">
+<div class="screen" style="display:grid;place-items:center;overflow:hidden">
+  <div class="dotfield"></div>
+  <div class="panelcard" style="position:relative;z-index:2">
+    <div class="cap" style="--cap:var(--marigold);--cap-ink:var(--on-marigold)">ACCESS PANEL · VERIFICATION <span class="dots"><i></i><i></i><i></i></span></div>
+    <div class="body">
+      <h2>Verify your email</h2>
+      <p class="sub">One token stands between you and the library.</p>
+      <div class="field"><label class="flabel">Email</label>
+        <input class="tinput" value="bob@example.com" disabled></div>
+      <div class="field"><label class="flabel">Verification token</label>
+        <input class="tinput mono" placeholder="Paste the token from your email" value="8f3ac219c7e04d17"></div>
+      <div class="noticebox">Check your email for the token.<br>
+        Self-hosted without SMTP: it is printed in the server log. · <u>Resend token</u></div>
+      <div class="actions" style="margin-top:14px">
+        <button class="pill amber" style="flex:1;justify-content:center;height:46px">Verify &amp; sign in</button>
+      </div>
+      <p class="notice" style="text-align:center"><u>← back to sign in</u></p>
+    </div>
+    <div class="foot2"><span class="f1">Identity verification</span><span class="f2">Deck 01</span></div>
+  </div>
+</div>
+</body>
+</html>

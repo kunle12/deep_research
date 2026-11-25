@@ -8,7 +8,7 @@ import { renderSharedByGrant, renderSharedByToken, renderSharedList } from "./vi
 import { openResearchModal } from "./views/research.js";
 import { initTaskbar } from "./views/taskbar.js";
 import { restoreJobs } from "./jobs.js";
-import { getStats, getAuthStatus, logout } from "./api.js";
+import { getStats, getAuthStatus, listSharedWithMe, logout } from "./api.js";
 import { closeAllModals } from "./modal.js";
 
 const app = document.getElementById("app");
@@ -17,6 +17,13 @@ const themeBtn = document.getElementById("theme-toggle");
 const statsEl = document.getElementById("stats");
 const newResearchBtn = document.getElementById("new-research");
 const accountEl = document.getElementById("account");
+// Frame readouts (top-bar shared badge + bottom telemetry band).
+const sharedCount = document.getElementById("shared-count");
+const telemetryTags = document.getElementById("telemetry-tags");
+const telemetryMode = document.getElementById("telemetry-mode");
+let authUser = null;
+// Increments whenever the session identity changes; guards late responses.
+let authEpoch = 0;
 
 let currentCleanup = null;
 let currentRoute = { name: "list" };
@@ -79,6 +86,8 @@ function render() {
   closeAllModals();
   clear(app);
   currentRoute = route;
+  setNavActive(route.name);
+  applyAuthChrome(route.name);
   if (route.name === "report") {
     currentCleanup = renderReport(app, route.reportId);
   } else if (route.name === "shared") {
@@ -92,6 +101,9 @@ function render() {
   } else {
     currentCleanup = renderList(app, searchInput);
   }
+  // Keep the shared badge fresh after visiting the shared area (a grant may
+  // have arrived, or a share may have been revoked elsewhere).
+  if (route.name === "shared" || route.name === "sharedReport") refreshSharedCount();
 }
 
 function renderAuthView(name, params) {
@@ -102,6 +114,8 @@ function renderAuthView(name, params) {
   closeAllModals();
   clear(app);
   currentRoute = { name, params };
+  setNavActive(name);
+  applyAuthChrome(name);
   currentCleanup = renderAuth(app, name, params);
 }
 
@@ -110,25 +124,43 @@ async function refreshAuth() {
   const was = authed;
   const status = await getAuthStatus().catch(() => ({ authenticated: false }));
   authed = Boolean(status.authenticated);
+  if (authed !== was) authEpoch += 1;
   drawAccountChip(status.user || null);
   if (authed && !was) {
     // First sign-in this page load: pull the pieces boot() skipped.
     initStats();
+    refreshSharedCount();
     restoreJobs();
   }
   render();
 }
 
 function initTheme() {
+  // Light is the product default (LCARS mockups reviewed light-first); the
+  // toggle persists an explicit choice.
   const saved = localStorage.getItem("dr-theme");
-  if (saved === "light" || saved === "dark") {
-    document.documentElement.dataset.theme = saved;
-  }
+  document.documentElement.dataset.theme = saved === "dark" ? "dark" : "light";
   themeBtn.addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
     localStorage.setItem("dr-theme", next);
   });
+}
+
+function initClock() {
+  const clock = document.getElementById("top-clock");
+  if (!clock) return;
+  const tick = () => {
+    const now = new Date();
+    clock.textContent = now.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    clock.title = now.toLocaleString();
+  };
+  tick();
+  setInterval(tick, 30000);
 }
 
 function initSearch() {
@@ -178,12 +210,60 @@ function focusCard(cards, direction) {
   cards[Math.max(0, Math.min(cards.length - 1, next))].focus();
 }
 
-function initStats() {
-  getStats()
-    .then((s) => {
-      statsEl.textContent = `${s.reports} reports · ${s.artifacts} artifacts`;
+/* Frame chrome helpers: bottom-band telemetry and top-bar nav state. */
+
+function renderStats(s) {
+  if (!authed) return; // a late response must not repaint the signed-out chrome
+  statsEl.textContent = `${s.reports} reports · ${s.artifacts} artifacts`;
+  if (telemetryTags) telemetryTags.textContent = String(s.tags);
+}
+
+function setMode(me) {
+  const label = !me
+    ? "AWAITING SIGN-IN"
+    : me.auth_mode === "single_user"
+      ? "SINGLE-USER · LOCAL"
+      : "MULTI-USER · SECURE";
+  if (telemetryMode) telemetryMode.textContent = label;
+}
+
+function setNavActive(routeName) {
+  const shared = routeName === "shared" || routeName === "sharedReport";
+  const sharedLink = document.getElementById("nav-shared");
+  if (sharedLink) sharedLink.classList.toggle("nav-shared-active", shared);
+}
+
+// Header/band state that depends on auth + route. Anonymous share readers see
+// a capability notice instead of this library's — irrelevant — counts.
+function applyAuthChrome(routeName) {
+  if (newResearchBtn) newResearchBtn.hidden = authed === false;
+  const searchWrap = document.querySelector(".search-wrap");
+  if (searchWrap) searchWrap.hidden = authed === false;
+  if (authed === false) {
+    statsEl.textContent = routeName === "share" ? "shared view · read only" : "library · signed out";
+    if (telemetryTags) telemetryTags.textContent = "—";
+  }
+}
+
+// Shared badge: how many reports are shared with this account. Signed-out and
+// single-user sessions never fetch (no 401 noise in the console).
+function refreshSharedCount() {
+  const sharedLink = document.getElementById("nav-shared");
+  if (!authed || !authUser || authUser.auth_mode === "single_user") return Promise.resolve();
+  const epoch = authEpoch;
+  return listSharedWithMe()
+    .then((items) => {
+      if (!authed || epoch !== authEpoch) return; // signed out/switched mid-flight
+      if (sharedLink && sharedCount) {
+        sharedCount.textContent = String(items.length);
+        sharedLink.hidden = false;
+      }
     })
     .catch(() => {});
+}
+
+function initStats() {
+  getStats().then(renderStats).catch(() => {});
 }
 
 const TERMINAL = new Set(["done", "failed", "cancelled", "lost"]);
@@ -197,11 +277,8 @@ function initStatsRefresh() {
   const refresh = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      getStats()
-        .then((s) => {
-          statsEl.textContent = `${s.reports} reports · ${s.artifacts} artifacts`;
-        })
-        .catch(() => {});
+      if (!authed) return;
+      getStats().then(renderStats).catch(() => {});
     }, 250);
   };
   document.addEventListener("dr:jobs", (event) => {
@@ -235,6 +312,8 @@ function initNewResearch() {
  * owner's identity in single_user mode. Empty while unauthenticated. */
 function initAccount() {
   const drawChip = (me) => {
+    authUser = me;
+    setMode(me);
     const sharedLink = document.getElementById("nav-shared");
     if (sharedLink) sharedLink.hidden = !me || me.auth_mode === "single_user";
     if (!me) {
@@ -255,14 +334,15 @@ function initAccount() {
           logout()
             .catch(() => {})
             .finally(() => {
-              // Drop the authed flag BEFORE navigating: the hashchange render
-              // must not fetch library data with a dead session (would 401).
+              // Full reload is deliberate: tracked jobs and the taskbar live
+              // outside #app (and the search box persists), so a reload is the
+              // only way to guarantee the next account can't inherit any of
+              // the previous user's session-scoped UI state.
+              authEpoch += 1;
               authed = false;
-              statsEl.textContent = "";
-              if (window.location.hash !== "#/login") window.location.hash = "#/login";
-              // refreshAuth re-probes /api/auth/status: clears the chip and
-              // renders the login view.
-              refreshAuth();
+              searchInput.value = "";
+              window.location.hash = "#/login";
+              window.location.reload();
             });
         },
       }),
@@ -274,6 +354,7 @@ function initAccount() {
 
 window.addEventListener("hashchange", render);
 initTheme();
+initClock();
 initSearch();
 initKeyboard();
 initStatsRefresh();
@@ -290,6 +371,7 @@ async function boot() {
   drawAccountChip(status.user || null);
   if (authed) {
     initStats();
+    refreshSharedCount();
     restoreJobs();
   }
   render();

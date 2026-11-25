@@ -547,6 +547,44 @@ the old defaults.
   next await point, so without this a cancel would return while the job still
   read `running`); the terminal `cancelled` event fires when the handler runs.
 
+### LCARS theme (2026-11 restyle)
+
+- **Single stylesheet**: `webui/static/styles.css` owns all tokens, layout and
+  components. Light is the default (`:root` tokens); `:root[data-theme="dark"]`
+  overrides them. `app.js::initTheme()` defaults to light and persists the
+  toggle in `localStorage["dr-theme"]`. Do not reintroduce
+  `prefers-color-scheme` as a theme author — light-first is a product decision.
+- **Fonts are self-hosted** (`webui/static/fonts/*.woff2`, declared via
+  `@font-face` at the top of `styles.css`). CSP is `default-src 'self'`; never
+  add CDN font/link tags.
+- **Frame contract**: `index.html` must keep the IDs `#app`, `#global-search`,
+  `#theme-toggle`, `#stats`, `#new-research`, `#account`, `#nav-shared`;
+  `app.js` additionally drives `#shared-count` (inside the bottom-band Shared
+  link), `#top-clock` (live local time) and the `#telemetry-tags` /
+  `#telemetry-mode` readouts. `#stats` lives in the bottom telemetry band.
+  There is no left rail — navigation is the brand link plus the bottom-band
+  Shared segment.
+- **Class names are the API** between views and CSS. Views build DOM with raw
+  class names (`.card`, `.panel`, `.chip`, `.badge-<path>`, `.modal`, …); when
+  restyling, prefer changing `styles.css` over renaming classes in views.
+  Path-coloured card accent bars rely on `:has(.badge-<path>)`.
+- **Theme bootstrap**: `static/js/theme-init.js` is a tiny classic script in
+  `<head>` **before** the stylesheet; it applies the saved `data-theme` before
+  first paint. Keep it there (removing it reintroduces a light flash for dark
+  users). `app.js::initTheme()` only handles the toggle.
+- **Dialogs**: use `views/dialog.js` (`confirmDialog`, `promptDialog`,
+  `alertDialog`) — do not use `window.prompt`/`alert`/`confirm`. All three build
+  on `modal.openModal()` and settle their promise on close/Escape/navigation.
+  A job dialog must append its content to `openModal().overlay` (the attached
+  overlay), never to a locally created one. `openModal()` also focuses the
+  first control and traps Tab; dialog titles must carry an `aria-labelledby`
+  target.
+- **SVG in DOM**: `dom.el()` creates SVG tags in the SVG namespace; inline icons
+  must be `svg`/`path`/… tags so they render.
+- **Mobile**: ≤980 px the filter sidebar collapses, report columns stack and
+  dialogs go full-width; ≤620 px the top bar hides the account chip and the
+  search takes a full row. Keep new components inside these breakpoints.
+
 ### Frontend conventions
 
 - Plain ES modules under `webui/static/js/`; no bundler, no npm deps.

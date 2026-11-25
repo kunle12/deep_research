@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDL — LCARS restyle proposals</title>
+<style>
+  body{margin:0;background:#0E0F12;color:#EDE7DF;font-family:system-ui,sans-serif;padding:36px 42px 60px}
+  h1{font-size:22px;letter-spacing:.04em;margin:0 0 4px}
+  h2{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:#A79DB2;margin:40px 0 14px;
+     border-top:1px solid rgba(255,255,255,.09);padding-top:18px}
+  p.lead{color:#A79DB2;font-size:13px;line-height:1.6;max-width:880px;margin:0 0 8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px}
+  a.shot{display:block;background:#16181D;border-radius:14px;overflow:hidden;text-decoration:none;
+        color:inherit;box-shadow:0 0 0 1px rgba(255,255,255,.08);transition:transform .12s}
+  a.shot:hover{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(255,204,153,.5)}
+  a.shot img{display:block;width:100%;height:auto}
+  .meta{display:flex;justify-content:space-between;gap:10px;padding:11px 14px;font-size:12px}
+  .meta b{font-weight:600}
+  .meta span{color:#8C849A;font-size:11px;letter-spacing:.06em}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .pair .meta{padding:9px 12px}
+</style>
+</head>
+<body>
+<h1>Deep Research PDL — LCARS restyle proposals</h1>
+<p class="lead">Design-language transfer from <code>~/dev/kunle_workspace/docs/mockups</code>.
+   Every current screen and dialog of the PDL web UI is covered, in dark and light themes.
+   Click any card to open the live HTML mockup (append <code>?theme=light|dark</code>).</p>
+
+<h2>Screens</h2>
+<div class="grid">
+  <a class="shot" href="login.html"><img src="shots/login-light.png"><div class="meta"><b>Sign in</b><span>#/login</span></div></a>
+  <a class="shot" href="register.html"><img src="shots/register-light.png"><div class="meta"><b>Create account</b><span>login → register</span></div></a>
+  <a class="shot" href="verify.html"><img src="shots/verify-light.png"><div class="meta"><b>Verify email</b><span>#/verify</span></div></a>
+  <a class="shot" href="reset.html"><img src="shots/reset-light.png"><div class="meta"><b>Reset password</b><span>#/reset</span></div></a>
+  <a class="shot" href="library.html"><img src="shots/library-light.png"><div class="meta"><b>Library</b><span>#/ · list + filters + taskbar</span></div></a>
+  <a class="shot" href="report.html"><img src="shots/report-light.png"><div class="meta"><b>Report (owner)</b><span>#/report/&lt;id&gt;</span></div></a>
+  <a class="shot" href="report-shared.html"><img src="shots/report-shared-light.png"><div class="meta"><b>Report shared with me</b><span>#/shared/&lt;id&gt;</span></div></a>
+  <a class="shot" href="shared.html"><img src="shots/shared-light.png"><div class="meta"><b>Shared with me</b><span>#/shared</span></div></a>
+  <a class="shot" href="share-anon.html"><img src="shots/share-anon-light.png"><div class="meta"><b>Secret share link</b><span>#/share/&lt;token&gt;</span></div></a>
+</div>
+
+<h2>Dialog boxes</h2>
+<div class="grid">
+  <a class="shot" href="dialog-research.html"><img src="shots/dialog-research-light.png"><div class="meta"><b>New research</b><span>modal</span></div></a>
+  <a class="shot" href="dialog-progress.html"><img src="shots/dialog-progress-light.png"><div class="meta"><b>Research progress</b><span>running</span></div></a>
+  <a class="shot" href="dialog-progress-done.html"><img src="shots/dialog-progress-done-light.png"><div class="meta"><b>Research progress</b><span>done</span></div></a>
+  <a class="shot" href="dialog-share.html"><img src="shots/dialog-share-light.png"><div class="meta"><b>Share this research</b><span>links + grants</span></div></a>
+  <a class="shot" href="dialog-confirm.html"><img src="shots/dialog-confirm-light.png"><div class="meta"><b>Confirm (destructive)</b><span>delete / merge / reference</span></div></a>
+  <a class="shot" href="dialog-rename.html"><img src="shots/dialog-rename-light.png"><div class="meta"><b>Rename</b><span>replaces window.prompt</span></div></a>
+  <a class="shot" href="dialog-add-source.html"><img src="shots/dialog-add-source-light.png"><div class="meta"><b>Add source</b><span>replaces window.prompt</span></div></a>
+</div>
+
+<h2>Dark theme</h2>
+<div class="grid">
+  <a class="shot" href="library.html?theme=dark"><img src="shots/library-dark.png"><div class="meta"><b>Library</b><span>dark</span></div></a>
+  <a class="shot" href="report.html?theme=dark"><img src="shots/report-dark.png"><div class="meta"><b>Report</b><span>dark</span></div></a>
+  <a class="shot" href="login.html?theme=dark"><img src="shots/login-dark.png"><div class="meta"><b>Sign in</b><span>dark</span></div></a>
+  <a class="shot" href="dialog-share.html?theme=dark"><img src="shots/dialog-share-dark.png"><div class="meta"><b>Share dialog</b><span>dark</span></div></a>
+  <a class="shot" href="dialog-confirm.html?theme=dark"><img src="shots/dialog-confirm-dark.png"><div class="meta"><b>Confirm</b><span>dark</span></div></a>
+  <a class="shot" href="share-anon.html?theme=dark"><img src="shots/share-anon-dark.png"><div class="meta"><b>Capability link</b><span>dark</span></div></a>
+</div>
+
+<h2>Mobile · 480 px</h2>
+<div class="grid">
+  <a class="shot" href="library.html"><img src="shots/library-mobile.png"><div class="meta"><b>Library</b><span>mobile</span></div></a>
+  <a class="shot" href="report.html"><img src="shots/report-mobile.png"><div class="meta"><b>Report</b><span>mobile</span></div></a>
+  <a class="shot" href="login.html"><img src="shots/login-mobile.png"><div class="meta"><b>Sign in</b><span>mobile</span></div></a>
+  <a class="shot" href="shared.html"><img src="shots/shared-mobile.png"><div class="meta"><b>Shared with me</b><span>mobile</span></div></a>
+  <a class="shot" href="share-anon.html"><img src="shots/share-anon-mobile.png"><div class="meta"><b>Capability link</b><span>mobile</span></div></a>
+  <a class="shot" href="dialog-share.html"><img src="shots/dialog-share-mobile.png"><div class="meta"><b>Share dialog</b><span>mobile</span></div></a>
+  <a class="shot" href="dialog-confirm.html"><img src="shots/dialog-confirm-mobile.png"><div class="meta"><b>Confirm</b><span>mobile</span></div></a>
+</div>
+</body>
+</html>

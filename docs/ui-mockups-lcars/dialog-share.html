@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDL mockup — Share dialog</title>
+<link rel="stylesheet" href="fonts.css"><link rel="stylesheet" href="lcars.css"><script src="frame.js"></script>
+</head>
+<body data-frame="none">
+<div class="overlay">
+  <div class="panelcard wide" style="width:600px">
+    <div class="cap">Share · Read only <span class="dots"><i></i><i></i><i></i></span></div>
+    <div class="body">
+      <h2>Share this research</h2>
+      <p class="sub">“Vision-Language-Action Models: A State-of-the-Art Review” — read-only.
+        Recipients see the report, its references and the archived PDF; they cannot edit your library.</p>
+
+      <div class="glabel amber">Share with people · optional</div>
+      <input class="tinput" placeholder="colleague@example.com (optional, comma-separated)">
+      <div style="display:flex;gap:8px;align-items:center;margin:10px 0 16px">
+        <div class="stepper" style="flex:1">
+          <button class="on inh">No expiry</button><button>7 d</button><button>30 d</button><button>90 d</button>
+        </div>
+        <button class="pill amber">Create share link</button>
+      </div>
+
+      <div class="glabel sky">Fresh link · shown once</div>
+      <div class="strip marigold" style="margin-bottom:8px">Copy it now — shown once · rotate later to invalidate</div>
+      <div style="display:flex;gap:6px;margin-bottom:16px">
+        <input class="tinput mono" readonly value="http://jetpack2:8080/#/share/3yoG4qCc58zCY_88vKEfq4UkjnrrCF7JIvxlkj_scqY">
+        <button class="pill">Copy</button>
+      </div>
+
+      <div class="glabel lilac">Active shares</div>
+      <div class="panel" style="padding:12px 14px">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+          <div style="min-width:0">
+            <div class="empty" style="margin-bottom:8px">Created 2026-11-25 · expires —</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+              <span class="chip">bob@example.com <button title="Remove access">×</button></span>
+              <span class="chip">carol@example.com <button title="Remove access">×</button></span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <input class="tinput" style="height:30px;font-size:12px" placeholder="Add people by email, comma-separated">
+              <button class="pill sm">Add</button>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;flex:0 0 auto">
+            <button class="pill sm">New link</button>
+            <button class="pill sm red">Revoke</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="foot2"><span class="f1">View only</span><span class="f2">Capability</span></div>
+  </div>
+</div>
+</body>
+</html>

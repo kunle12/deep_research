@@ -439,6 +439,45 @@ def test_index_and_static_assets(client):
     assert client.get("/static/missing.js").status_code == 404
 
 
+def test_ui_frame_contract(client):
+    """The static shell must keep the IDs app.js binds to (LCARS restyle).
+
+    A missing frame node silently disables the live counts or the
+    theme/account wiring — assert the contract rather than the styling.
+    """
+    html = client.get("/").text
+    for element_id in (
+        "app",
+        "global-search",
+        "theme-toggle",
+        "stats",
+        "new-research",
+        "account",
+        "nav-shared",
+        "shared-count",
+        "top-clock",
+        "telemetry-tags",
+        "telemetry-mode",
+    ):
+        assert f'id="{element_id}"' in html, f"missing #{element_id} in index.html"
+
+    css = client.get("/static/styles.css").text
+    # Light-first: the default token block must not be gated behind dark.
+    assert "--paper: #F2ECE3" in css
+    assert '[data-theme="dark"]' in css
+    # Self-hosted typefaces (CSP: default-src 'self').
+    assert "fonts/saira-var.woff2" in css
+    for name in (
+        "saira-var.woff2",
+        "saira-extra-condensed-300.woff2",
+        "saira-extra-condensed-400.woff2",
+        "ibm-plex-mono-400.woff2",
+        "ibm-plex-mono-500.woff2",
+    ):
+        r = client.get(f"/static/fonts/{name}")
+        assert r.status_code == 200, f"missing font {name}"
+
+
 def test_security_headers(client):
     r = client.get("/api/health")
     csp = r.headers.get("content-security-policy", "")

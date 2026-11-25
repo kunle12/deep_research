@@ -145,7 +145,7 @@ export function renderList(root, searchInput) {
   }
 
   function cardEl(item) {
-    const badge = el("span", { class: `badge badge-${item.path}`, text: item.path || "unknown" });
+    const badge = el("span", { class: `badge badge-${item.path}`, text: (item.path || "unknown").replace(/_/g, " ") });
     const tags = item.tags.map((t) => el("span", { class: "tag", text: t }));
     const meta = el(
       "div",

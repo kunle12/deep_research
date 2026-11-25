@@ -18,7 +18,7 @@ import {
 } from "../api.js";
 import { headingText, parse, renderBlocks, safeUrl } from "../markdown.js";
 import { hasActiveJob, trackJob } from "../jobs.js";
-import { confirmDialog } from "./dialog.js";
+import { alertDialog, confirmDialog, promptDialog } from "./dialog.js";
 import { openShareDialog } from "./shareDialog.js";
 
 // One report view renders at a time; track any open query popover so the
@@ -112,7 +112,7 @@ function buildReport(report, view) {
     el(
       "div",
       { class: "report-meta" },
-      el("span", { class: `badge badge-${report.path}`, text: report.path || "unknown" }),
+      el("span", { class: `badge badge-${report.path}`, text: (report.path || "unknown").replace(/_/g, " ") }),
       el("span", { text: formatDate(report.started_at) }),
       report.iterations !== null && report.iterations !== undefined
         ? el("span", { text: plural(report.iterations, "iteration") })
@@ -207,7 +207,7 @@ function buildReport(report, view) {
       "div",
       { class: "panel" },
       el("h2", { class: "panel-title", text: `References (${report.citations.length})` }),
-      refsList(report.citations, report.run_id),
+      refsList(report.citations, report.run_id, mutate),
       el(
         "div",
         { class: "panel-export" },
@@ -364,19 +364,19 @@ function glossaryPanel(report) {
 }
 
 
-function refsList(citations, runId) {
+function refsList(citations, runId, canMutate) {
   const list = el("div", { class: "ref-list" });
   if (!citations.length) {
     list.append(el("p", { class: "hint", text: "No references recorded for this report." }));
     return list;
   }
   for (const citation of citations) {
-    list.append(refCard(citation, runId));
+    list.append(refCard(citation, runId, canMutate));
   }
   return list;
 }
 
-function refCard(citation, runId) {
+function refCard(citation, runId, canMutate) {
   const title = citation.title || citation.url;
   const metaParts = [];
   if (Array.isArray(citation.authors) && citation.authors.length) {
@@ -400,7 +400,7 @@ function refCard(citation, runId) {
         actions.push(refLink("arXiv PDF", citation.local_pdf_url, "Archived PDF copy in library"));
       } else {
         actions.push(refLink("arXiv", `https://arxiv.org/abs/${citation.arxiv_id}`, "View abstract on arXiv.org"));
-        actions.push(downloadPdfButton(citation, renderActions));
+        if (canMutate) actions.push(downloadPdfButton(citation, renderActions));
       }
     }
     if (citation.pdf_url) actions.push(refLink("PDF", citation.pdf_url));
@@ -413,7 +413,7 @@ function refCard(citation, runId) {
     if (citation.url && !urlDuplicatesArxiv) {
       actions.push(refLink("URL", citation.url));
     }
-    actions.push(deleteReferenceButton(citation, runId));
+    if (canMutate) actions.push(deleteReferenceButton(citation, runId));
     for (const action of actions) actionsEl.append(action);
   }
 
@@ -472,7 +472,7 @@ function deleteReferenceButton(citation, runId) {
     } catch (err) {
       btn.disabled = false;
       btn.textContent = "Delete";
-      window.alert(`Delete failed: ${err.message}`);
+      alertDialog({ title: "Delete failed", message: String(err.message) });
     }
   }
   btn = el("button", {
@@ -607,59 +607,71 @@ function confirmDelete(report) {
         window.location.hash = "#/";
       })
       .catch((err) => {
-        window.alert(`Delete failed: ${err.message}`);
+        alertDialog({ title: "Delete failed", message: String(err.message) });
       });
   });
 }
 
 function promptRename(report) {
-  const name = window.prompt("New name for this research:", report.query || report.run_id);
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) {
-    window.alert("Name cannot be blank.");
-    return;
-  }
-  renameReport(report.run_id, trimmed)
-    .then((updated) => {
-      report.query = updated.query;
-      window.location.reload();
-    })
-    .catch((err) => {
-      window.alert(`Rename failed: ${err.message}`);
-    });
+  promptDialog({
+    title: "Rename research",
+    message: "Replaces the report title everywhere — library cards, shares and exports.",
+    label: "New name",
+    value: report.query || report.run_id,
+    confirmText: "Save",
+  }).then((name) => {
+    if (name === null) return;
+    renameReport(report.run_id, name)
+      .then((updated) => {
+        report.query = updated.query;
+        window.location.reload();
+      })
+      .catch((err) => {
+        alertDialog({ title: "Rename failed", message: String(err.message) });
+      });
+  });
 }
 
 function openAddSource(report) {
   if (hasActiveJob()) {
-    window.alert("A research job is already running — wait for it to finish, then try again.");
-    return;
-  }
-  const url = window.prompt(
-    "Enter the URL of the paper / document / blog to analyze and attach to this research:",
-    "",
-  );
-  if (url === null) return;
-  const trimmed = url.trim();
-  if (!/^https?:\/\//i.test(trimmed)) {
-    window.alert("Please enter a valid http(s):// URL.");
-    return;
-  }
-  startResearch(trimmed, "url_source", report.run_id)
-    .then((res) => {
-      trackJob(res.job_id, trimmed, report.run_id);
-      window.alert(
-        "Analysis started — track its progress in the bottom taskbar. The report will update when it finishes.",
-      );
-    })
-    .catch((err) => {
-      const msg = String(err.message);
-      window.alert(
-        msg.includes("409")
-          ? "A research job is already running — wait for it to finish, then try again."
-          : `Failed to start: ${msg}`,
-      );
+    alertDialog({
+      title: "Research busy",
+      message: "A research job is already running — wait for it to finish, then try again.",
     });
+    return;
+  }
+  promptDialog({
+    title: "Add source",
+    message:
+      "Analyze a paper, document or blog post and attach the result to this research.",
+    label: "URL",
+    placeholder: "https://…",
+    confirmText: "Start analysis",
+    mono: true,
+    validate: (value) =>
+      /^https?:\/\//i.test(value) ? "" : "Please enter a valid http(s):// URL.",
+  }).then((url) => {
+    if (url === null) return;
+    startResearch(url, "url_source", report.run_id)
+      .then((res) => {
+        trackJob(res.job_id, url, report.run_id);
+        alertDialog({
+          title: "Analysis started",
+          message:
+            "Track its progress in the bottom taskbar. The report will update when it finishes.",
+          confirmText: "Got it",
+        });
+      })
+      .catch((err) => {
+        const msg = String(err.message);
+        alertDialog({
+          title: "Could not start analysis",
+          message: msg.includes("409")
+            ? "A research job is already running — wait for it to finish, then try again."
+            : `Failed to start: ${msg}`,
+        });
+      });
+  });
 }
 
 function mergePanel(report) {
