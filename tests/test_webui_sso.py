@@ -18,10 +18,14 @@ from deep_research.webui import create_app
 def _write_config(
     root: Path,
     *,
-    trusted: str = "testclient",
+    trusted: str | list[str] = "testclient",
     auto_provision: bool = True,
     required: bool = True,
+    enabled: bool = True,
+    mode: str = "multi_user",
 ) -> Path:
+    proxies = [trusted] if isinstance(trusted, str) else trusted
+    trusted_yaml = "[" + ", ".join(f'"{p}"' for p in proxies) + "]"
     cfg = root / "config.yaml"
     cfg.write_text(
         "\n".join(
@@ -32,12 +36,12 @@ def _write_config(
                 "  storage:",
                 "    backend: sqlite",
                 "  auth:",
-                "    mode: multi_user",
+                f"    mode: {mode}",
                 '    owner_email: "wang.xun@gmail.com"',
                 "    sso:",
-                "      enabled: true",
+                f"      enabled: {str(enabled).lower()}",
                 '      header: "X-Auth-User"',
-                f'      trusted_proxies: ["{trusted}"]',
+                f"      trusted_proxies: {trusted_yaml}",
                 f"      auto_provision: {str(auto_provision).lower()}",
                 f"      required: {str(required).lower()}",
                 '      workspace_url: "/"',
@@ -119,3 +123,32 @@ def test_auto_provision_can_be_disabled(tmp_path):
         r = client.get("/api/auth/status", headers={"X-Auth-User": "nobody@example.com"})
         assert r.status_code == 403
         assert "not provisioned" in r.json()["detail"]
+
+
+def test_required_blocks_local_login_even_with_valid_header(tmp_path):
+    app = create_app(config_path=str(_write_config(tmp_path)))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/auth/login",
+            json={"email": "alice@example.com", "password": "correct horse battery"},
+            headers={
+                "X-Auth-User": "alice@example.com",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        assert r.status_code == 403
+        assert "single sign-on required" in r.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"enabled": False, "required": True}, "requires pdl.auth.sso.enabled"),
+        ({"trusted": [], "required": False}, "trusted_proxies must not be empty"),
+        ({"mode": "single_user", "required": False}, "requires pdl.auth.mode: multi_user"),
+    ],
+)
+def test_invalid_sso_config_fails_closed(tmp_path, kwargs, message):
+    cfg = _write_config(tmp_path, **kwargs)
+    with pytest.raises(Exception, match=message), TestClient(create_app(config_path=str(cfg))):
+        pass

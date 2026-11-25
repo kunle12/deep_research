@@ -543,6 +543,18 @@ class PDLAuthConfig(BaseModel):
     smtp: PDLAuthSMTPConfig = Field(default_factory=PDLAuthSMTPConfig)
     sso: PDLAuthSSOConfig = Field(default_factory=PDLAuthSSOConfig)
 
+    @model_validator(mode="after")
+    def _validate_sso(self) -> PDLAuthConfig:
+        """Fail closed on configurations that would silently weaken auth."""
+        if self.sso.enabled:
+            if self.mode != "multi_user":
+                raise ValueError("pdl.auth.sso requires pdl.auth.mode: multi_user")
+            if not any(p.strip() for p in self.sso.trusted_proxies):
+                raise ValueError("pdl.auth.sso.trusted_proxies must not be empty")
+        if self.sso.required and not self.sso.enabled:
+            raise ValueError("pdl.auth.sso.required requires pdl.auth.sso.enabled: true")
+        return self
+
 
 class PDLRefreshConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")

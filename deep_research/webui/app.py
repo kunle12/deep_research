@@ -224,7 +224,11 @@ def create_app(
                         _apply_security_headers(response)
                         return response
                     request.state.sso = True
-                if sso.required and sso_user is None and path in _SSO_LOCAL_CREDENTIAL_PATHS:
+                if sso.required and path in _SSO_LOCAL_CREDENTIAL_PATHS:
+                    # SSO is the only credential: block local password and
+                    # registration even on a request that happens to carry a
+                    # valid proxy identity. Otherwise a signed-in console user
+                    # could still set a local password as a fallback.
                     response = JSONResponse({"detail": "single sign-on required"}, status_code=403)
                     _apply_security_headers(response)
                     return response

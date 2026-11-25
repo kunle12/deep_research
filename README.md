@@ -520,13 +520,22 @@ pdl:
   normalized email; missing accounts are created active with no password;
   `pending` accounts are activated; `disabled` accounts get **403**.
 - `required: true` ignores local session cookies and rejects
-  `/api/auth/login`, `/api/auth/register` and the reset endpoints, so a direct
-  connection to the app port is not a second front door. The account chip
-  shows **Workspace** (return to the console) instead of a local **Sign out**.
+  `/api/auth/login`, `/api/auth/register` and the reset endpoints — even on a
+  request that carries a valid proxy header — so a direct connection to the
+  app port is not a second front door. The account chip shows **Workspace**
+  (return to the console) instead of a local **Sign out**.
 - With `required: false` the header is additive: a local password session
   remains a fallback when the header is absent.
+- **Run uvicorn with `--no-proxy-headers`** (the shipped service units do).
+  The source check uses `request.client.host`; uvicorn's default trusts
+  `X-Forwarded-For` from `127.0.0.1`, which a local user could use to
+  impersonate the proxy. If you need real client IPs for rate limiting, add
+  the proxy IPs explicitly rather than trusting the loopback default.
 - The SPA is mountable under a path prefix (`/research/`): API calls, share
-  links and exported assets resolve against the page's base directory.
+  links and exported assets resolve against the page's base directory. When
+  the shell is published for capability share links, have the reverse proxy
+  clear `X-Auth-User`/group headers on those public paths; only gated paths
+  may assert identity.
 
 Reproduce with `tests/test_webui_sso.py`.
 

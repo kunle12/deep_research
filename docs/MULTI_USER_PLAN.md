@@ -111,7 +111,10 @@ log so a single admin user can still bootstrap.
 > credential (`required: true`). See README "Trusted-header SSO" and
 > `tests/test_webui_sso.py`. The `auth_identities` migration below was not
 > needed for this variant — the proxy asserts a verified email, and user_id
-> remains the storage anchor.
+> remains the storage anchor. The service units pass `--no-proxy-headers` so
+> the trusted-proxy source check sees the TCP peer, not a loopback-spoofable
+> `X-Forwarded-For`; reverse proxies must clear identity headers on any public
+> shell/share paths.
 
 Password login is deliberately structured as "just the first credential
 source", so the later custom SSO integration is additive:

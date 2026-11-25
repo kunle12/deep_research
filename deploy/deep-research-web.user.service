@@ -17,7 +17,10 @@ ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do curl -fsS -m 2 -o /dev/null h
 
 # Single worker: research jobs are tracked in memory, so multiple uvicorn
 # workers would split job state and make progress/status unreliable.
-ExecStart=/home/researcher/deep_research/.venv/bin/python -m uvicorn deep_research.webui.app:app --host 0.0.0.0 --port 8080 --workers 1 --log-level info
+# --no-proxy-headers: trusted-header SSO checks request.client.host, so
+# uvicorn must report the TCP peer. The default trusts X-Forwarded-For
+# from 127.0.0.1, which a local user could use to impersonate the proxy.
+ExecStart=/home/researcher/deep_research/.venv/bin/python -m uvicorn deep_research.webui.app:app --host 0.0.0.0 --port 8080 --workers 1 --log-level info --no-proxy-headers
 
 Restart=on-failure
 RestartSec=5

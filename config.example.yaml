@@ -220,6 +220,8 @@ pdl:
   #     auto_provision: true
   #     required: true
   #     workspace_url: "/"
+  # Run uvicorn with --no-proxy-headers (the service units do) so the source
+  # check sees the TCP peer, not a loopback-spoofable X-Forwarded-For.
   # Opt-in: after each run, download + archive PDFs for citations that carry
   # an arXiv id so the web UI can serve local copies. Deep-path citations
   # otherwise fall back to the upstream arXiv link.
