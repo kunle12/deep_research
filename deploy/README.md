@@ -105,6 +105,9 @@ systemctl --user disable --now deep-research-web.service   # before system insta
   request path. Application and error logs remain; put request logging in the
   reverse proxy and redact the share prefix there (`access_log off` for it).
   If you re-enable uvicorn access logs, add a redacting formatter first.
+- **Units follow the installing user.** The user unit uses `%h`; the system
+  installer rewrites the template's `/home/researcher` paths to the invoking
+  user before installing.
 - **Updating the code.** `git pull`, then `uv sync` (or `uv sync --extra dev`),
   then `systemctl restart deep-research-web.service`. A venv rebuild while the
   service is running is fine; restart after the sync.

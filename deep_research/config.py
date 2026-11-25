@@ -549,7 +549,12 @@ class PDLAuthConfig(BaseModel):
         if self.sso.enabled:
             if self.mode != "multi_user":
                 raise ValueError("pdl.auth.sso requires pdl.auth.mode: multi_user")
-            if not any(p.strip() for p in self.sso.trusted_proxies):
+            if not self.sso.header.strip():
+                raise ValueError("pdl.auth.sso.header must not be empty")
+            # Normalize so " 192.168.0.1 " cannot silently fail the exact
+            # source comparison at request time.
+            self.sso.trusted_proxies = [p.strip() for p in self.sso.trusted_proxies if p.strip()]
+            if not self.sso.trusted_proxies:
                 raise ValueError("pdl.auth.sso.trusted_proxies must not be empty")
         if self.sso.required and not self.sso.enabled:
             raise ValueError("pdl.auth.sso.required requires pdl.auth.sso.enabled: true")

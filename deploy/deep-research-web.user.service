@@ -7,8 +7,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=/home/researcher/deep_research
-EnvironmentFile=-/home/researcher/.config/deep-research/deep-research.env
+WorkingDirectory=%h/deep_research
+EnvironmentFile=-%h/.config/deep-research/deep-research.env
 Environment=PYTHONUNBUFFERED=1
 
 # Wait for SearXNG to answer on 127.0.0.1:8888 before starting. Fail if it
@@ -22,7 +22,7 @@ ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do curl -fsS -m 2 -o /dev/null h
 # from 127.0.0.1, which a local user could use to impersonate the proxy.
 # --no-access-log: share tokens are capability paths; keep them out of
 # the journal. Application/error logs stay on.
-ExecStart=/home/researcher/deep_research/.venv/bin/python -m uvicorn deep_research.webui.app:app --host 0.0.0.0 --port 8080 --workers 1 --log-level info --no-proxy-headers --no-access-log
+ExecStart=%h/deep_research/.venv/bin/python -m uvicorn deep_research.webui.app:app --host 0.0.0.0 --port 8080 --workers 1 --log-level info --no-proxy-headers --no-access-log
 
 Restart=on-failure
 RestartSec=5

@@ -25,7 +25,10 @@ if [[ ! -f "$UNIT_SRC" ]]; then
   exit 1
 fi
 
-install -m 644 "$UNIT_SRC" "$UNIT_DST"
+# The unit ships with /home/researcher paths; retarget it to the invoking
+# user so a non-researcher install (e.g. /home/xun) still starts.
+sed "s#/home/researcher#/home/${RUN_USER}#g" "$UNIT_SRC" > "$UNIT_DST"
+chmod 644 "$UNIT_DST"
 install -d -m 700 "$ENV_DIR"
 if [[ ! -f "$ENV_FILE" ]]; then
   install -o "$RUN_USER" -g "$RUN_USER" -m 600 \

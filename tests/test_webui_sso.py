@@ -23,6 +23,7 @@ def _write_config(
     required: bool = True,
     enabled: bool = True,
     mode: str = "multi_user",
+    header: str = "X-Auth-User",
 ) -> Path:
     proxies = [trusted] if isinstance(trusted, str) else trusted
     trusted_yaml = "[" + ", ".join(f'"{p}"' for p in proxies) + "]"
@@ -40,7 +41,7 @@ def _write_config(
                 '    owner_email: "wang.xun@gmail.com"',
                 "    sso:",
                 f"      enabled: {str(enabled).lower()}",
-                '      header: "X-Auth-User"',
+                f'      header: "{header}"',
                 f"      trusted_proxies: {trusted_yaml}",
                 f"      auto_provision: {str(auto_provision).lower()}",
                 f"      required: {str(required).lower()}",
@@ -146,9 +147,19 @@ def test_required_blocks_local_login_even_with_valid_header(tmp_path):
         ({"enabled": False, "required": True}, "requires pdl.auth.sso.enabled"),
         ({"trusted": [], "required": False}, "trusted_proxies must not be empty"),
         ({"mode": "single_user", "required": False}, "requires pdl.auth.mode: multi_user"),
+        ({"header": "", "required": False}, "header must not be empty"),
     ],
 )
 def test_invalid_sso_config_fails_closed(tmp_path, kwargs, message):
     cfg = _write_config(tmp_path, **kwargs)
     with pytest.raises(Exception, match=message), TestClient(create_app(config_path=str(cfg))):
         pass
+
+
+def test_trusted_proxy_whitespace_is_normalized(tmp_path):
+    cfg = _write_config(tmp_path, trusted="  testclient  ")
+    app = create_app(config_path=str(cfg))
+    with TestClient(app) as client:
+        r = client.get("/api/auth/status", headers={"X-Auth-User": "alice@example.com"})
+        assert r.status_code == 200
+        assert r.json()["authenticated"] is True
