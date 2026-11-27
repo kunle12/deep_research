@@ -40,7 +40,7 @@ Light is the default theme; dark is a persisted toggle.
 `static/index.html`:
 
 ```
-.topbar      brand capsule · PDL tag · live clock · search · account · theme · new research
+.topbar      brand capsule · PDL tag · live clock · search · account (email + Workspace in SSO) · theme · new research
 #app         main "screen" panel, full frame width (page-scrolls)
 .bottomband  fixed telemetry band (reports/artifacts · tags · mode · Shared <count>)
 ```
@@ -122,3 +122,32 @@ verified against the tree before fixing.
 Reviewer also confirmed clean: job-dialog overlay fix, SVG namespace handling,
 CSP/fonts, ID wiring/null-safety, taskbar/band/z-index geometry, and the test
 suite.
+
+## 2026-11-27 — Workspace return (SSO account chip)
+
+Follow-up to the restyle; no Python or API changes.
+
+- **Look** — the SSO account chip's plain orange `Workspace` text link is now a
+  quiet sky link (`--workspace-ink`, `#2E5E96` light / `#A9D4FF` dark) with a
+  return-arrow glyph. Hover/focus lifts it into a small LCARS elbow
+  (`--workspace-tint`), matching the frame's command blocks without competing
+  with the amber New research button. The email still truncates first; the
+  action is `flex: none`.
+- **Behaviour** — clicking it returns to the console. The console spawns app
+  tabs with `window.open()` and sets `tab.opener = null`, so the handle is
+  normally absent and focusing it is only a best-effort branch. The button
+  calls `window.close()`, which browsers honour for script-opened tabs, and
+  250 ms later — if the tab is still open (a phone, or a tab opened directly) —
+  navigates to `workspace_url` in the current tab. This replaces the old
+  unconditional `location.assign`, which never closed the spawned tab.
+- **Mobile** — ≤620 px the account email is hidden but the labelled Workspace
+  action remains (it is the only exit in SSO mode). ≤360 px the link's padding
+  and tracking and the clock padding tighten so brand, clock and actions stay
+  on one row at 320 px.
+- **Verified** — Playwright against a local SSO instance (`X-Auth-User` via a
+  trusted loopback): a tab spawned from a fake console with `opener` severed
+  closes on click and the console tab stays active; a directly-opened tab is
+  refused by `window.close()` and lands on `workspace_url` after the fallback.
+  Layout checked at 1280/980/620/390/360/320 px (no horizontal overflow;
+  320 px header stays two rows), light and dark themes, hover state.
+  `node --check` on `app.js`; webui pytest suites green.

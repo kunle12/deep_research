@@ -523,7 +523,11 @@ pdl:
   `/api/auth/login`, `/api/auth/register` and the reset endpoints — even on a
   request that carries a valid proxy header — so a direct connection to the
   app port is not a second front door. The account chip shows **Workspace**
-  (return to the console) instead of a local **Sign out**.
+  (return to the console) instead of a local **Sign out**. The console spawns
+  app tabs with `window.open()` and severs `opener`, so the button closes the
+  current tab instead of trying to steer another one; if the browser refuses
+  `window.close()` (a phone, or a tab opened directly), it opens
+  `workspace_url` in this tab instead.
 - With `required: false` the header is additive: a local password session
   remains a fallback when the header is absent.
 - **Run uvicorn with `--no-proxy-headers`** (the shipped service units do).

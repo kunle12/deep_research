@@ -310,6 +310,32 @@ function initNewResearch() {
   }
 }
 
+/* Return to the console that spawned this app. The console opens app tabs with
+ * window.open() and severs `opener` on purpose, so the handle is normally gone
+ * here; focus it only when a browser kept it (a tab opened any other way).
+ * Closing this tab is what returns the operator to the workspace.
+ * Browsers only honour close() for script-opened tabs, so on a phone or a
+ * directly-opened tab the call is refused: fall back to opening the workspace
+ * in this tab rather than leaving the button doing nothing. */
+function returnToWorkspace(workspaceUrl) {
+  const opener = window.opener;
+  if (opener && !opener.closed) {
+    try {
+      opener.focus();
+    } catch {
+      // Cross-origin/refused focus is fine — closing still returns the user.
+    }
+  }
+  try {
+    window.close();
+  } catch {
+    // A webview may throw instead of refusing; the fallback below still runs.
+  }
+  window.setTimeout(() => {
+    if (!window.closed) window.location.assign(workspaceUrl);
+  }, 250);
+}
+
 /* Account chip: shows the signed-in email + logout (multi_user), or the
  * owner's identity in single_user mode. Empty while unauthenticated. */
 function initAccount() {
@@ -332,12 +358,34 @@ function initAccount() {
       // the real sign-out lives.
       accountEl.replaceChildren(
         el("span", { class: "account-email", text: me.email, title: "workspace session" }),
-        el("button", {
-          class: "linklike",
-          type: "button",
-          text: "Workspace",
-          onclick: () => window.location.assign(workspaceUrl),
-        }),
+        el(
+          "button",
+          {
+            class: "workspace-link",
+            type: "button",
+            title: "Return to the workspace (closes this tab)",
+            "aria-label": "Return to the workspace",
+            onclick: () => returnToWorkspace(workspaceUrl),
+          },
+          "Workspace",
+          el(
+            "svg",
+            {
+              viewBox: "0 0 24 24",
+              width: "12",
+              height: "12",
+              fill: "none",
+              stroke: "currentColor",
+              "stroke-width": "2",
+              "stroke-linecap": "round",
+              "stroke-linejoin": "round",
+              "aria-hidden": "true",
+              focusable: "false",
+            },
+            el("path", { d: "M9.5 19 3.5 13l6-6" }),
+            el("path", { d: "M3.5 13h9a6.5 6.5 0 0 0 6.5-6.5V3" }),
+          ),
+        ),
       );
       return;
     }

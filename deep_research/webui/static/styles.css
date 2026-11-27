@@ -78,6 +78,8 @@
   --accent-soft: rgba(255, 153, 51, .14);
   --accent-link: #9A5A1E;
   --focus: #7A4516;
+  --workspace-ink: #2E5E96;
+  --workspace-tint: rgba(153, 204, 255, .38);
   --tag-bg: rgba(255, 204, 153, .55);
   --tag-ink: #7A4516;
   --danger: #B34747;
@@ -117,6 +119,8 @@
   --accent-soft: rgba(255, 153, 51, .16);
   --accent-link: #FFA45C;
   --focus: #FFB870;
+  --workspace-ink: #A9D4FF;
+  --workspace-tint: rgba(153, 204, 255, .16);
   --tag-bg: rgba(255, 204, 153, .18);
   --tag-ink: #FFCC99;
   --danger: #E4776B;
@@ -1428,6 +1432,33 @@ body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
 }
 .account-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Workspace return (SSO): a quiet sky link that lifts into an LCARS elbow on
+   hover/focus. The email truncates first; the action itself never shrinks. */
+.workspace-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: 30px;
+  margin-left: 1px;
+  padding: 0 8px 0 7px;
+  border: 0;
+  border-radius: 0 13px 13px 0;
+  background: transparent;
+  color: var(--workspace-ink);
+  font: inherit;
+  letter-spacing: .12em;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.workspace-link svg { width: 12px; height: 12px; flex: none; }
+.workspace-link:hover,
+.workspace-link:focus-visible {
+  background: var(--workspace-tint);
+  color: var(--workspace-ink);
+  text-decoration: none;
+}
+
 .linklike {
   background: none;
   border: none;
@@ -1682,6 +1713,15 @@ body.taskbar-open #app { padding-bottom: var(--taskbar-pad, 104px); }
   .topbar-actions .btn { padding: 0 12px; }
   .nr-label { display: none; }
   .report-actions .btn, .panel-export .btn { flex: 1 1 auto; }
+}
+
+/* Keep brand + live clock + actions on one row on a 320 px phone. The
+   workspace link is the widest control there, so tighten its box and tracking
+   rather than dropping the label. */
+@media (max-width: 360px) {
+  .topbar-actions { gap: 4px; }
+  .top-clock { padding: 0 9px; }
+  .workspace-link { gap: 3px; padding: 0 6px 0 5px; letter-spacing: .04em; }
 }
 
 /* ---------- Reduced motion ---------- */

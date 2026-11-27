@@ -582,8 +582,16 @@ the old defaults.
 - **SVG in DOM**: `dom.el()` creates SVG tags in the SVG namespace; inline icons
   must be `svg`/`path`/… tags so they render.
 - **Mobile**: ≤980 px the filter sidebar collapses, report columns stack and
-  dialogs go full-width; ≤620 px the top bar hides the account chip and the
-  search takes a full row. Keep new components inside these breakpoints.
+  dialogs go full-width; ≤620 px the top bar hides only the account email (the
+  Sign out / Workspace control stays) and the search takes a full row; ≤360 px
+  the workspace link and clock tighten so brand, clock and actions stay on one
+  row. Keep new components inside these breakpoints.
+- **Workspace return (SSO)**: the account chip's `Workspace` action is the way
+  back to the console. Do not rely on `window.opener` — the console severs it
+  on purpose. `returnToWorkspace()` calls `window.close()` (honoured only for
+  script-opened tabs) and, 250 ms later, falls back to navigating to
+  `workspace_url` if the tab is still open. Keep the label visible: an
+  icon-only control would lose the only exit in SSO mode.
 
 ### Frontend conventions
 
